@@ -215,7 +215,7 @@ public:
         public: 
         struct alignas(16) data_meta{//每个被分配的都有元信息以及相应魔数
             //是分配在堆内，后面紧接着就是数据
-            uint16_t data_size;
+            uint32_t data_size;
             alloc_flags_t alloc_flags;
             uint64_t magic;
         };

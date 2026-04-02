@@ -58,6 +58,15 @@ namespace MEMMODULE_LOCAIONS{
             }
         }
     };
+    constexpr uint8_t LOCATION_CODE_PAGES_ARR=0x4;
+    namespace PAGES_ARR_EVENTS{
+        constexpr uint8_t EVENT_CODE_SIMP_PAGES_SET=0x1;
+        namespace SIMP_PAGES_SET_RESULTS_CODE{
+            namespace FAIL_REASONS_CODE{
+                constexpr uint16_t FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM=1;
+            }
+        }
+    };
 
 };
 /**
@@ -66,9 +75,17 @@ namespace MEMMODULE_LOCAIONS{
  * 
  */
 class all_pages_arr{
-    public:
+    
     static uint64_t mem_map_entry_count;
     static page*mem_map;
+    struct phyinterval_t{
+        uint64_t base;
+        uint64_t numof4kbpgs;
+        uint64_t baseidx_in_memmap;
+    };
+    static phyinterval_t*mem_map_intervals;
+    static uint64_t mem_map_intervals_count;
+    public:
     struct free_segs_t{
         uint64_t count;
         struct entry_t{ 
@@ -77,32 +94,20 @@ class all_pages_arr{
         };
         entry_t*entries;
     };
+    
     static free_segs_t*free_segs_get();
     static void subtb_alloc_shift_pages_way();    
     static KURD_t Init(init_to_kernel_info*info);
-    /*
-    这五个接口都是返回mem_map中的引索，返回～0代表失败
-    */
-    static uint64_t page_head(uint64_t idx);
-    /*
-    必须是头页
-    */
-    static uint64_t page_size(uint64_t idx);
-    static KURD_t page_spilt(uint64_t idx,uint8_t target_order);//从原order拆分到对应order
-    /**
-     * freedram的判断条件是is_allocateble为1且type==free，refcount=0
-     */
-    static KURD_t page_merge_freedram(uint64_t head_idx,uint8_t target_order);
-    static KURD_t page_merge_identical(uint64_t head_idx,uint8_t target_order);
+    page* operator[](phyaddr_t phyaddr);
     /**
      * 设置内部的类的页面类型为TYPE，refcoutn为1,没有其它任何隐式行为
      */
-    static void simp_pages_set(phyaddr_t phybase,uint64_t _4kbpgscount,page_state_t TYPE); 
+    static KURD_t simp_pages_set(phyaddr_t phybase,uint64_t _4kbpgscount,page_state_t TYPE); 
     #ifdef USER_MODE
     all_pages_arr();
     #endif
 };
-
+extern all_pages_arr dram_map;
 extern "C"{
     void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2);
     KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount);

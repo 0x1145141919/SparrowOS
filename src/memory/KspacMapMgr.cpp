@@ -6,6 +6,10 @@
 #include "util/OS_utils.h"
 #include "util/kptrace.h"
 #include "util/kout.h"
+#include "core_hardwares/lapic.h"
+#include "panic.h"
+#include "util/arch/x86-64/cpuid_intel.h"
+#include "firmware/ACPI_APIC.h"
 spinlock_cpp_t kspace_pagetable_modify_lock;
 int VM_vaddr_cmp(VM_DESC *a, VM_DESC *b)
 {
@@ -17,6 +21,19 @@ int VM_vaddr_cmp(VM_DESC *a, VM_DESC *b)
 spinlock_cpp_t KspacePageTable::GMlock = spinlock_cpp_t();
 phyaddr_t KspacePageTable::kspace_uppdpt_phyaddr = 0;
 kspace_vm_table_t*kspace_vm_table;
+namespace {
+static inline KspacePageTableStatisitcs* kpt_stat_for_current_cpu()
+{
+    if (kspace_pagetable_statistics == nullptr || logical_processor_count == 0) {
+        return nullptr;
+    }
+    uint32_t pid = fast_get_processor_id();
+    if (pid >= logical_processor_count) {
+        pid = pid % logical_processor_count;
+    }
+    return &kspace_pagetable_statistics[pid];
+}
+}
 
 bool pglv_4_or_5=PAGE_TBALE_LV::LV_4;//true代表4级页表，false代表5级页表
 cache_table_idx_struct_t cache_strategy_to_idx(cache_strategy_t cache_strategy)
@@ -145,7 +162,10 @@ int kspace_vm_table_t::remove(vaddr_t vaddr) {
 }
 KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
 {
-    
+    KspacePageTableStatisitcs* stat = kpt_stat_for_current_cpu();
+    if (stat) {
+        stat->enable_vmentry_count++;
+    }
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
@@ -290,6 +310,10 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
 
 KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
 {
+   KspacePageTableStatisitcs* stat = kpt_stat_for_current_cpu();
+   if (stat) {
+       stat->disable_vmentry_count++;
+   }
    KURD_t success = default_success();
    KURD_t fail = default_failure();
    KURD_t fatal = default_fatal();
@@ -307,7 +331,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
        return fail;
     }
-    GMlock.lock();
+    spinlock_interrupt_about_guard guard(GMlock);
     // 1) Split segment into page-sized runs
     seg_to_pages_info_pakage_t pkg;
     VM_DESC vmentry = {
@@ -421,11 +445,22 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
             //fatal.reason= MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALID_CONGRUENCE_LEVEL;
            return fatal;
     }
+    shared_inval_kspace_VMentry_info.info_package = pkg;
+    shared_inval_kspace_VMentry_info.is_package_valid = true;
+    shared_inval_kspace_VMentry_info.completed_processors_count.store(0);
+    if(GlobalKernelStatus>=SCHEDUL_READY){
+        x2apic::x2apic_driver::broadcast_exself_fixed_ipi(invalidate_seg);
+        //这里要做自旋等待，若1000mius每完成认为失败要panic
+    }
 
    return success;
 }
 KURD_t KspacePageTable::v_to_phyaddrtraslation(vaddr_t vaddr, phyaddr_t &result)
 {
+    KspacePageTableStatisitcs* stat = kpt_stat_for_current_cpu();
+    if (stat) {
+        stat->tran_to_phy_entry_count++;
+    }
     PageTableEntryUnion badentry={0};
     PageTableEntryUnion& result_entry=badentry;
     uint32_t page_size;

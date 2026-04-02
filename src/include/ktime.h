@@ -2,17 +2,24 @@
 #include <stdint.h>
 #include <efi.h>
 #include "abi/os_error_definitions.h"
+#include "abi/arch_code.h"
 typedef  uint64_t miusecond_time_stamp_t;
+struct tsc_complex{
+    uint64_t is_tsc_ddline_avaliabe:1;
+    uint64_t is_tsc_reliable:1;
+    uint64_t tsc_fs_per_cycle;
+};
 struct hardware_time_base_token{
-    miusecond_time_stamp_t hpet_base;
+    uint64_t hpet_base_cycle;
     uint64_t tsc_base;
-    uint32_t tsc_fs_per_cycle;
+    
     uint64_t lapic_fs_per_cycle;
 };
 struct time_complex{
+    
     hardware_time_base_token private_token;
-    class time_interrupt_generator*private_clock;
 };
+
 constexpr uint64_t fs_per_ns=1000000ull;
 constexpr uint64_t FS_per_mius=1000000000ull;
 namespace ktime
@@ -26,23 +33,12 @@ namespace ktime
         static EFI_TIME GetTime_in_os();  
         static int modify_time(EFI_TIME time);
     };
-    class hardware_time
-    {
-        private:
-        static bool is_tsc_reliable;
-        static uint32_t bsp_tsc_fs_per_cycle;
-        static bool is_hpet_initialized;
-        static bool is_bsp_registed;//这个位为false时默认只有bsp,当bsp注册好之后就应该设置这个位为true
-        //则控制所有处理器都使用hardware_time_base_token里面的tsc_fs_per_cycle
-        public:
-        static int try_tsc();
-        static int inform_initialized_hpet();
-        static bool get_tsc_reliable();
-        static bool get_if_hpet_initialized();
-        static void processor_regist();
-        static miusecond_time_stamp_t get_stamp();
-        static void timer_polling_spin_delay(uint64_t mius);
+    struct global_time_complex{
+        uint32_t arch_code;
     };
+    uint64_t get_microsecond_stamp();
+    uint64_t get_nanosecond_stamp();
+    void microsecond_polling_delay(uint64_t microseconds);
     enum backend_choose{
             lapic_normal,
             lapic_tscddline

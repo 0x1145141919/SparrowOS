@@ -282,6 +282,37 @@ extern kspace_vm_table_t*kspace_vm_table;
  * 以及类内的kspaceUPpdpt同步所有进程空间的内核结构
  * 此类全局唯一，只管理高128tb虚拟地址空间
  */
+struct KspacePageTableStatisitcs
+{
+    uint64_t enable_vmentry_count;
+    uint64_t disable_vmentry_count;
+    uint64_t invalidate_tlb_count;
+    uint64_t broadcast_invalidate_tlb_count;
+    uint64_t tran_to_phy_entry_count;
+    struct pages_set_stistics
+    {
+        uint64_t no_leaf_entry_set;
+        union{
+        struct{
+            uint64_t PDPTE_HUGE_set_count;
+            uint64_t PDE_HUGE_set_count;
+            uint64_t PTE_set_count;
+        }x86_64;
+    }specific;
+    } pages_set;
+    struct pages_clear_stistics
+    {
+        uint64_t no_leaf_entry_clear;
+        union{
+        struct{
+            uint64_t PDPTE_HUGE_set_count;
+            uint64_t PDE_HUGE_set_count;
+            uint64_t PTE_set_count;
+        }x86_64;
+    }specific;
+    } pages_clear;
+};
+extern KspacePageTableStatisitcs*kspace_pagetable_statistics;
 class KspacePageTable//使用上面的位域结构体，在初始化函数中直接用，但在后续正式外部暴露接口中对页表项必须用原子操作函数
 {
     public: 
@@ -326,12 +357,6 @@ static KURD_t _4lv_pde_2MB_entries_set(phyaddr_t phybase,vaddr_t vaddr_base,uint
 static KURD_t _4lv_pte_4KB_entries_set(phyaddr_t phybase,vaddr_t vaddr_base,uint16_t count,pgaccess access);//这里要求的是不能跨页目录边界
 
 static void invalidate_seg();
-
-
-
-static KURD_t invalidate_tlb_entry();//这个函数的职责是失效对应的tlb条目,由pgs_remapped_free调用，
-//disable_VMentry会把共享信息处理好，直接使用共享信息包所以不需要任何参数
-
 /**
  * 删除对应1个pde下对应的pte项，如果检测到全部pte项被删除则回收对应的pde项
  */
@@ -352,7 +377,6 @@ static constexpr pgaccess PG_RWX ={1,1,1,1,1,WB};
 static constexpr pgaccess PG_R ={1,0,1,0,1,WB};
 static KURD_t Init(loaded_VM_interval* kspace_up_layer);
 static KURD_t v_to_phyaddrtraslation(vaddr_t vaddr,phyaddr_t& result);
-friend class kpoolmemmgr_t;
 };
 extern shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
 extern spinlock_cpp_t kspace_pagetable_modify_lock;//此锁的用途在于保证“修改vm区间红黑树+修改页表结构”的原子性

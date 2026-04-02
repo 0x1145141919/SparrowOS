@@ -1,6 +1,7 @@
 #pragma once
 #include  <stdint.h>
 #include <abi/os_error_definitions.h>
+#include <util/lock.h>
 typedef enum :uint32_t{
     EFI_RESERVED_MEMORY_TYPE,
     EFI_LOADER_CODE,
@@ -82,7 +83,7 @@ struct seg_to_pages_info_pakage_t{
 struct shared_inval_VMentry_info_t{
     seg_to_pages_info_pakage_t info_package;
     bool is_package_valid;
-    uint32_t completed_processors_count;
+    u32ka completed_processors_count;
 };
 union ia32_pat_t
 {
@@ -136,11 +137,11 @@ struct VM_DESC
     uint64_t SEG_SIZE_ONLY_UES_IN_BASIC_SEG;
 };
 struct alloc_flags_t{
-    bool is_longtime;
-    bool is_crucial_variable;
-    bool vaddraquire;
-    bool force_first_linekd_heap;
-    bool is_when_realloc_force_new_addr;//在realloc中强制重新分配内存，非realloc接口忽视此位但是会忠实记录进入metadata,realloc中此位不设置会优先原地调整，原地调整解决则不会修改源地址和元数据flags
+    uint8_t is_longtime:1;
+    uint8_t is_crucial_variable:1;
+    uint8_t vaddraquire:1;
+    uint8_t force_first_linekd_heap:1;
+    uint8_t is_when_realloc_force_new_addr:1;//在realloc中强制重新分配内存，非realloc接口忽视此位但是会忠实记录进入metadata,realloc中此位不设置会优先原地调整，原地调整解决则不会修改源地址和元数据flags
     uint8_t align_log2;
 };
 constexpr alloc_flags_t default_flags={
@@ -171,6 +172,11 @@ struct buddy_alloc_params{
 constexpr buddy_alloc_params BUDDY_ALLOC_DEFAULT_FLAG{
     .numa = 0,
     .try_lock_always_try = 0,
+    .align_log2 = 12
+};
+constexpr buddy_alloc_params BUDDY_ALLOC_ALWAYS_TRY{
+    .numa = 0,
+    .try_lock_always_try = 1,
     .align_log2 = 12
 };
 struct phymem_segment {

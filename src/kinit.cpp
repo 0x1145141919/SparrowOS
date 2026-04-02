@@ -50,22 +50,6 @@ extern "C" void delay(unsigned int milliseconds) {
 EFI_TIME global_time;
 uint32_t efi_map_ver;
 
-void* Collatz_kthread(void* init_value){
-    uint64_t value=(uint64_t)init_value;
-    uint64_t loop_count=0;
-    while(true)
-    {
-    if(value&1){
-        value=value*3+1;
-    }else{
-        value>>=1;
-    }
-    loop_count++;
-    if(value==1)
-        return (void*)loop_count;
-    }
-
-};
 void ipi_test(){
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<kendl;
@@ -74,12 +58,13 @@ void ipi_test(){
     global_schedulers[self_processor_id].sched();
     asm volatile("hlt");
 }
-extern "C" void ap_norm_start( ){
 
+void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
+    (void)null;
+
+    bsp_kout << "[sched-test] all requested tests finished" << kendl;
+    return nullptr;
 }
-constexpr uint8_t test_kthread_count=100;
-uint64_t test_kthreads[test_kthread_count];
-void*kthread_ymir(void*null);
 void create_first_kthread(){
     ktime::time_interrupt_generator::set_clock_by_offset(20000);
     textconsole_GoP::RuntimeInitServiceThread();
@@ -90,34 +75,21 @@ void create_first_kthread(){
     per_processor_scheduler&sc=global_schedulers[0];
     sc.sched();
 }
-void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
-    (void)null;
-    KURD_t kurd=KURD_t();
-    for(uint64_t i=0;i<test_kthread_count;i++){
-        KURD_t kurd=KURD_t();
-        test_kthreads[i]=create_kthread(Collatz_kthread,(void*)rdtsc(),&kurd);
-        if(error_kurd(kurd)){
-            bsp_kout<<"create_kthread failed at index "<<i<<kendl;
-        }
-    }
-    for(uint64_t i=0;i<test_kthread_count;i++){
-        uint64_t loop_count=kthread_wait(test_kthreads[i]);
-        bsp_kout<<"Collatz_kthread "<<i<<" loop count "<<loop_count<<kendl;
-    }
-    return nullptr;
-}
+
 extern "C" uint32_t assigned_cr3;
 loaded_VM_interval* VM_intervals;
 uint64_t VM_intervals_count;
 phymem_segment *phymem_segments;
 uint64_t phymem_segments_count; 
+uint32_t logical_processor_count;
 extern "C" void kernel_start(init_to_kernel_info* transfer) 
 {   
     GlobalKernelStatus=kernel_state::EARLY_BOOT;
+    logical_processor_count=transfer->logical_processor_count;
     int  Status=0;
     KURD_t bsp_init_kurd=KURD_t();
     pass_through_device_info*tfg=nullptr;
-    loaded_VM_interval*graphic_buffer,*logbuffer,*first_heap,*first_heap_bitmap,*first_BCB_bitmap,*kspaceUPpdpt,*ksymbols;
+    loaded_VM_interval*graphic_buffer,*logbuffer,*first_heap,*first_heap_bitmap,*BCBs_bitmap,*kspaceUPpdpt,*ksymbols;
     for(uint64_t i=0;i<transfer->pass_through_device_info_count;i++){
         if(transfer->pass_through_devices[i].device_info==PASS_THROUGH_DEVICE_GRAPHICS_INFO){
             tfg=(pass_through_device_info*)&transfer->pass_through_devices[i];
@@ -153,7 +125,9 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         case VM_ID_GRAPHIC_BUFFER:
             graphic_buffer = &transfer->loaded_VM_intervals[i];
             break;
-        
+        case VM_ID_BCBS_BITMAPS:
+            BCBs_bitmap = &transfer->loaded_VM_intervals[i];
+            break;
         default:
             // 未知的 VM interval，可以选择忽略或记录日志
             break;
@@ -163,7 +137,6 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     if(error_kurd(bsp_init_kurd)){
         asm volatile("hlt");
     }
-    ktime::hardware_time::try_tsc();
     ksymmanager::Init(ksymbols,transfer->ksymbols_file_size);  
     kpoolmemmgr_t::Init(first_heap,first_heap_bitmap);  
     global_gST=(EFI_SYSTEM_TABLE*)transfer->gST_ptr;
@@ -180,6 +153,7 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         return ;
     }
     bsp_kout<<"Kernel Shell Initialed Success\n";
+    ktime::hardware_time::try_tsc();
     VM_intervals=new loaded_VM_interval[transfer->loaded_VM_interval_count];
     ksystemramcpy(transfer->loaded_VM_intervals,VM_intervals,transfer->loaded_VM_interval_count*sizeof(loaded_VM_interval));
     phymem_segments=new phymem_segment[transfer->phymem_segment_count];
@@ -192,14 +166,15 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         bsp_kout<<"Kernel Mmu Root Table is not in low memory"<<kendl;
         asm volatile("hlt");
     }
-    assigned_cr3=transfer->kmmu_root_table;
     asm volatile("sfence");
+    assigned_cr3=transfer->kmmu_root_table;
+    
     bsp_init_kurd=all_pages_arr::Init(transfer);
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;
         asm volatile("hlt");
     }
-    bsp_init_kurd=FreePagesAllocator::Init();//传入一个loaded_VM_entry
+    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::DEFAULT_THREAD,BCBs_bitmap);//传入一个loaded_VM_entry
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
         asm volatile("hlt");
@@ -308,7 +283,6 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     bsp_kout<<now<<"HPET Initialized Success"<<kendl;
     bsp_kout<<now<<"BSP online"<<kendl;
     gAnalyzer=new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
-    FreePagesAllocator::second_stage(FreePagesAllocator::BEST_FIT);
     bsp_init_kurd=kpoolmemmgr_t::multi_heap_enable();
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"Kpoolmemmgr_t::multi_heap_enable Failed"<<kendl;

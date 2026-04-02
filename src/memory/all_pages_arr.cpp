@@ -9,6 +9,8 @@
 #include "util/kptrace.h"
 uint64_t all_pages_arr::mem_map_entry_count;
 page*all_pages_arr::mem_map;
+all_pages_arr::phyinterval_t*all_pages_arr::mem_map_intervals;
+uint64_t all_pages_arr::mem_map_intervals_count;
 void *ptr_dump(page *p)
 {
     return (void*)(0xFFFF000000000000+(uint64_t(p->head.ptr)<<4));
@@ -21,7 +23,6 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
     }
     auto is_free_4kb = [](const page& p) -> bool {
         return !p.page_flags.bitfield.is_skipped
-            && p.page_flags.bitfield.is_allocateble
             && p.head.order == 0
             && p.head.type == static_cast<uint64_t>(page_state_t::free)
             && p.refcount == 0;
@@ -81,9 +82,10 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
 
     return result;
 }
-
+all_pages_arr dram_map;
 KURD_t all_pages_arr::Init(init_to_kernel_info *info)
 {
+    KURD_t result;
     phymem_segment*segs=info->memory_map;
     uint64_t physegs_count=info->phymem_segment_count;
     loaded_VM_interval*mem_map_interval=nullptr;
@@ -98,83 +100,25 @@ KURD_t all_pages_arr::Init(init_to_kernel_info *info)
     }
     mem_map=(page*)mem_map_interval->vbase;
     mem_map_entry_count=mem_map_interval->size/sizeof(page);
-    auto pages_for = [](phyaddr_t base, uint64_t size, uint64_t& out_start, uint64_t& out_end) -> bool {
-        if (size == 0) {
-            out_start = 0;
-            out_end = 0;
-            return false;
-        }
-        if (base > ~0ULL - size) {
-            return false;
-        }
-        uint64_t end = base + size;
-        out_start = base >> 12;
-        out_end = (end + 4095) >> 12;
-        return true;
-    };
-    auto register_range = [&](phyaddr_t base,
-                              uint64_t size,
-                              page_state_t type,
-                              bool allocatable) {
-        uint64_t start_idx = 0;
-        uint64_t end_idx = 0;
-        if (!pages_for(base, size, start_idx, end_idx)) {
-            return;
-        }
-        if (start_idx >= mem_map_entry_count) {
-            return;
-        }
-        if (end_idx > mem_map_entry_count) {
-            end_idx = mem_map_entry_count;
-        }
-        for (uint64_t idx = start_idx; idx < end_idx; ++idx) {
-            page& p = mem_map[idx];
-            p.refcount = 0;
-            p.page_flags.raw = 0;
-            p.page_flags.bitfield.is_skipped = 0;
-            p.page_flags.bitfield.is_allocateble = allocatable ? 1 : 0;
-            p.head.type = static_cast<uint64_t>(type);
-            p.head.ptr = 0;
-            p.head.order = 0;
-        }
-    };
     for(int i=0;i<physegs_count;i++)
     {
-        page_state_t type = page_state_t::reserved;
-        bool allocatable = false;
-        switch (segs[i].type) {
-        case EFI_LOADER_CODE:
-        case EFI_LOADER_DATA:
-        case EFI_BOOT_SERVICES_CODE:
-        case EFI_BOOT_SERVICES_DATA:
-        case freeSystemRam:
-        case OS_ALLOCATABLE_MEMORY:
-            type = page_state_t::free;
-            allocatable = true;
-            break;
-        case EFI_ACPI_RECLAIM_MEMORY:
-        type = page_state_t::acpi_tables;
-            allocatable = false;
-            break;
-        case EFI_ACPI_MEMORY_NVS:
-            type =page_state_t::acpi_nvs;
-            allocatable = false;
-            break;
-        case EFI_RUNTIME_SERVICES_CODE:
-        case EFI_RUNTIME_SERVICES_DATA:
-        type =page_state_t:: uefi_runtime;
-            allocatable = false;
-            break;
-        case EFI_MEMORY_MAPPED_IO:
-            type = page_state_t::mmio;
-            allocatable = false;
-            break;
-        default:
-            type = page_state_t::reserved;
-            allocatable = false;
-            break;
+        if(segs[i].type==PHY_MEM_TYPE::freeSystemRam){
+            mem_map_intervals_count++;
         }
-        register_range(segs[i].start, segs[i].size, type, allocatable);
+    }
+    mem_map_intervals=new phyinterval_t[mem_map_intervals_count];
+    
+    int interval_idx = 0;
+    uint64_t entry_base_idx=0;
+    for(int i=0;i<physegs_count;i++)
+    {
+        if(segs[i].type==PHY_MEM_TYPE::freeSystemRam){
+            mem_map_intervals[interval_idx].base = segs[i].start;
+            mem_map_intervals[interval_idx].numof4kbpgs = segs[i].size >> 12;
+            mem_map_intervals[interval_idx].baseidx_in_memmap = entry_base_idx;
+            entry_base_idx += mem_map_intervals[interval_idx].numof4kbpgs;
+            interval_idx++;
+        }
     }
     loaded_VM_interval*kintervals_base=info->loaded_VM_intervals;
     for(int i=0;i<info->loaded_VM_interval_count;i++){
@@ -183,26 +127,155 @@ KURD_t all_pages_arr::Init(init_to_kernel_info *info)
         page_state_t type = page_state_t::kernel_persisit;
         bool allocatable = false;
         if (interval.VM_interval_specifyid == VM_ID_GRAPHIC_BUFFER) {
-            type = page_state_t::mmio;
-            allocatable = false;
+            continue;
         }
-        register_range(interval.pbase, interval.size, type, allocatable);
+        result=simp_pages_set(interval.pbase, interval.size >> 12, type);
     }
-    register_range((phyaddr_t)info, info->self_pages_count * 4096, page_state_t::kernel_persisit, false);
-    register_range(info->kmmu_interval.start, info->kmmu_interval.size, page_state_t::kernel_persisit, false);
+    simp_pages_set(info->kmmu_interval.start, info->kmmu_interval.size >> 12, page_state_t::kernel_persisit);
+    simp_pages_set(info->kmmu_interval.start, info->kmmu_interval.size>> 12, page_state_t::kernel_persisit);
     PhyAddrAccessor::BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG=mem_map_entry_count<<12;
     return KURD_t();
 }
-void all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, page_state_t TYPE)
+KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, page_state_t TYPE)
 {
-    uint64_t base_idx=phybase>>12;
-    if(base_idx>=mem_map_entry_count)return;
-    uint64_t end_idx=base_idx+_4kbpgscount;
-    end_idx=end_idx>mem_map_entry_count?mem_map_entry_count:end_idx;
-    for(uint64_t i=base_idx;i<end_idx;i++){
-        mem_map[i].head.type=static_cast<uint64_t>(TYPE);
-        mem_map[i].refcount=1;
+    KURD_t success(
+        result_code::SUCCESS,
+        0,
+        module_code::MEMORY,
+        MEMMODULE_LOCAIONS::LOCATION_CODE_PAGES_ARR,
+        MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::EVENT_CODE_SIMP_PAGES_SET,
+        level_code::INFO,
+        err_domain::CORE_MODULE
+    );
+    KURD_t fail = set_result_fail_and_error_level(success);
+
+    if (_4kbpgscount == 0) {
+        return success;
     }
 
-}
+    if (mem_map == nullptr || mem_map_intervals == nullptr || mem_map_intervals_count == 0) {
+        fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+        return fail;
+    }
 
+    // 1) Locate start interval by binary search.
+    uint64_t lo = 0;
+    uint64_t hi = mem_map_intervals_count;
+    uint64_t start_iv_idx = mem_map_intervals_count;
+    while (lo < hi) {
+        const uint64_t mid = lo + ((hi - lo) >> 1);
+        const phyinterval_t& iv = mem_map_intervals[mid];
+        if (phybase < iv.base) {
+            hi = mid;
+            continue;
+        }
+        const uint64_t delta_pages = (phybase - iv.base) >> 12;
+        if (delta_pages >= iv.numof4kbpgs) {
+            lo = mid + 1;
+            continue;
+        }
+        start_iv_idx = mid;
+        break;
+    }
+    if (start_iv_idx == mem_map_intervals_count) {
+        fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+        return fail;
+    }
+
+    // 2) Validate full range coverage across intervals (must not cross a hole).
+    uint64_t iv_idx = start_iv_idx;
+    uint64_t page_off = (phybase - mem_map_intervals[iv_idx].base) >> 12;
+    uint64_t remain = _4kbpgscount;
+    phyaddr_t cursor = phybase;
+
+    while (remain > 0) {
+        if (iv_idx >= mem_map_intervals_count) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+        const phyinterval_t& iv = mem_map_intervals[iv_idx];
+        if (cursor < iv.base || page_off >= iv.numof4kbpgs) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+
+        const uint64_t can_take = iv.numof4kbpgs - page_off;
+        const uint64_t take = (remain < can_take) ? remain : can_take;
+        remain -= take;
+        if (take > (UINT64_MAX >> 12)) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+        const phyaddr_t add = static_cast<phyaddr_t>(take << 12);
+        if (cursor + add < cursor) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+        cursor += add;
+        if (remain == 0) {
+            break;
+        }
+
+        ++iv_idx;
+        page_off = 0;
+        if (iv_idx >= mem_map_intervals_count || cursor != mem_map_intervals[iv_idx].base) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+    }
+
+    // 3) Write mem_map directly by interval mapping.
+    iv_idx = start_iv_idx;
+    page_off = (phybase - mem_map_intervals[iv_idx].base) >> 12;
+    remain = _4kbpgscount;
+    while (remain > 0) {
+        const phyinterval_t& iv = mem_map_intervals[iv_idx];
+        const uint64_t can_take = iv.numof4kbpgs - page_off;
+        const uint64_t take = (remain < can_take) ? remain : can_take;
+        const uint64_t mem_idx_base = iv.baseidx_in_memmap + page_off;
+        if (mem_idx_base >= mem_map_entry_count || take > (mem_map_entry_count - mem_idx_base)) {
+            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            return fail;
+        }
+        for (uint64_t j = 0; j < take; ++j) {
+            mem_map[mem_idx_base + j].head.type = static_cast<uint64_t>(TYPE);
+            mem_map[mem_idx_base + j].refcount = 1;
+        }
+        remain -= take;
+        ++iv_idx;
+        page_off = 0;
+    }
+    return success;
+}
+page* all_pages_arr::operator[](phyaddr_t phyaddr){
+    if (mem_map == nullptr || mem_map_intervals == nullptr || mem_map_intervals_count == 0) {
+        return nullptr;
+    }
+
+    uint64_t lo = 0;
+    uint64_t hi = mem_map_intervals_count; // [lo, hi)
+
+    while (lo < hi) {
+        const uint64_t mid = lo + ((hi - lo) >> 1);
+        const phyinterval_t& iv = mem_map_intervals[mid];
+
+        if (phyaddr < iv.base) {
+            hi = mid;
+            continue;
+        }
+
+        const uint64_t delta_pages = (phyaddr - iv.base) >> 12;
+        if (delta_pages >= iv.numof4kbpgs) {
+            lo = mid + 1;
+            continue;
+        }
+
+        const uint64_t mem_idx = iv.baseidx_in_memmap + delta_pages;
+        if (mem_idx >= mem_map_entry_count) {
+            return nullptr;
+        }
+        return &mem_map[mem_idx];
+    }
+
+    return nullptr;
+}

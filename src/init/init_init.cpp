@@ -135,6 +135,13 @@ extern "C" void init(BootInfoHeader* header)
         bsp_kout<<"kernel entry or stack bottom is zero"<<kendl;
         asm volatile("hlt");
     }
+    info->logical_processor_count=header->logical_processor_count;
+    vinterval never_map_rigeon={
+        .phybase=0,
+        .vbase=0,
+        .size=0x4000,
+    };
+    kmmu->unmap(never_map_rigeon);
     shift_kernel(info,pak.stack_bottom,pak.entry_vaddr);
 }
 

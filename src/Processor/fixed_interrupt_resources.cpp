@@ -54,6 +54,7 @@ void x86_smp_processors_container::template_idt_init(){
     template_idt[ivec::SIMD_FLOATING_POINT_EXCEPTION].handler=(void*)&simd_floating_point_bare_enter;
     template_idt[ivec::VIRTUALIZATION_EXCEPTION].handler=(void*)&virtualization_bare_enter;
     template_idt[ivec::LAPIC_TIMER].handler=(void*)&timer_bare_enter;
+    template_idt[ivec::LAPIC_TIMER].ist_index=5;
     template_idt[ivec::IPI].handler=(void*)&ipi_bare_enter;
     template_idt[ivec::KTHREAD_CALL].handler=(void*)&kthread_call_bare_enter;
     template_idt[ivec::KTHREAD_CALL].ist_index=5;

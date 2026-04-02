@@ -113,10 +113,10 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
     };
     runtime_processor_regist(&resources);
     fs_slot[STACK_PROTECTOR_CANARY_IDX]=0xDEADBEEF;
-    wrmsr(msr::syscall::IA32_FS_BASE,(uint64_t)&fs_slot);
+    wrmsr_func(msr::syscall::IA32_FS_BASE,(uint64_t)&fs_slot);
     gs_slot[L_PROCESSOR_GS_IDX]=(uint64_t)this;//应该用rdrand搞一个随机值
     gs_slot[PROCESSOR_ID_GS_INDEX]=static_cast<uint64_t>(this->processor_id);
-    wrmsr(msr::syscall::IA32_GS_BASE,(uint64_t)&gs_slot);
+    wrmsr_func(msr::syscall::IA32_GS_BASE,(uint64_t)&gs_slot);
     tss.rsp0=stack_alloc(&kurd,7);
     tss.ist[0]=0;
     tss.ist[1]=stack_alloc(&kurd,2);
@@ -142,8 +142,8 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
         ia32_apic_base|=(1<<10);
         uint64_t tpr = 1;
         asm volatile("mov %0, %%cr8" : : "r"(tpr) : "memory");
-        wrmsr(msr::apic::IA32_APIC_BASE,ia32_apic_base);
-        wrmsr(msr::apic::IA32_X2APIC_SVR,0x1ff);
+        wrmsr_func(msr::apic::IA32_APIC_BASE,ia32_apic_base);
+        wrmsr_func(msr::apic::IA32_X2APIC_SVR,0x1ff);
     }else{
         panic_info_inshort inshort={
             .is_bug=false,

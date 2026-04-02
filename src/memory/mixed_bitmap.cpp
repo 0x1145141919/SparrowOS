@@ -28,17 +28,22 @@ static void* fpa_wrapped_pgs_valloc(KURD_t* kurd, uint64_t pages, page_state_t s
     return ptr;
 #endif
 }
-FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count)
+FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr)
 {
     this->entry_count=entry_count;
+    this->bitmap=(uint64_t*)base_addr;
 }
 KURD_t FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::default_kurd()
 {
      return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_BITMAP,0,0,err_domain::CORE_MODULE);
 }
-void FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::first_bcb_specified_init()
+void FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::mixedbitmap_base_specify(vaddr_t bitmap_base_addr)
 {
-    bitmap=first_BCB_bitmap;
+    if (bitmap_base_addr != 0) {
+        bitmap = reinterpret_cast<uint64_t*>(bitmap_base_addr);
+    } else if (bitmap == nullptr) {
+        bitmap = first_BCB_bitmap;
+    }
     bsp_kout<<(void*)bitmap<<kendl;
     byte_bitmap_base=(uint8_t*)bitmap;
     bitmap_size_in_64bit_units=(entry_count+63)/64;
@@ -55,23 +60,6 @@ KURD_t FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::default_error()
 {
     KURD_t kurd=default_kurd();
     kurd=set_result_fail_and_error_level(kurd);
-    return kurd;
-}
-KURD_t FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::second_stage_init()
-{
-    KURD_t kurd;
-    bitmap_size_in_64bit_units=(entry_count+63)/64;
-    bitmap_used_bit=0;
-    #ifdef KERNEL_MODE
-    if(bitmap_size_in_64bit_units>=512)
-    bitmap=(uint64_t*)__wrapped_pgs_valloc(&kurd, bitmap_size_in_64bit_units/512, page_state_t::kernel_pinned, 12);
-    else bitmap=new uint64_t[bitmap_size_in_64bit_units];
-    #endif
-    #ifdef USER_MODE
-    bitmap=new uint64_t[bitmap_size_in_64bit_units];
-    #endif
-    byte_bitmap_base=(uint8_t*)bitmap;
-    ksetmem_8(bitmap,0,bitmap_size_in_64bit_units*8);
     return kurd;
 }
 FreePagesAllocator::BuddyControlBlock::mixed_bitmap_t::~mixed_bitmap_t()

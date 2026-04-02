@@ -24,34 +24,31 @@ namespace MEMMODULE_LOCAIONS{
 
 void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2) {
     interrupt_guard g;
-    Alloc_result result=FreePagesAllocator::alloc(
+    phyaddr_t result=FreePagesAllocator::alloc(
         _4kbpgscount*0x1000,
         buddy_alloc_params{
             .numa=0,
             .try_lock_always_try=0,
             .align_log2=alignment_log2
         },
-        TYPE
+        TYPE,
+        *kurd_out
     );
-    if(result.base==0||result.result.result!=result_code::SUCCESS){
+    if(result==FreePagesAllocator::INVALID_ALLOC_BASE||error_kurd(*kurd_out)){
         //尝试用phymemspace_mgr::pages_linear_scan_and_alloc
-            *kurd_out=result.result;
-
             return nullptr;
     }
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space(_4kbpgscount*0x1000,result.base%0x400000000);
+    vaddr_t vbase=kspace_vm_table->alloc_available_space(_4kbpgscount*0x1000,result%0x400000000);
     if(vbase==0){
         //回滚FreePagesAllocator::alloc
-
-        *kurd_out=result.result;
         return nullptr;
     }
     VM_DESC new_desc={
         .start=vbase,
         .end=vbase+_4kbpgscount*0x1000,
         .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=result.base,
+        .phys_start=result,
         .access=KspacePageTable::PG_RW,
         .committed_full=true,
         .is_vaddr_alloced=true,
@@ -62,7 +59,7 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
     }
     vm_interval interval={
         .vbase=vbase,
-        .pbase=result.base,
+        .pbase=result,
         .size=_4kbpgscount*0x1000,
         .access=KspacePageTable::PG_RW
     };
@@ -75,22 +72,22 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     interrupt_guard g;
     if(_4kbpgscount==0)return 0;
     uint64_t real_alloc_phypages=_4kbpgscount+1;
-    Alloc_result result=FreePagesAllocator::alloc(
+    phyaddr_t result=FreePagesAllocator::alloc(
         real_alloc_phypages*0x1000,
         buddy_alloc_params{
             .numa=0,
             .try_lock_always_try=0,
             .align_log2=12
         },
-        page_state_t::kernel_pinned
+        page_state_t::kernel_pinned,
+        *kurd_out
     );
-    if(result.base==0||result.result.result!=result_code::SUCCESS){
+    if(result==FreePagesAllocator::INVALID_ALLOC_BASE||error_kurd(*kurd_out)){
         //尝试用phymemspace_mgr::pages_linear_scan_and_alloc
-            *kurd_out=result.result;
-            return 0;
+            return result;
     }
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space((real_alloc_phypages+1)*0x1000,result.base%0x400000000);
+    vaddr_t vbase=kspace_vm_table->alloc_available_space((real_alloc_phypages+1)*0x1000,result%0x400000000);
     if(vbase==0){
         return 0;
     }
@@ -99,7 +96,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         .start=vbase,
         .end=vbase+real_alloc_phypages*0x1000,
         .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=result.base,
+        .phys_start=result,
         .access=KspacePageTable::PG_RW,
         .committed_full=true,
         .is_vaddr_alloced=true,
@@ -110,7 +107,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     }
     vm_interval interval={
         .vbase=vbase,
-        .pbase=result.base,
+        .pbase=result,
         .size=real_alloc_phypages*0x1000,
         .access=KspacePageTable::PG_RW
     };

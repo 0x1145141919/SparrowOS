@@ -1,6 +1,7 @@
 #include <efi.h>
 #include "core_hardwares/PortDriver.h"
 #include "util/kout.h"
+#include "util/OS_utils.h"
 #define COM1_PORT 0x3F8
 static inline void outb(UINT16 port, UINT8 value) {
     asm volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
@@ -13,6 +14,7 @@ static inline UINT8 inb(UINT16 port) {
     return ret;
 }
 // 初始化串口
+void uart_print_num(uint64_t raw,num_format_t format,numer_system_select radix);
 void serial_init_stage1() {
     // 禁用中断
     outb(COM1_PORT + 1, 0x00);
@@ -31,7 +33,8 @@ void serial_init_stage1() {
         .name="COM1",
         .is_masked=0,
         .reserved=0,
-        .running_stage_write=nullptr,
+        .running_stage_write=serial_puts,
+        .running_stage_num=uart_print_num,
         .panic_write=serial_puts,
         .early_write=serial_puts,
     };
@@ -58,6 +61,13 @@ void serial_puts(const char* str,uint64_t len) {
     for(uint64_t i=0;i<len;i++)
     {
         if(str[i])serial_putc(str[i]);
+    }
+}
+void uart_print_num(uint64_t raw,num_format_t format,numer_system_select radix){
+    char buf[70];
+    uint64_t len=format_num_to_buffer(buf,raw,format,radix);
+    for(uint64_t i=0;i<len;i++){
+        serial_putc(buf[i]);
     }
 }
 // 端口输出函数(内联汇编)

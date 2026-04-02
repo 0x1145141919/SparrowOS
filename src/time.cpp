@@ -19,7 +19,13 @@ int ktime::hardware_time::try_tsc()
         is_tsc_reliable = true;
         eax=0x15;
         cpuid(&eax, &ebx, &ecx, &edx);
-        uint64_t tsc_freq_hz=(uint64_t)ecx*ebx/eax;
+        bsp_kout<<HEX;
+        bsp_kout<<"eax="<<eax<<kendl;
+        bsp_kout<<"ebx="<<ebx<<kendl;
+        bsp_kout<<"ecx="<<ecx<<kendl;
+        bsp_kout<<"edx="<<edx<<kendl;
+        bsp_kout<<DEC;
+        uint64_t tsc_freq_hz=(uint64_t)ecx*ebx/eax;  
         bsp_tsc_fs_per_cycle=FS_per_mius/tsc_freq_hz;
     }else{
         is_tsc_reliable = false;

@@ -11,17 +11,17 @@
 #include "ktime.h"
 void x2apic::x2apic_driver::raw_config_timer(timer_lvt_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_TIMER,entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_TIMER,entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_config_timer_init_count(initcout_reg_t count)
 {
-    wrmsr(msr::apic::IA32_X2APIC_TIMER_INITIAL_COUNT,(uint64_t)count);
+    wrmsr_func(msr::apic::IA32_X2APIC_TIMER_INITIAL_COUNT,(uint64_t)count);
 }
 
 void x2apic::x2apic_driver::raw_config_timer_divider(devide_reg_t reg)
 {
-    wrmsr(msr::apic::IA32_X2APIC_TIMER_DIVIDE_CONFIG,reg.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_TIMER_DIVIDE_CONFIG,reg.raw);
 }
 
 x2apic::current_reg_t x2apic::x2apic_driver::get_timer_current_count()
@@ -32,7 +32,7 @@ x2apic::current_reg_t x2apic::x2apic_driver::get_timer_current_count()
 
 void x2apic::x2apic_driver::raw_send_ipi(x2apic_icr_t icr)
 {
-    wrmsr(msr::apic::IA32_X2APIC_ICR,icr.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_ICR,icr.raw);
 }
 
 void x2apic::x2apic_driver::broadcast_exself_fixed_ipi(void (*ipi_handler)())
@@ -46,36 +46,36 @@ void x2apic::x2apic_driver::broadcast_exself_fixed_ipi(void (*ipi_handler)())
 
 void x2apic::x2apic_driver::raw_error_lvt_config(lvt_error_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_ERROR, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_ERROR, entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_lint0_lvt_config(lvt_lint_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_LINT0, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_LINT0, entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_lint1_lvt_config(lvt_lint_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_LINT1, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_LINT1, entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_perf_lvt_config(lvt_general_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_PMI, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_PMI, entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_thermal_lvt_config(lvt_general_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_THERMAL, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_THERMAL, entry.raw);
 }
 
 void x2apic::x2apic_driver::raw_cmci_lvt_config(lvt_general_entry entry)
 {
-    wrmsr(msr::apic::IA32_X2APIC_LVT_CMCI, entry.raw);
+    wrmsr_func(msr::apic::IA32_X2APIC_LVT_CMCI, entry.raw);
 }
 void x2apic::x2apic_driver::write_eoi()
 {
-    wrmsr(msr::apic::IA32_X2APIC_EOI,0);
+    wrmsr_func(msr::apic::IA32_X2APIC_EOI,0);
 }
 void x2apic::lapic_timer_one_shot::processor_regist()
 {
@@ -145,7 +145,7 @@ void x2apic::lapic_timer_tsc_ddline::set_clock_by_offset(uint64_t offset_mius)
     time_complex*complex=(time_complex*)read_gs_u64(TIME_COMPLEX_GS_INDEX);
     uint32_t tsc_fs_per_cycle=complex->private_token.tsc_fs_per_cycle;
     uint64_t target_tsc=rdtsc()+(__uint128_t)offset_mius*FS_per_mius/tsc_fs_per_cycle;
-    wrmsr(msr::timer::IA32_TSC_DEADLINE,target_tsc);
+    wrmsr_func(msr::timer::IA32_TSC_DEADLINE,target_tsc);
 }
 void x2apic::lapic_timer_tsc_ddline::set_clock_by_stamp(uint64_t stamp_mius)
 {
@@ -155,7 +155,7 @@ void x2apic::lapic_timer_tsc_ddline::set_clock_by_stamp(uint64_t stamp_mius)
 }
 void x2apic::lapic_timer_tsc_ddline::cancel_clock()
 {
-    wrmsr(msr::timer::IA32_TSC_DEADLINE,0);
+    wrmsr_func(msr::timer::IA32_TSC_DEADLINE,0);
 }
 bool x2apic::lapic_timer_tsc_ddline::is_alarm_valid()
 {

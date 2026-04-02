@@ -406,15 +406,31 @@ int kernel_load(load_kernel_info_pack&pak){
     }
     uint64_t entry_count=0;
     phymem_segment*base=basic_allocator::get_pure_memory_view(&entry_count);
-    uint64_t max_memory=base[entry_count-1].start+base[entry_count-1].size;
-    uint64_t pages_count=max_memory>>12;
+    uint64_t accumulated_dram_size=0;
+    for(uint64_t i=0;i<entry_count;i++){
+        if(base[i].type==PHY_MEM_TYPE::freeSystemRam){
+            accumulated_dram_size+=base[i].size;
+        }
+    }
+    uint64_t dram_pages_count=accumulated_dram_size>>12;
     int mem_map_result = anonymous_mem_map(
-        pages_count*sizeof(page), 
+        align_up(dram_pages_count*sizeof(page),4096), 
         21, 
         VM_ID_MEM_MAP
     );
     if(mem_map_result!=0){
         bsp_kout<< "[ERROR] Failed to load main frame array" << kendl;
+    }
+    constexpr uint16_t page_size=4096;
+    constexpr uint16_t pages_count_per_byte=4;
+    uint64_t dram_pages_BCB_bitmaps_4kbpages_count=(dram_pages_count+pages_count_per_byte*page_size-1)/(pages_count_per_byte*page_size);
+    int bcb_bitmap_result = anonymous_mem_map(
+        dram_pages_BCB_bitmaps_4kbpages_count*4096, 
+        21, 
+        VM_ID_BCBS_BITMAPS
+    );
+    if(bcb_bitmap_result!=0){
+        bsp_kout<< "[ERROR] Failed to load BCB bitmaps" << kendl;
     }
     bsp_kout<< "[INFO] All anonymous memory regions loaded successfully." << kendl;
     

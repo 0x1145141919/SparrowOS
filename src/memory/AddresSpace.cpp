@@ -106,6 +106,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
     constexpr uint16_t PAGES_COUNT_AND_BASE_OUT_OF_RANGE=0x2;
     constexpr uint16_t NOT_ALIGNED_INPUT_BASE=0x3;
     constexpr uint16_t TRY_TO_GET_SUB_ENTRY_FOT_BIG_ATOM_PAGE_ENTRY=0x4;
+    
     /**
      * 先搞参数检验
      */
@@ -145,6 +146,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
     // 匿名函数替代原来的get_sub_tb函数
     KURD_t pages_alloc_event_kurd=KURD_t();
     auto get_sub_tb = [&pages_alloc_event_kurd](PageTableEntryUnion& entry, PageTableEntryType Clevel) -> phyaddr_t {
+        KURD_t contain;
         if(Clevel==PageTableEntryType::PT) return 0;
         constexpr uint32_t _4KB_SIZE=0x1000;
         PageTableEntryUnion  copy=entry;
@@ -157,10 +159,10 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
             
             return subtb_phybase;
         }else{
+            
             phyaddr_t entry_to_alloc_phybase=0;
-            Alloc_result res= FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned);
-            entry_to_alloc_phybase=res.base;
-            if(!entry_to_alloc_phybase||error_kurd(res.result)) return 0;
+            entry_to_alloc_phybase= FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,contain);
+            if(!entry_to_alloc_phybase||error_kurd(contain)) return 0;
             
             // 初始化新分配的页表内存为0
             for(uint16_t i=0; i<512; i++) {
@@ -1057,9 +1059,8 @@ KURD_t AddressSpace::second_stage_init()
     flags.force_first_linekd_heap=true;
     flags.align_log2=12;
     KURD_t contain=KURD_t();
-    Alloc_result res=FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned);
-    pml4_phybase=res.base;
-    if(pml4_phybase==0||error_kurd(res.result))return contain;
+    pml4_phybase=FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,contain);
+    if(pml4_phybase==0||error_kurd(contain))return contain;
     for(uint16_t i=0;i<256;i++){
         PhyAddrAccessor::writeu64(
             pml4_phybase+i*sizeof(PageTableEntryUnion),

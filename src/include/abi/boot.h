@@ -47,6 +47,7 @@ typedef struct {
     void* gST_ptr;
     char parameter_area[512]; // 预留的参数区域，可以根据需要调整大小
     uint64_t flags;
+    uint32_t logical_processor_count;
     uint64_t checksum;           // 可选的数据校验
 } BootInfoHeader;
 // ============================================
@@ -77,6 +78,7 @@ constexpr uint8_t LOGBUFFER_ALIGN_LOG2 = 21;                  // 2MB 对齐
 
 constexpr uint32_t VM_ID_KSYMBOLS = 0x1006;
 constexpr uint32_t VM_ID_MEM_MAP = 0x1007;
+constexpr uint32_t VM_ID_BCBS_BITMAPS = 0x1008;
 constexpr uint32_t MEM_MAP_ALIGN_LOG2 = 21;
 // 上层内核空间页目录指针表：1MB, 对齐 4KB(2^12)
 //0x2000~0x2fff是x86_64_PGLV4的架构锁死的传递的VM
@@ -90,18 +92,16 @@ constexpr uint8_t UP_KSPACE_PDPT_ALIGN_LOG2 = 12;             // 4KB 对齐
 struct init_to_kernel_info {
     uint64_t magic;
     uint64_t self_pages_count;
-
     void* gST_ptr;
-
     uint64_t ksymbols_file_size;
     phyaddr_t kmmu_root_table;
     phymem_segment kmmu_interval;
-
     uint64_t phymem_segment_count;
     phymem_segment* memory_map;
     uint64_t loaded_VM_interval_count;
     loaded_VM_interval* loaded_VM_intervals;
     uint64_t pass_through_device_info_count;
     pass_through_device_info* pass_through_devices;
+    uint32_t logical_processor_count;
 };
 

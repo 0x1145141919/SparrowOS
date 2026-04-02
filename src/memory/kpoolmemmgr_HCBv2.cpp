@@ -946,8 +946,7 @@ KURD_t kpoolmemmgr_t::HCB_v2::second_stage_Init()
     param.align_log2=21;
     KURD_t contain;
     
-    Alloc_result res=FreePagesAllocator::alloc(total_size_in_bytes,param,page_state_t::kernel_pinned);
-    this->phybase=res.base;
+    this->phybase=FreePagesAllocator::alloc(total_size_in_bytes,param,page_state_t::kernel_pinned,contain);
     if(!success_all_kurd(contain))return contain;
     #ifdef KERNEL_MODE
     vm_interval interval={
@@ -1106,11 +1105,6 @@ KURD_t kpoolmemmgr_t::HCB_v2::in_heap_alloc(
             fail.reason=MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_EVENTS::ALLOC_RESULTS::FAIL_RESONS::REASON_CODE_SIZE_DEMAND_IS_ZERO;
             return fail;
         }
-    if(size>=1ULL<<16){
-        record_alloc_fail();
-        fail.reason=MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_EVENTS::ALLOC_RESULTS::FAIL_RESONS::REASON_CODE_SIZE_DEMAND_TOO_LARGE;
-        return fail;
-    }
     // 常量定义（在内核空间必须为常量或宏）
     static constexpr uint32_t SMALL_UNIT_BYTES=16;
     static constexpr uint32_t MID_UNIT_BYTES = SMALL_UNIT_BYTES<<3;

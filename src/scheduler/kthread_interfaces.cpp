@@ -236,7 +236,7 @@ void timer_cpp_enter(x64_Interrupt_saved_context_no_errcode *frame)
         {
             vaddr_t stack_top = interrupted_task->context.kthread->stack_bottom-interrupted_task->context.kthread->stacksize;
         vaddr_t stack_bottom = interrupted_task->context.kthread->stack_bottom;
-            if(basic_ctx.iret_context.rsp < stack_top || basic_ctx.iret_context.rsp >= stack_bottom){
+            if(basic_ctx.iret_context.rsp < stack_top || basic_ctx.iret_context.rsp > stack_bottom){
                 interrupted_task->task_lock.unlock();
                 x2apic::x2apic_driver::broadcast_exself_fixed_ipi(Panic::other_processors_froze_handler);
                 GlobalKernelStatus=PANIC;

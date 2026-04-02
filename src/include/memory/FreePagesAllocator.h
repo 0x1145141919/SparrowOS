@@ -8,16 +8,12 @@
 #include "memory/all_pages_arr.h"
 class KspacePageTable;
 struct fpa_stats {
-    uint64_t alloc_main_hit;
-    uint64_t alloc_vice_hit;
+    uint64_t alloc_count;
     uint64_t bcb_scan_total;
-    uint64_t bcb_scan_max;
+    uint64_t bcb_scan_max;//一次alloc中最高扫描BCB数量
     uint64_t alloc_fail;
-    uint64_t constrained_alloc;
-    uint64_t constrained_retry;
     uint64_t lock_try_fail;
-    uint64_t lock_spin;
-    uint64_t force_first_bcb_alloc;
+    uint64_t free_count;
     };
 namespace MEMMODULE_LOCAIONS{
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR=28;
@@ -46,7 +42,10 @@ namespace MEMMODULE_LOCAIONS{
                 constexpr uint16_t FAIL_REASON_CODE_NO_AVALIABLE_BCB = 5;
             }
             namespace RETRY_REASONS_CODE{
-                constexpr uint16_t RETRY_REASON_CODE_TARGET_BUSY = 1;
+                constexpr uint16_t RETRY_REASON_CODE_TIME_OUT = 1;
+            }
+            namespace FATAL_REASONS_CODE{
+                constexpr uint16_t UNREACHABLE_CODE = 1;
             }
         }
         constexpr uint8_t EVENT_CODE_FREE = 3;
@@ -182,9 +181,8 @@ public:
         public:
             using bitmap_t::bit_set;
             using bitmap_t::bit_get;
-            mixed_bitmap_t(uint64_t entry_count);
-            KURD_t second_stage_init();
-            void first_bcb_specified_init();
+            mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr);
+            void mixedbitmap_base_specify(vaddr_t bitmap_base_addr = 0);
             uint64_t find_free_in_interval(
                 uint64_t start_idx,
                 uint64_t interval_length
@@ -200,7 +198,7 @@ public:
 
         Ktemplats::kernel_bitmap* order_Internal_bitmap[DESINGED_MAX_SUPPORT_ORDER];
 #endif
-        friend mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count);
+        friend mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr);
         mixed_bitmap_t* order_freepage_existency_bitmaps; // 这个位图编码为 1 表示这个 order 的对应引索的页面是存在的，反之不存在
         uint64_t order_bases[DESINGED_MAX_SUPPORT_ORDER]; // 在 mixed_bitmap_t 里面各 order 的引索基址
 
@@ -248,14 +246,14 @@ public:
             uint8_t max_support_order
         );
         BuddyControlBlock();
-        void first_bcb_specified_init();
-        KURD_t second_stage_init();
+        void corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr = 0);
         phyaddr_t allocate_buddy_way(
             uint64_t size,
             KURD_t& result,
             uint8_t align_log2=0
         );
         phyaddr_t get_base();
+        uint8_t get_order();
         void top_fold();
         KURD_t free_buddy_way(
             phyaddr_t base,
@@ -266,17 +264,13 @@ public:
 #endif
         bool is_addr_belong_to_this_BCB(phyaddr_t addr);
         bool can_alloc(uint8_t order);
-        spinlock_cpp_t lock;
+        spintrylock_cpp_t lock;
         ~BuddyControlBlock() = default;
     };
     friend KspacePageTable;
-    static BuddyControlBlock* first_BCB; // 通过 pages_alloc 在 align_log2=30 时分配一个 1GB 页，哪个页用来初始化这个
-    static uint64_t main_BCB_count;
-    static BuddyControlBlock*mainBCBS;
-    static uint64_t vice_BCB_count;
-    static BuddyControlBlock* vice_BCBS;
-    
-    // second_stage后才FPA层级per_cpu的staisitics才会上线进行统计
+    static uint64_t BCB_count;
+    static BuddyControlBlock*BCBS;
+    static all_pages_arr::free_segs_t* memory_crumbs;
     static fpa_stats*statistics_arr;
     static uint64_t*processors_preffered_bcb_idx;//也是只有后
 public:
@@ -292,15 +286,22 @@ public:
         .strategy = INIT_STRATEGY_MATCH_THREAD,
         .thread_coefficient = 1
     };
-    
+    private:
+    static KURD_t default_kurd();
+    static KURD_t default_success();
+    static KURD_t default_error();
+    static KURD_t default_fatal();
+    static KURD_t default_retry();
+    public:
     static KURD_t second_stage(strategy_t strategy);
-    static KURD_t Init();
-    static Alloc_result alloc(uint64_t size, buddy_alloc_params params,page_state_t interval_type);//params只有在
+    static KURD_t Init(strategy_t strategy,loaded_VM_interval* VM_intervals_bcbs_bitmap);
+    static all_pages_arr::free_segs_t* get_memory_crumbs();
+    static phyaddr_t alloc(uint64_t size, buddy_alloc_params params,page_state_t interval_type,KURD_t&kurd);//params只有在
     static KURD_t free(phyaddr_t base, uint64_t size);
     static fpa_stats get_fpa_stats();//当前本地 CPU 的统计数据，必须在 second_stage 初始化完成后才可以调用，否则行为未定义
     static fpa_stats get_fpa_stats(uint64_t pid);//pid 为处理器 id，必须在 second_stage 初始化完成后才可以调用，否则行为未定义，不提供锁保护
     static fpa_stats get_fpa_stats_all();//所有统计信息的总计，除 bcb_scan_max 是取最大，其他字段是求和，不在锁保护下
-    
+    static constexpr uint64_t INVALID_ALLOC_BASE = ~0ULL;
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();
 };

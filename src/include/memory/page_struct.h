@@ -7,11 +7,7 @@ enum class page_state_t : uint8_t {
     kernel_anonymous = 2, 
     user_file = 3, 
     user_anonymous = 4, 
-    dma = 5, 
-    uefi_runtime = 6,
-    mmio = 7,
-    acpi_tables = 8,
-    acpi_nvs = 9,
+    dma = 5,
     kernel_pinned = 10,
     reserved = 63
 };
@@ -28,7 +24,6 @@ struct page{
         uint32_t raw;
         struct {
             uint32_t is_skipped:1;
-            uint32_t is_allocateble:1;
         }bitfield;
     }page_flags;
 

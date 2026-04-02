@@ -128,3 +128,4 @@ class APIC_table_analyzer {
     ~APIC_table_analyzer();
 };
 extern APIC_table_analyzer*gAnalyzer;
+extern uint32_t logical_processor_count;

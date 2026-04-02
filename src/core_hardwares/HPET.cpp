@@ -50,10 +50,6 @@ KURD_t HPET_driver_only_read_time_stamp::second_stage_init()
             return fail;
         }
     //先找物理页框系统注册 mmio 物理页
-    page&hpet=all_pages_arr::mem_map[table->Base_Address>>12];
-    hpet.head.type=static_cast<uint64_t>(page_state_t::mmio);
-    hpet.refcount=1;
-    hpet.head.ptr=((uint64_t)this>>4);
     pgaccess access=KspacePageTable::PG_RW;
     access.cache_strategy=UC;
     this->virt_reg_base= kspace_vm_table->alloc_available_space(4096,0);

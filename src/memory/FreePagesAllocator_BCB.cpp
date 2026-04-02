@@ -7,7 +7,6 @@ bool FreePagesAllocator::BuddyControlBlock::is_addr_belong_to_this_BCB_no_lock(p
 {
     return (addr>=this->base) && (addr<(this->base+(1ull<<(max_supprt_order+12))));
 }
-FreePagesAllocator::BuddyControlBlock*FreePagesAllocator::first_BCB;
 KURD_t FreePagesAllocator::BuddyControlBlock::default_success()
 {
     KURD_t kurd=default_kurd();
@@ -25,14 +24,10 @@ bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
     }
     return false;
 }
-bool FreePagesAllocator::BuddyControlBlock::is_bcb_avaliable()
+void FreePagesAllocator::BuddyControlBlock::corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr)
 {
-    return !lock.is_locked();
-}
-void FreePagesAllocator::BuddyControlBlock::first_bcb_specified_init()
-{
-    order_freepage_existency_bitmaps=new mixed_bitmap_t(1ull<<(max_supprt_order+1));
-    order_freepage_existency_bitmaps->first_bcb_specified_init();
+    order_freepage_existency_bitmaps=new mixed_bitmap_t(1ull<<(max_supprt_order+1), bitmap_base_addr);
+    order_freepage_existency_bitmaps->mixedbitmap_base_specify(bitmap_base_addr);
     order_bases[0]=0;
     for(uint8_t order=0;order<max_supprt_order;order++){
         order_bases[order+1]=order_bases[order]+(1ULL<<(max_supprt_order-order));
@@ -49,6 +44,10 @@ void FreePagesAllocator::BuddyControlBlock::first_bcb_specified_init()
         return replay_kurd;
     }
     #endif
+}
+uint8_t FreePagesAllocator::BuddyControlBlock::get_order()
+{
+    return this->max_supprt_order;
 }
 KURD_t FreePagesAllocator::BuddyControlBlock::default_fatal()
 {
@@ -387,35 +386,7 @@ FreePagesAllocator::BuddyControlBlock::BuddyControlBlock(phyaddr_t base, uint8_t
 FreePagesAllocator::BuddyControlBlock::BuddyControlBlock()
 {
 }
-KURD_t FreePagesAllocator::BuddyControlBlock::second_stage_init()
-{
 
-    KURD_t success=default_success();
-    KURD_t error=default_error();
-    KURD_t fatal=default_fatal();
-    KURD_t contain=KURD_t();
-    success.event_code=MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_INIT;
-    error.event_code=MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_INIT;
-    fatal.event_code=MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_INIT;
-    order_freepage_existency_bitmaps=new mixed_bitmap_t(1ULL<<(max_supprt_order+1));
-    contain=order_freepage_existency_bitmaps->second_stage_init();
-    if(contain.result!=result_code::SUCCESS)return contain;
-    order_bases[0]=0;
-    for(uint8_t order=0;order<max_supprt_order;order++){
-        order_bases[order+1]=order_bases[order]+(1ULL<<(max_supprt_order-order));
-    }
-    #ifdef REPALY_MODE
-    replay_internal_init();
-    #endif
-    free_page_without_merge(0,max_supprt_order);
-    #ifdef REPALY_MODE
-    KURD_t replay_kurd = replay_validate_tree_no_lock("second_stage_init");
-    if (!success_all_kurd(replay_kurd)) {
-        return replay_kurd;
-    }
-    #endif
-    return contain;
-}
 void FreePagesAllocator::BuddyControlBlock::free_page_without_merge(uint64_t in_bcb_idx, uint8_t order)
 {
     order_freepage_existency_bitmaps->bit_set(order_bases[order]+in_bcb_idx,true);
@@ -854,37 +825,25 @@ void FreePagesAllocator::print_all_bcb_statistics()
     bsp_kout << "============================================" << kendl;
     bsp_kout << "[FreePagesAllocator - All BCB Statistics]" << kendl;
     bsp_kout << "============================================" << kendl;
-    
-    // 打印 main_BCBS 数组中每个 BCB 的统计信息
-    if (mainBCBS != nullptr && main_BCB_count > 0) {
+
+    if (BCBS == nullptr || BCB_count == 0) {
+        bsp_kout << "[INFO] BCBS is empty or not initialized, skipping..." << kendl;
+        bsp_kout << "============================================" << kendl;
+        bsp_kout << "[All BCB Statistics Print Complete]" << kendl;
+        bsp_kout << "============================================" << kendl;
         bsp_kout << kendl;
-        bsp_kout << ">>> [main_BCBS Array Statistics] <<<" << kendl;
-        bsp_kout << "Total main_BCB count: " << main_BCB_count << kendl;
-        
-        for (uint64_t i = 0; i < main_BCB_count; i++) {
-            bsp_kout << kendl;
-            bsp_kout << "--- main_BCBS[" << i << "] ---" << kendl;
-            mainBCBS[i].print_all_statistics();
-        }
-    } else {
-        bsp_kout << "[INFO] main_BCBS is empty or not initialized, skipping..." << kendl;
+        return;
     }
-    
-    // 打印 vice_BCBS 数组中每个 BCB 的统计信息
-    if (vice_BCBS != nullptr && vice_BCB_count > 0) {
+
+    bsp_kout << kendl;
+    bsp_kout << ">>> [BCBS Array Statistics] <<<" << kendl;
+    bsp_kout << "Total BCB count: " << BCB_count << kendl;
+    for (uint64_t i = 0; i < BCB_count; ++i) {
         bsp_kout << kendl;
-        bsp_kout << ">>> [vice_BCBS Array Statistics] <<<" << kendl;
-        bsp_kout << "Total vice_BCB count: " << vice_BCB_count << kendl;
-        
-        for (uint64_t i = 0; i < vice_BCB_count; i++) {
-            bsp_kout << kendl;
-            bsp_kout << "--- vice_BCBS[" << i << "] ---" << kendl;
-            vice_BCBS[i].print_all_statistics();
-        }
-    } else {
-        bsp_kout << "[INFO] vice_BCBS is empty or not initialized, skipping..." << kendl;
+        bsp_kout << "--- BCBS[" << i << "] ---" << kendl;
+        BCBS[i].print_all_statistics();
     }
-    
+
     bsp_kout << "============================================" << kendl;
     bsp_kout << "[All BCB Statistics Print Complete]" << kendl;
     bsp_kout << "============================================" << kendl;

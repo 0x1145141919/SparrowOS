@@ -68,6 +68,8 @@ assigned_processor_id:
     dd 0
 assigned_cr3:
     dd 0
+ap_tmp_gs_slots:
+    times 64 dq 0
 SECTION .ap_bootstrap_text
 
 AP_realmode_start:
@@ -118,16 +120,30 @@ bits 32
     or eax, (1<<11)|(1<<8)|1
     wrmsr
     mov eax, cr0
-    or eax, 0x80000000
+    or eax, (1<<31)|(1<<5)|(1<<16)
     mov cr0, eax
     jmp 0x18:.ap_start_64          ; 使用代码段选择子0x08 (代码段在GDT中的偏移)
 ; 32个中断处理例程
 
 .ap_start_64:
 bits 64
-    mov rdi, [assigned_processor_id]
-    mov rax, ap_init
     mov rsp, init_stack_end
+    mov rax, wrmsr_func
+    mov rdi, 0xC0000101
+    mov rsi, ap_tmp_gs_slots
+    call rax
+
+    mov rax, wrmsr_func
+    mov rdi, 0x277
+    mov rsi, 0x0407050600070106
+    call rax
+
+    mov rax, cr4
+    or rax, 0x668
+    mov cr4, rax
+    mov rdi, [assigned_processor_id]
+    mov [gs:8], rdi
+    mov rax, ap_init
     call rax
     ; 添加跳转指令，防止执行下面的数据部分
     
@@ -172,16 +188,21 @@ SECTION .ap_bootstrap_stack
 align 0x1000
 times 2048 dq 0
 init_stack_end:                         ; 为AP初始栈分配空间
+SECTION .data
+bsp_init_gs:
+    times 64 dq 0
 SECTION .text
 bits 64
 global secure_hlt
 global ap_final_work
 extern get_current_processor_rsp0
+extern wrmsr_func
 _kernel_Init:
-    mov ecx, 0x277
-    mov eax, 0x00070106
-    mov edx, 0x04070506
-    wrmsr
+    mov r15, rdi
+    mov rax, wrmsr_func
+    mov rdi, 0x277
+    mov rsi, 0x0407050600070106
+    call rax
     jmp .patch_bsp_idt
 .paging_done:
     mov ecx, 0xC0000080
@@ -208,7 +229,12 @@ _kernel_Init:
     call rax
     mov rax, ap_init_patch_idt_lm
     call rax
+    mov rax, wrmsr_func
+    mov rdi, 0xC0000101
+    mov rsi, bsp_init_gs
+    call rax
     mov rax, kernel_start
+    mov rdi, r15
     call  rax
     hlt
 
