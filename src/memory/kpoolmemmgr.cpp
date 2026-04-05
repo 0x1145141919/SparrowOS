@@ -7,10 +7,10 @@
 #include "memory/AddresSpace.h"
 #include "firmware/ACPI_APIC.h"
 #include "util/arch/x86-64/cpuid_intel.h"
-#include "abi/arch/x86-64/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "util/kptrace.h"
 #include "util/OS_utils.h"
-#include "Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #ifdef USER_MODE
 #include "stdlib.h"
 #include "kpoolmemmgr.h"

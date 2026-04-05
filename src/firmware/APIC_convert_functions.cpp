@@ -1,7 +1,7 @@
 #include "firmware/ACPI_APIC.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "util/OS_utils.h"
-#include "abi/arch/x86-64/msr_offsets_definitions.h"
+#include "arch/x86_64/abi/msr_offsets_definitions.h"
 namespace APICtb_analyzed_structures {
     processor_x64_lapic_struct xapic(ACPI_MADT::Local_APIC_entry* entry) {
         processor_x64_lapic_struct result;

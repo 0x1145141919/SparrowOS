@@ -1,7 +1,7 @@
 #pragma once
 #include "stdint.h"
 #include "memory/memory_base.h"
-#include "abi/arch/x86-64/pgtable45.h"
+#include "arch/x86_64/abi/pgtable45.h"
 #include <util/lock.h>
 #include "util/Ktemplats.h"
 #include "memmodule_err_definitions.h"

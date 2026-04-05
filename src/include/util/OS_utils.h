@@ -186,7 +186,7 @@ void atomic_write16_rdbk(volatile void *addr, uint16_t val);
 void atomic_write32_rdbk(volatile void *addr, uint32_t val);
 void atomic_write64_rdbk(volatile void *addr, uint64_t val);
 uint64_t align_down(uint64_t value, uint64_t alignment);
-
+bool is_aligned(uint64_t value, uint8_t align_log2);
 uint64_t format_num_to_buffer(char* out, uint64_t raw, num_format_t format, numer_system_select radix);
 #ifdef USER_MODE
 // 将内存描述符表从文本格式转换为gBaseMemMgr.Init函数所需的格式

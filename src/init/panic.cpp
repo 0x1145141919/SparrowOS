@@ -2,10 +2,10 @@
 #include "firmware/UefiRunTimeServices.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
-#include "abi/arch/x86-64/msr_offsets_definitions.h"
-#include "core_hardwares/lapic.h"
+#include "arch/x86_64/abi/msr_offsets_definitions.h"
+#include "arch/x86_64/core_hardwares/lapic.h"
 #include "linker_symbols.h"
-#include "Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #ifdef USER_MODE
 #include <unistd.h>

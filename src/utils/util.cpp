@@ -1,5 +1,5 @@
 #include "util/OS_utils.h"
-#include "abi/arch/x86-64/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "stdint.h"
 #include "memory/memory_base.h"
 #include "abi/os_error_definitions.h"
@@ -182,6 +182,10 @@ uintptr_t __stack_chk_guard = 0x595e9f73bb9247cf;
 extern "C" void __wrap___stack_chk_fail(void)
 {
     __kspace_stack_chk_fail();
+}
+bool is_aligned(uint64_t value, uint8_t align_log2)
+{
+    return !(value & ((1ull << align_log2) - 1));
 }
 /**
  * @brief 通用函数：将虚拟 - 物理地址区间按照页面大小拆分为多个条目

@@ -1,4 +1,4 @@
-#include "abi/arch/x86-64/pt_regs.h"
+#include "arch/x86_64/abi/pt_regs.h"
 
 namespace {
 [[noreturn]] void halt_forever()

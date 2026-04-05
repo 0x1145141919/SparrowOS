@@ -130,30 +130,6 @@ Mem_module/fast:
 	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/build
 .PHONY : Mem_module/fast
 
-AddresSpace.o: AddresSpace.cpp.o
-.PHONY : AddresSpace.o
-
-# target to build an object file
-AddresSpace.cpp.o:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/AddresSpace.cpp.o
-.PHONY : AddresSpace.cpp.o
-
-AddresSpace.i: AddresSpace.cpp.i
-.PHONY : AddresSpace.i
-
-# target to preprocess a source file
-AddresSpace.cpp.i:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/AddresSpace.cpp.i
-.PHONY : AddresSpace.cpp.i
-
-AddresSpace.s: AddresSpace.cpp.s
-.PHONY : AddresSpace.s
-
-# target to generate assembly for a file
-AddresSpace.cpp.s:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/AddresSpace.cpp.s
-.PHONY : AddresSpace.cpp.s
-
 FreePagesAllocator.o: FreePagesAllocator.cpp.o
 .PHONY : FreePagesAllocator.o
 
@@ -202,54 +178,6 @@ FreePagesAllocator_BCB.cpp.s:
 	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/FreePagesAllocator_BCB.cpp.s
 .PHONY : FreePagesAllocator_BCB.cpp.s
 
-KspacMapMgr.o: KspacMapMgr.cpp.o
-.PHONY : KspacMapMgr.o
-
-# target to build an object file
-KspacMapMgr.cpp.o:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr.cpp.o
-.PHONY : KspacMapMgr.cpp.o
-
-KspacMapMgr.i: KspacMapMgr.cpp.i
-.PHONY : KspacMapMgr.i
-
-# target to preprocess a source file
-KspacMapMgr.cpp.i:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr.cpp.i
-.PHONY : KspacMapMgr.cpp.i
-
-KspacMapMgr.s: KspacMapMgr.cpp.s
-.PHONY : KspacMapMgr.s
-
-# target to generate assembly for a file
-KspacMapMgr.cpp.s:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr.cpp.s
-.PHONY : KspacMapMgr.cpp.s
-
-KspacMapMgr_pagediretct_operate.o: KspacMapMgr_pagediretct_operate.cpp.o
-.PHONY : KspacMapMgr_pagediretct_operate.o
-
-# target to build an object file
-KspacMapMgr_pagediretct_operate.cpp.o:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr_pagediretct_operate.cpp.o
-.PHONY : KspacMapMgr_pagediretct_operate.cpp.o
-
-KspacMapMgr_pagediretct_operate.i: KspacMapMgr_pagediretct_operate.cpp.i
-.PHONY : KspacMapMgr_pagediretct_operate.i
-
-# target to preprocess a source file
-KspacMapMgr_pagediretct_operate.cpp.i:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr_pagediretct_operate.cpp.i
-.PHONY : KspacMapMgr_pagediretct_operate.cpp.i
-
-KspacMapMgr_pagediretct_operate.s: KspacMapMgr_pagediretct_operate.cpp.s
-.PHONY : KspacMapMgr_pagediretct_operate.s
-
-# target to generate assembly for a file
-KspacMapMgr_pagediretct_operate.cpp.s:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/KspacMapMgr_pagediretct_operate.cpp.s
-.PHONY : KspacMapMgr_pagediretct_operate.cpp.s
-
 PhyAddrAccessor.o: PhyAddrAccessor.cpp.o
 .PHONY : PhyAddrAccessor.o
 
@@ -297,6 +225,78 @@ all_pages_arr.s: all_pages_arr.cpp.s
 all_pages_arr.cpp.s:
 	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/all_pages_arr.cpp.s
 .PHONY : all_pages_arr.cpp.s
+
+arch/x86_64/AddresSpace.o: arch/x86_64/AddresSpace.cpp.o
+.PHONY : arch/x86_64/AddresSpace.o
+
+# target to build an object file
+arch/x86_64/AddresSpace.cpp.o:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/AddresSpace.cpp.o
+.PHONY : arch/x86_64/AddresSpace.cpp.o
+
+arch/x86_64/AddresSpace.i: arch/x86_64/AddresSpace.cpp.i
+.PHONY : arch/x86_64/AddresSpace.i
+
+# target to preprocess a source file
+arch/x86_64/AddresSpace.cpp.i:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/AddresSpace.cpp.i
+.PHONY : arch/x86_64/AddresSpace.cpp.i
+
+arch/x86_64/AddresSpace.s: arch/x86_64/AddresSpace.cpp.s
+.PHONY : arch/x86_64/AddresSpace.s
+
+# target to generate assembly for a file
+arch/x86_64/AddresSpace.cpp.s:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/AddresSpace.cpp.s
+.PHONY : arch/x86_64/AddresSpace.cpp.s
+
+arch/x86_64/KspacMapMgr.o: arch/x86_64/KspacMapMgr.cpp.o
+.PHONY : arch/x86_64/KspacMapMgr.o
+
+# target to build an object file
+arch/x86_64/KspacMapMgr.cpp.o:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr.cpp.o
+.PHONY : arch/x86_64/KspacMapMgr.cpp.o
+
+arch/x86_64/KspacMapMgr.i: arch/x86_64/KspacMapMgr.cpp.i
+.PHONY : arch/x86_64/KspacMapMgr.i
+
+# target to preprocess a source file
+arch/x86_64/KspacMapMgr.cpp.i:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr.cpp.i
+.PHONY : arch/x86_64/KspacMapMgr.cpp.i
+
+arch/x86_64/KspacMapMgr.s: arch/x86_64/KspacMapMgr.cpp.s
+.PHONY : arch/x86_64/KspacMapMgr.s
+
+# target to generate assembly for a file
+arch/x86_64/KspacMapMgr.cpp.s:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr.cpp.s
+.PHONY : arch/x86_64/KspacMapMgr.cpp.s
+
+arch/x86_64/KspacMapMgr_pagediretct_operate.o: arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.o
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.o
+
+# target to build an object file
+arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.o:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.o
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.o
+
+arch/x86_64/KspacMapMgr_pagediretct_operate.i: arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.i
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.i
+
+# target to preprocess a source file
+arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.i:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.i
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.i
+
+arch/x86_64/KspacMapMgr_pagediretct_operate.s: arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.s
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.s
+
+# target to generate assembly for a file
+arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.s:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.s
+.PHONY : arch/x86_64/KspacMapMgr_pagediretct_operate.cpp.s
 
 kpoolmemmgr.o: kpoolmemmgr.cpp.o
 .PHONY : kpoolmemmgr.o
@@ -403,27 +403,27 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... Mem_module"
-	@echo "... AddresSpace.o"
-	@echo "... AddresSpace.i"
-	@echo "... AddresSpace.s"
 	@echo "... FreePagesAllocator.o"
 	@echo "... FreePagesAllocator.i"
 	@echo "... FreePagesAllocator.s"
 	@echo "... FreePagesAllocator_BCB.o"
 	@echo "... FreePagesAllocator_BCB.i"
 	@echo "... FreePagesAllocator_BCB.s"
-	@echo "... KspacMapMgr.o"
-	@echo "... KspacMapMgr.i"
-	@echo "... KspacMapMgr.s"
-	@echo "... KspacMapMgr_pagediretct_operate.o"
-	@echo "... KspacMapMgr_pagediretct_operate.i"
-	@echo "... KspacMapMgr_pagediretct_operate.s"
 	@echo "... PhyAddrAccessor.o"
 	@echo "... PhyAddrAccessor.i"
 	@echo "... PhyAddrAccessor.s"
 	@echo "... all_pages_arr.o"
 	@echo "... all_pages_arr.i"
 	@echo "... all_pages_arr.s"
+	@echo "... arch/x86_64/AddresSpace.o"
+	@echo "... arch/x86_64/AddresSpace.i"
+	@echo "... arch/x86_64/AddresSpace.s"
+	@echo "... arch/x86_64/KspacMapMgr.o"
+	@echo "... arch/x86_64/KspacMapMgr.i"
+	@echo "... arch/x86_64/KspacMapMgr.s"
+	@echo "... arch/x86_64/KspacMapMgr_pagediretct_operate.o"
+	@echo "... arch/x86_64/KspacMapMgr_pagediretct_operate.i"
+	@echo "... arch/x86_64/KspacMapMgr_pagediretct_operate.s"
 	@echo "... kpoolmemmgr.o"
 	@echo "... kpoolmemmgr.i"
 	@echo "... kpoolmemmgr.s"

@@ -1,5 +1,5 @@
 #pragma once
-#include "abi/arch/x86-64/pt_regs.h"
+#include "arch/x86_64/abi/pt_regs.h"
 #include "abi/os_error_definitions.h"
 #include <cstdarg>
 enum kernel_state:uint8_t{

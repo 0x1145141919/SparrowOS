@@ -1,7 +1,7 @@
 #include "util/kout.h"
-#include "Interrupt_system/Interrupt.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "kcirclebufflogMgr.h"
-#include "core_hardwares/PortDriver.h"
+#include "arch/x86_64/core_hardwares/PortDriver.h"
 #include "util/OS_utils.h"
 #include "ktime.h"
 #include "panic.h"
@@ -635,17 +635,10 @@ kio::kout &kio::kout::operator<<(tmp_buff& tmp_buff)
             case tmp_buff::entry_type_t::time: {
                 statistics.calls_now_time++;
                 #ifdef KERNEL_MODE
-                if (ktime::hardware_time::get_if_hpet_initialized()) {
                     raw_puts_and_count("[", 1);
-                    miusecond_time_stamp_t stamp = ktime::hardware_time::get_stamp();
+                    miusecond_time_stamp_t stamp = ktime::get_microsecond_stamp();
                     print_numer(&stamp, DEC, 8, false);
                     raw_puts_and_count("]", 1);
-                } else {
-                    raw_puts_and_count("<", 1);
-                    miusecond_time_stamp_t stamp = ktime::hardware_time::get_stamp();
-                    print_numer(&stamp, DEC, 8, false);
-                    raw_puts_and_count(">", 1);
-                }
                 #endif
                 #ifdef USER_MODE
                 raw_puts_and_count("<tsc=", sizeof("<tsc=") - 1);
@@ -845,18 +838,10 @@ kio::kout &kio::kout::operator<<(now_time time)
     spinlock_interrupt_about_guard guard(lock);
     statistics.calls_now_time++;
     #ifdef KERNEL_MODE 
-    
-    if(ktime::hardware_time::get_if_hpet_initialized()){
-        raw_puts_and_count("[", 1);
-        miusecond_time_stamp_t stamp=ktime::hardware_time::get_stamp();
-        print_numer(&stamp, DEC, 8, false);
-        raw_puts_and_count("]", 1);
-    }else{
-        raw_puts_and_count("<", 1);
-        miusecond_time_stamp_t stamp=ktime::hardware_time::get_stamp();
-        print_numer(&stamp, DEC, 8, false);
-        raw_puts_and_count(">", 1);
-    }
+    raw_puts_and_count("<", 1);
+    miusecond_time_stamp_t stamp=ktime::get_microsecond_stamp();
+    print_numer(&stamp, DEC, 8, false);
+    raw_puts_and_count(">", 1);
     #endif
     #ifdef USER_MODE
     raw_puts_and_count("<tsc=", sizeof("<tsc=") - 1);

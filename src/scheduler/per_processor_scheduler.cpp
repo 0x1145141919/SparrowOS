@@ -1,12 +1,12 @@
 #include "Scheduler/per_processor_scheduler.h"
-#include "Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "memory/kpoolmemmgr.h"
 #include "memory/all_pages_arr.h"
 #include "memory/FreePagesAllocator.h"
 #include "util/kout.h"
 #include "firmware/ACPI_APIC.h"
-#include "Interrupt_system/Interrupt.h"
-#include "core_hardwares/lapic.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
+#include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
 task_pool::root_entry task_pool::root_table[root_table_entry_count];
@@ -415,7 +415,7 @@ void per_processor_scheduler::sleep_tasks_wake()
     int arr_len = 0;
     task* arr[arr_len_max];
     ksetmem_8(arr,0,arr_len_max);
-    miusecond_time_stamp_t current_stamp=ktime::hardware_time::get_stamp();
+    miusecond_time_stamp_t current_stamp=ktime::get_microsecond_stamp();
     this->sched_lock.lock();
     for(;arr_len<arr_len_max;arr_len++){
         if(sleep_queue.empty())break;
@@ -468,7 +468,7 @@ void per_processor_scheduler::sched()
     to_run->task_lock.lock();
     to_run->set_running();
     to_run->set_belonged_processor_id(fast_get_processor_id());
-    to_run->lastest_run_stamp=ktime::hardware_time::get_stamp();
+    to_run->lastest_run_stamp=ktime::get_microsecond_stamp();
     to_run->task_lock.unlock();
     to_run->atomic_load();
 }

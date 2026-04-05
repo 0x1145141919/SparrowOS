@@ -1,7 +1,7 @@
 #include "util/kptrace.h"
 #include "util/kout.h"
 #include "abi/os_error_definitions.h"
-#include "abi/arch/x86-64/pt_regs.h"
+#include "arch/x86_64/abi/pt_regs.h"
 #include "abi/boot.h"
 #ifdef USER_MODE
 #include <dlfcn.h>

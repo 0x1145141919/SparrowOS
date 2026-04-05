@@ -4,6 +4,21 @@ namespace MAIN_FUNID{
     
 }
 inline void cpuid(uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
+class cpuid_tmp{
+    public:
+    uint32_t eax, ebx, ecx, edx;
+    cpuid_tmp(uint32_t main_leaf,uint32_t sub_leaf)
+    {
+        eax = main_leaf;
+        ecx = sub_leaf;
+        cpuid(&eax, &ebx, &ecx, &edx);
+    }
+    void update(uint32_t main_leaf,uint32_t sub_leaf){
+        eax = main_leaf;
+        ecx = sub_leaf;
+        cpuid(&eax, &ebx, &ecx, &edx);
+    }
+};
 extern "C" 
 {uint8_t query_apicid();
 uint32_t query_x2apicid();

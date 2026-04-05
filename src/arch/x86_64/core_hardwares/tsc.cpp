@@ -1,0 +1,38 @@
+#include "arch/x86_64/core_hardwares/tsc.h"
+#include "util/arch/x86-64/cpuid_intel.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "util/textConsole.h"
+#include "ktime.h"
+#include "util/kout.h"
+
+void tsc_regist()
+{
+    time_complex*complex=new time_complex;
+    gs_u64_write(TIME_COMPLEX_GS_INDEX,(uint64_t)complex);
+    complex->complex.is_valid=true;
+    complex->lapic_fs_per_cycle=0;
+    cpuid_tmp querier(0x80000007,0);
+    complex->complex.is_tsc_reliable=!!(querier.edx&(1<<8));
+    querier.update(1,0);
+    complex->complex.is_tsc_ddline_avaliabe=!!(querier.edx&(1<<24));
+    querier.update(0x15,0);
+    if(querier.eax){
+    uint64_t tsc_frequency=(uint64_t)querier.ecx*querier.ebx/querier.eax;
+    complex->complex.tsc_fs_per_cycle=((__uint128_t)1000000*FS_per_mius)/tsc_frequency;
+    }else{
+        uint64_t tsc_stamp1=rdtsc();
+        ktime::microsecond_polling_delay(10000);
+        uint64_t tsc_stamp2=rdtsc();
+        complex->complex.tsc_fs_per_cycle=((uint64_t)10000*FS_per_mius)/(tsc_stamp2-tsc_stamp1);
+    }
+    /*
+    // 打印 TSC 初始化信息
+    bsp_kout << "[INFO] TSC registration completed:\n";
+    bsp_kout.shift_hex();
+    bsp_kout << "  is_valid: " << (uint64_t)complex->complex.is_valid << "\n";
+    bsp_kout << "  is_tsc_reliable: " << (uint64_t)complex->complex.is_tsc_reliable << "\n";
+    bsp_kout << "  is_tsc_deadline_available: " << (uint64_t)complex->complex.is_tsc_ddline_avaliabe << "\n";
+    bsp_kout << "  tsc_fs_per_cycle: " << (uint64_t)complex->complex.tsc_fs_per_cycle << "\n";
+    bsp_kout << "  lapic_fs_per_cycle: " << (uint64_t)complex->lapic_fs_per_cycle << "\n";
+    bsp_kout.shift_dec();*/
+}

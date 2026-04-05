@@ -4,7 +4,7 @@
 #define LOADED_FILE_ENTRY_TYPE_ELF_REAL_LOAD 0x01
 #define LOADED_FILE_ENTRY_TYPE_BINARY 0x02
 #define LOADED_FILE_ENTRY_TYPE_ELF_NO_LOAD 0x03//不加载的elf文件，内核主体
-#define PASS_THROUGH_DEVICE_GRAPHICS_INFO 0x0001
+constexpr uint16_t PASS_THROUGH_DEVICE_GRAPHICS_INFO =0x0001;
 struct pass_through_device_info {
     uint16_t device_info;
     void* specify_data;
@@ -86,7 +86,7 @@ constexpr uint32_t VM_ID_UP_KSPACE_PDPT = 0x2001;
 constexpr uint32_t VM_ID_GRAPHIC_BUFFER = 0x2002;
 constexpr uint64_t UP_KSPACE_PDPT_SIZE = 1 * 1024 * 1024;     // 1MB
 constexpr uint8_t UP_KSPACE_PDPT_ALIGN_LOG2 = 12;             // 4KB 对齐
-
+constexpr uint32_t VM_ID_HPET_MMIO = 0x2003;
 
 
 struct init_to_kernel_info {

@@ -25,7 +25,7 @@ set(CMAKE_ASM_NASM_SOURCE_FILE_EXTENSIONS asm)  # 关联 .asm 后缀
 
 # 设置 NASM 编译器和选项
 set(CMAKE_ASM_NASM_COMPILER ${NASM_EXECUTABLE})
-set(CMAKE_ASM_NASM_COMPILE_OBJECT "<CMAKE_ASM_NASM_COMPILER> <FLAGS> -I${CMAKE_CURRENT_SOURCE_DIR}/src/ -gdwarf -o <OBJECT> <SOURCE>")
+set(CMAKE_ASM_NASM_COMPILE_OBJECT "<CMAKE_ASM_NASM_COMPILER> <FLAGS> -I${CMAKE_CURRENT_SOURCE_DIR}/src/ -I${CMAKE_CURRENT_SOURCE_DIR}/src/arch/x86_64/boot/ -gdwarf -o <OBJECT> <SOURCE>")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcmodel=large")
 # 根据构建类型设置不同的编译选项
@@ -55,10 +55,10 @@ set(SRC_COMMON
     src/utils/lock.cpp
     src/utils/RB_btree.cpp
     src/utils/kout.cpp
-    src/utils/intel_cpuid.cpp
-    src/panic.cpp
+    src/arch/x86_64/panic.cpp
     src/utils/kptrace.cpp
     src/utils/tmp_buff.cpp
+    src/utils/arch/x86_64/intel_cpuid.cpp
 )
 
 # 添加gnu-efi作为外部项目
@@ -102,32 +102,33 @@ add_executable(symbols_dumper
 )
 # 内核可执行文件
 add_executable(kernel.elf
-    src/panic.cpp
+    src/arch/x86_64/panic.cpp
     src/firmware/UefiRunTimeServices.cpp
-    src/kinit.cpp
+    src/arch/x86_64/boot/kinit.cpp
     src/utils/kcirclebufflogMgr.cpp
-    src/kernel_entry.asm
-    src/ap_init_longmode_exceptions.asm
-    src/ap_init_pemode_exceptions.asm
-    src/ap_init_realmode_exceptions.asm
-    src/panic_processor_resources_shift.asm
+    src/arch/x86_64/boot/kernel_entry.asm
+    src/arch/x86_64/boot/ap_init_longmode_exceptions.asm
+    src/arch/x86_64/boot/ap_init_pemode_exceptions.asm
+    src/arch/x86_64/boot/ap_init_realmode_exceptions.asm
+    src/arch/x86_64/panic_processor_resources_shift.asm
     src/utils/int128_div.cpp
-    src/core_hardwares/lapic.cpp
-    src/Interrupts/exceptions_handler.cpp
-    src/Processor/local_processor_manage.cpp
+    src/arch/x86_64/core_hardwares/lapic.cpp
+    src/arch/x86_64/core_hardwares/tsc.cpp
+    src/arch/x86_64/Interrupts/exceptions_handler.cpp
+    src/arch/x86_64/Processor/local_processor_manage.cpp
     src/firmware/APIC_convert_functions.cpp
     src/firmware/APIC_table_analyzer.cpp
-    src/Interrupts/Sysdef_exception_entries.asm
-    src/core_hardwares/HPET.cpp
-    src/time.cpp
+    src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm
+    src/arch/x86_64/core_hardwares/HPET.cpp
+    src/arch/x86_64/time.cpp
     src/utils/textConsole.cpp
-    src/core_hardwares/primitive_gop.cpp
+    src/arch/x86_64/core_hardwares/primitive_gop.cpp
     src/firmware/acpimgr.cpp
-    src/Processor/APs_bringup.cpp  
-    src/Processor/early_bsp_resources.cpp  
-    src/Processor/fixed_interrupt_resources.cpp  
-    src/Processor/runtime_processor_regist.asm
-    src/core_hardwares/PortDriver.cpp
+    src/arch/x86_64/Processor/APs_bringup.cpp  
+    src/arch/x86_64/Processor/early_bsp_resources.cpp  
+    src/arch/x86_64/Processor/fixed_interrupt_resources.cpp  
+    src/arch/x86_64/Processor/runtime_processor_regist.asm
+    src/arch/x86_64/core_hardwares/PortDriver.cpp
     src/scheduler/per_processor_scheduler.cpp
     src/scheduler/kthread_interfaces.cpp
     src/scheduler/yield.asm
@@ -151,11 +152,11 @@ add_executable(init.elf
     src/utils/util.cpp
     src/init/util/bitmap.cpp
     src/utils/lock.cpp
-    src/Processor/early_bsp_resources.cpp 
+    src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/os_error_definitions.cpp
     src/init/info_fill.cpp
     src/init/mem_loads.cpp
-    src/utils/intel_cpuid.cpp
+    src/utils/arch/x86_64/intel_cpuid.cpp
 )
 add_executable(BCB_test
     src/tests/BCB_test.cpp

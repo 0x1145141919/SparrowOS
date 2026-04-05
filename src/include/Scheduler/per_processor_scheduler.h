@@ -1,7 +1,7 @@
 #pragma once
-#include "abi/arch/x86-64/GS_Slots_index_definitions.h"
-#include "abi/arch/x86-64/pt_regs.h"
-#include "abi/arch/x86-64/base.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/pt_regs.h"
+#include "arch/x86_64/abi/base.h"
 #include "abi/os_error_definitions.h"
 #include "util/Ktemplats.h"
 #include "util/huge_bitmap.h"

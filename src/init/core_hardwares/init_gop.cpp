@@ -1,12 +1,76 @@
-#include "core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "util/OS_utils.h"
-
+#include "arch/x86_64/init/page_table.h"
+#include "memory/AddresSpace.h"
 namespace {
 static constexpr uint64_t kPageSize = 0x1000;
 
 static bool is_4k_aligned(uint64_t value) {
     return (value & (kPageSize - 1)) == 0;
 }
+}
+int modify_access(phymem_segment seg, pgaccess access)
+{
+    constexpr uint64_t PTE_manage_size_log2 = 12;
+    constexpr uint64_t PDPTE_manage_size_log2 = 30;
+    constexpr uint64_t LOW_4GB_END = 0x100000000ULL;
+    cache_table_idx_struct_t cache_table_idx=cache_strategy_to_idx(access.cache_strategy);
+    auto modify_pte=[cache_table_idx](PTEEntry& pte,pgaccess access){
+        pte.RWbit=access.is_writeable;
+        pte.EXECUTE_DENY=!access.is_executable;
+        pte.KERNELbit=!access.is_kernel;
+        pte.global=access.is_global;
+        pte.PWT=cache_table_idx.PWT;
+        pte.PCD=cache_table_idx.PCD;
+        pte.PAT=cache_table_idx.PAT;
+    };
+    auto modify_pdpte=[cache_table_idx](PDPTEEntry1GB&pdpte,pgaccess access){
+        pdpte.RWbit=access.is_writeable;
+        pdpte.EXECUTE_DENY=!access.is_executable;
+        pdpte.KERNELbit=!access.is_kernel;
+        pdpte.global=access.is_global;
+        pdpte.PWT=cache_table_idx.PWT;
+        pdpte.PCD=cache_table_idx.PCD;
+        pdpte.PAT=cache_table_idx.PAT;
+    };
+    auto invalidate_tlb = [](uint64_t vaddr) {
+        asm volatile("invlpg (%0)" :: "r"(vaddr) : "memory");
+    };
+    if (seg.size == 0) {
+        return OS_INVALID_PARAMETER;
+    }
+    const uint64_t seg_end = seg.start + seg.size;
+    if (seg_end < seg.start) {
+        return OS_INVALID_PARAMETER;
+    }
+    if(seg.start>=0x100000000){
+        if(is_aligned(seg.start,PDPTE_manage_size_log2)&&is_aligned(seg.size,PDPTE_manage_size_log2)){
+            const uint64_t start_idx = seg.start >> PDPTE_manage_size_log2;
+            const uint64_t count = seg.size >> PDPTE_manage_size_log2;
+            for (uint64_t i = 0; i < count; ++i) {
+                modify_pdpte(pdpte_arr[start_idx + i].pdpte1GB, access);
+                invalidate_tlb(seg.start + (i << PDPTE_manage_size_log2));
+            }
+            return OS_SUCCESS;
+        }else{
+            return OS_INVALID_PARAMETER;
+        }
+    }else{
+        if(is_aligned(seg.start,PTE_manage_size_log2)&&is_aligned(seg.size,PTE_manage_size_log2)){
+            if (seg_end > LOW_4GB_END) {
+                return OS_INVALID_PARAMETER;
+            }
+            const uint64_t start_idx = seg.start >> PTE_manage_size_log2;
+            const uint64_t count = seg.size >> PTE_manage_size_log2;
+            for (uint64_t i = 0; i < count; ++i) {
+                modify_pte(_low_4gb_pte_arr[start_idx + i].pte, access);
+                invalidate_tlb(seg.start + (i << PTE_manage_size_log2));
+            }
+            return OS_SUCCESS;
+        }else{
+            return OS_INVALID_PARAMETER;
+        }
+    }
 }
 
 InitGop::Info InitGop::s_info = {};
@@ -49,30 +113,31 @@ KURD_t InitGop::default_fatal()
 
 KURD_t InitGop::Init(GlobalBasicGraphicInfoType* metainf)
 {
+    using namespace COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS;
     KURD_t success = default_success();
     KURD_t fail = default_fail();
     success.event_code = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT;
     fail.event_code = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT;
 
     if (metainf == nullptr) {
-        fail.reason = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS::FAIL_REASONS::PARAM_METAINF_NULLPTR;
+        fail.reason = FAIL_REASONS::PARAM_METAINF_NULLPTR;
         return fail;
     }
     if (s_ready) {
-        fail.reason = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS::FAIL_REASONS::ALLREADE_INIT;
+        fail.reason = FAIL_REASONS::ALLREADE_INIT;
         return fail;
     }
     if (metainf->FrameBufferBase == 0 || metainf->FrameBufferSize == 0) {
-        fail.reason = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS::FAIL_REASONS::BAD_PARAM;
+        fail.reason = FAIL_REASONS::BAD_PARAM;
         return fail;
     }
     if (!is_4k_aligned(static_cast<uint64_t>(metainf->FrameBufferBase)) ||
         !is_4k_aligned(static_cast<uint64_t>(metainf->FrameBufferSize))) {
-        fail.reason = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS::FAIL_REASONS::BAD_PARAM;
+        fail.reason = FAIL_REASONS::BAD_PARAM;
         return fail;
     }
     if (metainf->pixelFormat != PixelBlueGreenRedReserved8BitPerColor) {
-        fail.reason = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS::FAIL_REASONS::BAD_PARAM;
+        fail.reason = FAIL_REASONS::BAD_PARAM;
         return fail;
     }
 
@@ -84,6 +149,23 @@ KURD_t InitGop::Init(GlobalBasicGraphicInfoType* metainf)
     s_info.fb_paddr = metainf->FrameBufferBase;
     s_info.fb_vaddr = metainf->FrameBufferBase;
     s_ready = true;
+    phymem_segment seg = {
+        .start = metainf->FrameBufferBase,
+        .size = align_up(metainf->FrameBufferSize,4096),
+    };
+    pgaccess access={
+        .is_kernel=1,
+        .is_writeable=1,
+        .is_readable=1,
+        .is_executable=0,
+        .is_global=1,
+        .cache_strategy=static_cast<cache_strategy_t>(WC)
+    };
+    int result = modify_access(seg, access);
+    if (result != OS_SUCCESS) {
+        fail.reason = FAIL_REASONS::MODIFY_ACCESS_FAILED;
+        return fail;
+    }
 
     return success;
 }

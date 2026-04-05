@@ -7,7 +7,7 @@
 #include "../init/include/panic.h"
 #include "../init/include/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
-#include "core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "abi/boot.h"
 static const char* memory_type_to_string(PHY_MEM_TYPE type) {
     switch (type) {

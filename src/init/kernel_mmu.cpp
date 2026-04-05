@@ -1,6 +1,6 @@
 #include "../init/include/kernel_mmu.h"
 #include "../init/include/pages_alloc.h"
-#include "abi/arch/x86-64/msr_offsets_definitions.h"
+#include "arch/x86_64/abi/msr_offsets_definitions.h"
 // 类型别名，简化嵌套类型名的使用
 using pages_info_t = seg_to_pages_info_pakage_t::pages_info_t;
 

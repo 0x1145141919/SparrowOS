@@ -7,7 +7,7 @@
 #include "../init/include/panic.h"
 #include "../init/include/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
-#include "core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "abi/boot.h"
 extern init_to_kernel_info* build_init_to_kernel_info(
     kernel_mmu* kmmu,
@@ -17,7 +17,7 @@ extern init_to_kernel_info* build_init_to_kernel_info(
 extern int setup_low_identity_maps(kernel_mmu* kmmu, BootInfoHeader* header);
 extern int map_symbols_file(kernel_mmu* kmmu, load_kernel_info_pack& pak, loaded_file_entry* symbol_file);
 extern int map_gop_buffer(kernel_mmu* kmmu, load_kernel_info_pack& pak, BootInfoHeader* header);
-
+extern int map_and_init_hpet(kernel_mmu* kmmu, load_kernel_info_pack& pak, EFI_SYSTEM_TABLE* gST);
 
 
 extern "C" void shift_kernel(init_to_kernel_info*info,vaddr_t stack_bottom,vaddr_t entry_vaddr);
@@ -128,6 +128,11 @@ extern "C" void init(BootInfoHeader* header)
     result = map_gop_buffer(kmmu, pak, header);
     if(result!=OS_SUCCESS){
         bsp_kout<< "[ERROR] Failed to setup GOP buffer mapping, error code: " << result << kendl;
+        asm volatile("hlt");
+    }
+    result =map_and_init_hpet(kmmu, pak, (EFI_SYSTEM_TABLE*)header->gST_ptr);
+    if(result!=OS_SUCCESS){ 
+        bsp_kout<< "[ERROR] Failed to setup HPET mapping and initialization, error code: " << result << kendl;
         asm volatile("hlt");
     }
     init_to_kernel_info*info = build_init_to_kernel_info(kmmu, header, symbols_entry, pak);

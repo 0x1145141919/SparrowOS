@@ -1,8 +1,8 @@
 #include "Scheduler/per_processor_scheduler.h"
 #include "panic.h"
-#include "core_hardwares/lapic.h"
-#include "Interrupt_system/loacl_processor.h"
-#include "abi/arch/x86-64/GS_Slots_index_definitions.h"
+#include "arch/x86_64/core_hardwares/lapic.h"
+#include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "util/kout.h"
 #include "memory/FreePagesAllocator.h"
@@ -147,7 +147,7 @@ void kthread_yield_true_enter(x64_basic_context*context)
         interrupted_task->task_lock.unlock();
         panic_with_kurd(running_task_kurd);
     }
-    interrupted_task->lastest_span_length=ktime::hardware_time::get_stamp()-interrupted_task->lastest_run_stamp;
+    interrupted_task->lastest_span_length=ktime::get_microsecond_stamp()-interrupted_task->lastest_run_stamp;
     interrupted_task->accumulated_time+=interrupted_task->lastest_span_length;
     if(interrupted_task->get_task_type()!=task_type_t::kthreadm){
         interrupted_task->task_lock.unlock();
@@ -207,7 +207,7 @@ void timer_cpp_enter(x64_Interrupt_saved_context_no_errcode *frame)
         panic_with_kurd(frame, running_task_kurd);
     }
     interrupted_task->task_lock.lock();
-    interrupted_task->lastest_span_length=ktime::hardware_time::get_stamp()-interrupted_task->lastest_run_stamp;
+    interrupted_task->lastest_span_length=ktime::get_microsecond_stamp()-interrupted_task->lastest_run_stamp;
     interrupted_task->accumulated_time+=interrupted_task->lastest_span_length;
     switch(interrupted_task->get_task_type()){
         case task_type_t::kthreadm:
@@ -283,7 +283,7 @@ void timer_cpp_enter(x64_Interrupt_saved_context_no_errcode *frame)
     }
     scheduler.sched_lock.unlock();
     x2apic::x2apic_driver::write_eoi();
-    ktime::time_interrupt_generator::set_clock_by_offset(DEFALUT_TIMER_SPAN_MIUS);
+    ktime::heart_beat_alarm::set_clock_by_offset(DEFALUT_TIMER_SPAN_MIUS);
     scheduler.sleep_tasks_wake();
     scheduler.sched();
 }
@@ -300,7 +300,7 @@ void kthread_exit_cppenter(x64_basic_context*context)
         panic_with_kurd(running_task_kurd);
     }
     exit_task->task_lock.lock();
-    exit_task->lastest_span_length=ktime::hardware_time::get_stamp()-exit_task->lastest_run_stamp;
+    exit_task->lastest_span_length=ktime::get_microsecond_stamp()-exit_task->lastest_run_stamp;
     exit_task->accumulated_time+=exit_task->lastest_span_length;
     exit_task->context.kthread->regs=*context;
     uint64_t will=context->rdi;
@@ -393,7 +393,7 @@ void kthread_wait_cppenter(x64_basic_context *context)
         waited_task->task_lock.unlock();
         context->rax=will;
         waiter_task->task_lock.lock();
-        waiter_task->lastest_span_length=ktime::hardware_time::get_stamp()-waiter_task->lastest_run_stamp;
+        waiter_task->lastest_span_length=ktime::get_microsecond_stamp()-waiter_task->lastest_run_stamp;
     waiter_task->accumulated_time+=waiter_task->lastest_span_length;
     
     waiter_task->context.kthread->regs=*context;
@@ -425,7 +425,7 @@ void kthread_wait_cppenter(x64_basic_context *context)
         fatal.reason=Scheduler::self_scheduler_events::kthread_wait_results::fatal_reasons::bad_task_state;
         panic_with_kurd(fatal);
     }waiter_task->blocked_reason=wait_other_kthread;
-    waiter_task->lastest_span_length=ktime::hardware_time::get_stamp()-waiter_task->lastest_run_stamp;
+    waiter_task->lastest_span_length=ktime::get_microsecond_stamp()-waiter_task->lastest_run_stamp;
     waiter_task->accumulated_time+=waiter_task->lastest_span_length;
     
     waiter_task->context.kthread->regs=*context;
@@ -453,7 +453,7 @@ void kthread_self_blocked_cppenter(x64_basic_context* context)
         interrupted_task->task_lock.unlock();
         panic_with_kurd(running_task_kurd);
     }
-    interrupted_task->lastest_span_length=ktime::hardware_time::get_stamp()-interrupted_task->lastest_run_stamp;
+    interrupted_task->lastest_span_length=ktime::get_microsecond_stamp()-interrupted_task->lastest_run_stamp;
     interrupted_task->accumulated_time+=interrupted_task->lastest_span_length;
     if(interrupted_task->get_task_type()!=task_type_t::kthreadm){
         interrupted_task->task_lock.unlock();
@@ -549,7 +549,7 @@ void kthread_sleep_cppenter(x64_basic_context*context)
         sleeper_task->task_lock.unlock();
         panic_with_kurd(running_task_kurd);
     }
-    sleeper_task->lastest_span_length=ktime::hardware_time::get_stamp()-sleeper_task->lastest_run_stamp;
+    sleeper_task->lastest_span_length=ktime::get_microsecond_stamp()-sleeper_task->lastest_run_stamp;
     sleeper_task->accumulated_time+=sleeper_task->lastest_span_length;
     if(sleeper_task->get_task_type()!=task_type_t::kthreadm){
         sleeper_task->task_lock.unlock();
@@ -585,7 +585,7 @@ void kthread_sleep_cppenter(x64_basic_context*context)
         }
     }
     sleeper_task->blocked_reason = sleeping;
-    sleeper_task->sleep_wakeup_stamp=ktime::hardware_time::get_stamp()+context->rdi;
+    sleeper_task->sleep_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
     if(!sleeper_task->set_blocked()){
         sleeper_task->task_lock.unlock();
         panic_with_kurd(make_self_scheduler_fatal(

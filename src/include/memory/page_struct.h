@@ -41,5 +41,19 @@ struct page{
         }tranp;
     };
 };
+struct page_v2{
+    uint32_t refcount;
+    uint32_t map_count:24;
+    uint32_t is_skipped:1;
+    uint32_t page_flags_reserved:7;
+    uint64_t compressed_kptr:52;
+    uint64_t page_type:6;
+    uint64_t page_flags_reserved2:6;
+    union 
+    {
+        uint64_t raw;
+    }extra;  
+};
 void*ptr_dump(page*p);
 static_assert(sizeof(page)==16,"struct page size must be 16 bytes");
+static_assert(sizeof(page_v2)==24,"struct page_v2 size must be 16 bytes");

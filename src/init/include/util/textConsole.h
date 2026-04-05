@@ -1,6 +1,6 @@
 #pragma once
 #include "stdint.h"
-#include "core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop.h"
 struct TextCursor {
     int m;          // 列
     int n;          // 行
