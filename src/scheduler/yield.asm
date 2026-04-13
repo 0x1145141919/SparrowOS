@@ -15,7 +15,6 @@ atoimc_kthread_load:
     pop rdx
     pop rsi
     pop rdi
-    pop rbp
     pop r8
     pop r9
     pop r10
@@ -23,7 +22,8 @@ atoimc_kthread_load:
     pop r12
     pop r13
     pop r14
-    pop r15  
+    pop r15
+    pop rbp  
     iretq
 extern kthread_yield_true_enter
 extern get_scheduler_private_stack_top

@@ -1,6 +1,6 @@
 #include "memory/FreePagesAllocator.h"
 #include "memory/all_pages_arr.h"
-#include "firmware/ACPI_APIC.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "panic.h"
 #include "util/kout.h"
 #include "util/arch/x86-64/cpuid_intel.h"

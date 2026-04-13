@@ -14,6 +14,7 @@ constexpr const char* ACPI_DSDT_SIGNATURE = "DSDT";
 constexpr const char* ACPI_SSDT_SIGNATURE = "SSDT";
 constexpr const char* ACPI_MCFG_SIGNATURE = "MCFG";
 constexpr const char* ACPI_HPET_SIGNATURE = "HPET";
+constexpr const char* ACPI_DMAR_SIGNATURE = "DMAR";
 
 
 struct RSDP_struct{
@@ -146,7 +147,7 @@ static constexpr uint32_t DSDT_SIGNATURE_UINT32 = make_acpi_signature(ACPI_DSDT_
 static constexpr uint32_t SSDT_SIGNATURE_UINT32 = make_acpi_signature(ACPI_SSDT_SIGNATURE); // 'SSDT'
 static constexpr uint32_t MCFG_SIGNATURE_UINT32 = make_acpi_signature(ACPI_MCFG_SIGNATURE); // 'MCFG'
 static constexpr uint32_t HPET_SIGNATURE_UINT32 = make_acpi_signature(ACPI_HPET_SIGNATURE);
-
+static constexpr uint32_t DMAR_SIGNATURE_UINT32 = make_acpi_signature(ACPI_DMAR_SIGNATURE);
 class acpimgr_t {
 private:
     uint32_t vSSDT_OFFSET[40];
@@ -161,6 +162,7 @@ private:
     uint32_t DSDT_OFFSET;
     uint32_t MCFG_OFFSET;
     uint32_t HPET_OFFSET;
+    uint32_t DMAR_OFFSET;
     vaddr_t acpi_seg_vbase;
     uint64_t acpi_seg_size;
     phyaddr_t acpi_seg_pbase;   

@@ -27,149 +27,6 @@ Panic::Panic(){
 Panic::~Panic()
 {
 }
-
-
-
-
-
-panic_context::x64_context Panic::convert_to_panic_context(x64_Interrupt_saved_context_no_errcode *regs)
-{
-    panic_context::x64_context context{};
-    
-    // 直接从参数中复制已有寄存器值
-    context.rax = regs->rax;
-    context.rbx = regs->rbx;
-    context.rcx = regs->rcx;
-    context.rdx = regs->rdx;
-    context.rsi = regs->rsi;
-    context.rdi = regs->rdi;
-    context.r8 = regs->r8;
-    context.r9 = regs->r9;
-    context.r10 = regs->r10;
-    context.r11 = regs->r11;
-    context.r12 = regs->r12;
-    context.r13 = regs->r13;
-    context.r14 = regs->r14;
-    context.r15 = regs->r15;
-    context.rbp = regs->rbp;
-    context.rip = regs->rip;
-    context.cs = regs->cs;
-    context.rflags = regs->rflags;
-    context.rsp = regs->rsp;
-    context.ss = regs->ss;
-    
-    // 使用内联汇编获取其他寄存器值
-    uint16_t ds_val, es_val, fs_val, gs_val;
-    uint64_t rflags_full, cr0_val, cr2_val, cr3_val, cr4_val, efer_val;
-    uint64_t fs_base_val, gs_base_val;
-    
-    asm volatile("movw %%ds, %0" : "=r"(ds_val));
-    asm volatile("movw %%es, %0" : "=r"(es_val));
-    asm volatile("movw %%fs, %0" : "=r"(fs_val));
-    asm volatile("movw %%gs, %0" : "=r"(gs_val));
-    
-    asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
-    asm volatile("mov %%cr2, %0" : "=r"(cr2_val));
-    asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
-    asm volatile("mov %%cr4, %0" : "=r"(cr4_val));
-    
-    // 读取EFER MSR
-    efer_val = rdmsr(msr::IA32_EFER);
-    
-    // 读取FS/GS基址
-    fs_base_val = rdmsr(msr::syscall::IA32_FS_BASE);
-    gs_base_val = rdmsr(msr::syscall::IA32_GS_BASE);
-    
-    // 获取GDTR和IDTR
-    asm volatile("sgdt %0" : "=m"(context.gdtr));
-    asm volatile("sidt %0" : "=m"(context.idtr));
-    
-    // 设置获取的值
-    context.ds = ds_val;
-    context.es = es_val;
-    context.fs = fs_val;
-    context.gs = gs_val;
-    context.cr0 = cr0_val;
-    context.cr2 = cr2_val;
-    context.cr3 = cr3_val;
-    context.cr4 = cr4_val;
-    context.IA32_EFER = efer_val;
-    context.fs_base = fs_base_val;
-    context.gs_base = gs_base_val;
-    context.specific.is_hadware_interrupt = 0;
-    return context;
-}
-
-panic_context::x64_context Panic::convert_to_panic_context(x64_Interrupt_saved_context *regs, uint8_t vec_num)
-{
-    panic_context::x64_context context{};
-    
-    // 直接从参数中复制已有寄存器值
-    context.rax = regs->rax;
-    context.rbx = regs->rbx;
-    context.rcx = regs->rcx;
-    context.rdx = regs->rdx;
-    context.rsi = regs->rsi;
-    context.rdi = regs->rdi;
-    context.r8 = regs->r8;
-    context.r9 = regs->r9;
-    context.r10 = regs->r10;
-    context.r11 = regs->r11;
-    context.r12 = regs->r12;
-    context.r13 = regs->r13;
-    context.r14 = regs->r14;
-    context.r15 = regs->r15;
-    context.rbp = regs->rbp;
-    context.rip = regs->rip;
-    context.cs = regs->cs;
-    context.rflags = regs->rflags;
-    context.rsp = regs->rsp;
-    context.ss = regs->ss;
-    
-    // 使用内联汇编获取其他寄存器值
-    uint16_t ds_val, es_val, fs_val, gs_val;
-    uint64_t cr0_val, cr2_val, cr3_val, cr4_val, efer_val;
-    uint64_t fs_base_val, gs_base_val;
-    
-    asm volatile("movw %%ds, %0" : "=r"(ds_val));
-    asm volatile("movw %%es, %0" : "=r"(es_val));
-    asm volatile("movw %%fs, %0" : "=r"(fs_val));
-    asm volatile("movw %%gs, %0" : "=r"(gs_val));    
-    asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
-    asm volatile("mov %%cr2, %0" : "=r"(cr2_val));
-    asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
-    asm volatile("mov %%cr4, %0" : "=r"(cr4_val));
-    
-    // 读取EFER MSR
-    efer_val = rdmsr(msr::IA32_EFER);
-    
-    // 读取FS/GS基址
-    fs_base_val = rdmsr(msr::syscall::IA32_FS_BASE);
-    gs_base_val = rdmsr(msr::syscall::IA32_GS_BASE);
-    
-    // 获取GDTR和IDTR
-    asm volatile("sgdt %0" : "=m"(context.gdtr));
-    asm volatile("sidt %0" : "=m"(context.idtr));
-    
-    // 设置获取的值
-    context.ds = ds_val;
-    context.es = es_val;
-    context.fs = fs_val;
-    context.gs = gs_val;
-    context.cr0 = cr0_val;
-    context.cr2 = cr2_val;
-    context.cr3 = cr3_val;
-    context.cr4 = cr4_val;
-    context.IA32_EFER = efer_val;
-    context.fs_base = fs_base_val;
-    context.gs_base = gs_base_val;
-    
-    // 设置特定错误信息
-    context.specific.interrupt_vec_num = vec_num;
-    context.specific.hardware_errorcode= regs->errcode;
-    context.specific.is_hadware_interrupt = 1;
-    return context;
-}
 //首先是其它CPU冻结
 //其次是无条件切换CPU资源，使用BSP的EARLY_BOOT那一套
 //第三步是will_write_will控制下写遗言
@@ -199,7 +56,13 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     bsp_kout<<"PANIC: "<<now<<kendl;
     bsp_kout<<kurd<<kendl;
     if(message)bsp_kout<<message<<kendl;
-    if(context)dumpregisters(context);
+    if(context){dumpregisters(context);
+    symbol_entry *first_entry=ksymmanager::get_entry_near_addr(context->rip);
+    if(first_entry){
+        bsp_kout<<"Kernel panic at "<<first_entry->name<<" + "<<context->rip-first_entry->address<<kendl;
+    }
+    else_trace(context->rbp);
+    }
     asm volatile("cli");
     asm volatile("hlt");
 }
@@ -380,12 +243,6 @@ void Panic::dumpregisters(panic_context::x64_context* regs) {
     bsp_kout<< "GDTR: Limit=0x" << regs->gdtr.limit << ", Base=0x" << regs->gdtr.base << kendl;
     bsp_kout<< "IDTR: Limit=0x" << regs->idtr.limit << ", Base=0x" << regs->idtr.base << kendl;
     
-    // 如果是硬件中断，打印额外信息
-    if (regs->specific.is_hadware_interrupt) {
-        bsp_kout<< "Hardware Interrupt Information:" << kendl;
-        bsp_kout<< "Hardware Error Code: 0x" << regs->specific.hardware_errorcode << kendl;
-        bsp_kout<< "Interrupt Vector Number: 0x" << (uint32_t)regs->specific.interrupt_vec_num << kendl;
-    }
     
     bsp_kout<< "=====================================================" << kendl;
 }

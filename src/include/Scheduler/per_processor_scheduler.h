@@ -153,31 +153,6 @@ enum task_blocked_reason_t:uint8_t{
     no_job,
     wait_other_kthread
 };
-struct iret_complex_context{
-    uint64_t rip;
-    uint64_t cs;
-    uint64_t rflags;
-    uint64_t rsp;    // 长模式强制无条件压入
-    uint64_t ss;     // 长模式强制无条件压入
-};
-struct x64_basic_context{ //后续设计上只有这些寄存器被认为是属于内核上下文
-    uint64_t rax;
-    uint64_t rbx;
-    uint64_t rcx;
-    uint64_t rdx;
-    uint64_t rsi;
-    uint64_t rdi;
-    uint64_t rbp;
-    uint64_t r8;
-    uint64_t r9;
-    uint64_t r10;
-    uint64_t r11;
-    uint64_t r12;
-    uint64_t r13;
-    uint64_t r14;
-    uint64_t r15;
-    iret_complex_context iret_context;
-};
 namespace kthread_call_num{
     constexpr uint64_t exit=0;
     constexpr uint64_t sleep=1;
@@ -189,12 +164,12 @@ constexpr uint64_t INVALID_TID=~0ull;
 constexpr uint8_t DEFAULT_STACK_PG_COUNT=7;
 constexpr uint32_t DEFAULT_STACK_SIZE=DEFAULT_STACK_PG_COUNT*4096;
 struct kthread_context{
-    x64_basic_context regs;
+    x64_standard_context regs;
     vaddr_t stack_bottom;
     uint16_t stacksize;
 };
 struct userthread_context{
-    x64_basic_context regs;
+    x64_standard_context regs;
     //预留给cr3,pcid
     //预留给XSAVE等等
 };
@@ -320,16 +295,16 @@ extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 extern "C"{
     uint64_t create_kthread(void*(*entry)(void*),void*arg,KURD_t*out_kurd);
-    void kthread_yield_true_enter(x64_basic_context* context);
+    void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();
     void kthread_exit(uint64_t will);
     uint64_t kthread_wait(uint64_t tid);//注意，若对应的tid不存在返回~0ull
-    void kthread_wait_cppenter(x64_basic_context*context);
-    void kthread_exit_cppenter(x64_basic_context*context);
+    void kthread_wait_cppenter(x64_standard_context*context);
+    void kthread_exit_cppenter(x64_standard_context*context);
     void kthread_self_blocked(task_blocked_reason_t reason);
     void kthread_sleep(miusecond_time_stamp_t offset);
-    void kthread_sleep_cppenter(x64_basic_context* context);
-    void kthread_self_blocked_cppenter(x64_basic_context* context);
+    void kthread_sleep_cppenter(x64_standard_context* context);
+    void kthread_self_blocked_cppenter(x64_standard_context* context);
     uint64_t wakeup_thread(uint64_t tid);//返回的是KURD但是受限于abi，需要分析
 }

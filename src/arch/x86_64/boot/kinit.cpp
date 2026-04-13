@@ -26,7 +26,9 @@
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
-
+#include "arch/x86_64/core_hardwares/DMAR.h"
+#include "arch/x86_64/core_hardwares/ioapic.h"
+#include "arch/x86_64/core_hardwares/i8042.h"
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
 // 定义C++运行时需要的符号
@@ -50,7 +52,6 @@ extern "C" void delay(unsigned int milliseconds) {
 }
 EFI_TIME global_time;
 uint32_t efi_map_ver;
-
 void ipi_test(){
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<kendl;
@@ -81,22 +82,17 @@ uint64_t test_kthreads[test_kthread_count];
 
 void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
     (void)null;
-    for(uint64_t i = 0; i < test_kthread_count; i++){
-        KURD_t kurd = KURD_t();
-        test_kthreads[i] = create_kthread(Collatz_kthread, (void*)rdtsc(), &kurd);
-        if(error_kurd(kurd)){
-            bsp_kout << "create_kthread failed at index " << i << kendl;
-        }
+    KURD_t kurd = KURD_t();
+    while (true)
+    {
+        kthread_sleep(1000000);
     }
-    for(uint64_t i = 0; i < test_kthread_count; i++){
-        uint64_t loop_count = kthread_wait(test_kthreads[i]);
-        bsp_kout << "Collatz_kthread " << i << " end in processor " << loop_count << kendl;
-    }
-    bsp_kout << "[sched-test] all requested tests finished" << kendl;
+    
     return nullptr;
 }
 void create_first_kthread(){
     textconsole_GoP::RuntimeInitServiceThread();
+    serial_init_stage2();
     GlobalKernelStatus=SCHEDUL_READY;
     x2apic::x2apic_driver::broadcast_exself_fixed_ipi(ipi_test);
     KURD_t kurd=KURD_t();
@@ -208,7 +204,7 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;
         asm volatile("hlt");
     }
-    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::DEFAULT_THREAD,BCBs_bitmap);//传入一个loaded_VM_entry
+    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,BCBs_bitmap);//传入一个loaded_VM_entry
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
         asm volatile("hlt");
@@ -327,6 +323,9 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     asm volatile("sti");   
     //中断接管工作
     new(global_schedulers) per_processor_scheduler;
+    dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
+    main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
+    i8042_interrupt_enable();
     create_first_kthread();
 }
 extern "C" void ap_final_work();

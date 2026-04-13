@@ -147,6 +147,7 @@ extern "C" void init(BootInfoHeader* header)
         .size=0x4000,
     };
     kmmu->unmap(never_map_rigeon);
+    pak.stack_bottom-=0x1000;
     shift_kernel(info,pak.stack_bottom,pak.entry_vaddr);
 }
 

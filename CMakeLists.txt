@@ -123,6 +123,10 @@ add_executable(kernel.elf
     src/arch/x86_64/time.cpp
     src/utils/textConsole.cpp
     src/arch/x86_64/core_hardwares/primitive_gop.cpp
+    src/arch/x86_64/core_hardwares/DMAR.cpp
+    src/arch/x86_64/core_hardwares/i8042.cpp
+    src/arch/x86_64/core_hardwares/ioapic.cpp
+    src/arch/x86_64/core_hardwares/device_interrupt_handlers_bare_enter.asm
     src/firmware/acpimgr.cpp
     src/arch/x86_64/Processor/APs_bringup.cpp  
     src/arch/x86_64/Processor/early_bsp_resources.cpp  
@@ -181,6 +185,18 @@ add_executable(test_set_dump
 
 add_executable(operation_log_dump
     src/tests/operation_log_dump.cpp
+)
+
+add_executable(kspace_vm_table_test
+    src/tests/kspace_vm_table_test.cpp
+)
+target_include_directories(
+    kspace_vm_table_test PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/include"
+)
+target_compile_options(
+    kspace_vm_table_test PRIVATE
+    -DUSER_MODE
 )
 
 add_executable(bcb_replay
@@ -249,6 +265,26 @@ target_link_options(multhread PRIVATE -fsanitize=address)
 target_link_libraries(
     multhread PRIVATE
     pthread
+)
+
+add_executable(pcie_enumeration
+    src/tests/pcie_enumeration.cpp
+    src/arch/x86_64/core_hardwares/PCIe.cpp
+    src/memory/out_surfaces.cpp
+    ${SRC_COMMON}
+)
+target_include_directories(
+    pcie_enumeration PRIVATE
+    "/usr/include/efi"
+    "${CMAKE_SOURCE_DIR}/src/include"
+)
+target_compile_options(
+    pcie_enumeration PRIVATE
+    -DUSER_MODE
+)
+target_link_libraries(
+    pcie_enumeration PRIVATE
+    tinySTL
 )
 
 # AArch64 static cross-build target for multhread

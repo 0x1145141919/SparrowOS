@@ -278,15 +278,15 @@ per_processor_scheduler::per_processor_scheduler()
     }
     // Idle task must not be enqueued into ready_queue.
     kthread_context* idle_ctx = new kthread_context();
-    idle_ctx->regs.iret_context.cs = x64_local_processor::K_cs_idx<<3;
-    idle_ctx->regs.iret_context.ss = x64_local_processor::K_ds_ss_idx<<3;
-    idle_ctx->regs.iret_context.rip = (uint64_t)secure_hlt_wrapper;
+    idle_ctx->regs.iret_complex.cs = x64_local_processor::K_cs_idx<<3;
+    idle_ctx->regs.iret_complex.ss = x64_local_processor::K_ds_ss_idx<<3;
+    idle_ctx->regs.iret_complex.rip = (uint64_t)secure_hlt_wrapper;
     idle_ctx->regs.rsi = 0;
     idle_ctx->regs.rdi = 0;
     idle_ctx->stacksize = 0x1000;
     idle_ctx->stack_bottom = (uint64_t)stack_alloc(&kurd,1);
-    idle_ctx->regs.iret_context.rsp = idle_ctx->stack_bottom;
-    idle_ctx->regs.iret_context.rflags = INIT_DEFAULT_RFLAGS;
+    idle_ctx->regs.iret_complex.rsp = idle_ctx->stack_bottom;
+    idle_ctx->regs.iret_complex.rflags = INIT_DEFAULT_RFLAGS;
     if(error_kurd(kurd) || idle_ctx->stack_bottom == 0){
         Panic::panic(default_panic_behaviors_flags,"idle task stack alloc failed",nullptr,nullptr,kurd);
     }
@@ -320,7 +320,7 @@ static inline KURD_t make_self_scheduler_fatal(uint8_t event_code, uint16_t reas
     return set_fatal_result_level(kurd);
 }
 
-static inline void panic_with_kurd(const x64_Interrupt_saved_context_no_errcode *frame, KURD_t kurd)
+static inline void panic_with_kurd(x64_standard_context *frame, KURD_t kurd)
 {
     panic_info_inshort inshort{
         .is_bug = true,
@@ -329,9 +329,8 @@ static inline void panic_with_kurd(const x64_Interrupt_saved_context_no_errcode 
         .is_mem_corruption = false,
         .is_escalated = false
     };
-    panic_context::x64_context panic_ctx = Panic::convert_to_panic_context(
-        const_cast<x64_Interrupt_saved_context_no_errcode*>(frame)
-    );
+    panic_context::x64_context panic_ctx;
+    panic_frame(frame, &panic_ctx);
     Panic::panic(default_panic_behaviors_flags,
         nullptr,
         &panic_ctx,
@@ -357,33 +356,6 @@ static inline void panic_with_kurd(KURD_t kurd)
     );
 }
 
-static inline void convert_interrupt_no_err_to_basic(const x64_Interrupt_saved_context_no_errcode *frame,
-                                                     x64_basic_context *out)
-{
-    if (!frame || !out) {
-        return;
-    }
-    out->rax = frame->rax;
-    out->rbx = frame->rbx;
-    out->rcx = frame->rcx;
-    out->rdx = frame->rdx;
-    out->rsi = frame->rsi;
-    out->rdi = frame->rdi;
-    out->rbp = frame->rbp;
-    out->iret_context.rsp = frame->rsp;
-    out->r8 = frame->r8;
-    out->r9 = frame->r9;
-    out->r10 = frame->r10;
-    out->r11 = frame->r11;
-    out->r12 = frame->r12;
-    out->r13 = frame->r13;
-    out->r14 = frame->r14;
-    out->r15 = frame->r15;
-    out->iret_context.rip = frame->rip;
-    out->iret_context.rflags = frame->rflags;
-    out->iret_context.cs = frame->cs;
-    out->iret_context.ss = frame->ss;
-}
 } // namespace
 
 
@@ -520,7 +492,7 @@ uint32_t task::get_belonged_processor_id()
     return belonged_processor_id;
 }
 
-extern "C" void atoimc_kthread_load(x64_basic_context* context);
+extern "C" void atoimc_kthread_load(x64_standard_context* context);
 bool task::set_ready()
 {
     if(task_state==task_state_t::init ||

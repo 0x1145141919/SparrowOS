@@ -13,7 +13,7 @@
 #include "util/kptrace.h"
 #include "util/kout.h"
 #include "memory/init_memory_info.h"
-#include "firmware/ACPI_APIC.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
 #ifdef USER_MODE
 #include <elf.h>
 #include <stdio.h>

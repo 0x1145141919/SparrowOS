@@ -519,8 +519,9 @@ private:
                 if (is_red(sibling)) {
                     sibling->is_red = false;
                     fixup_parent->is_red = true;
+                    Node*& parent_slot = parent_link(fixup_parent);
                     Node* new_subroot = rotate_left(fixup_parent);
-                    parent_link(fixup_parent) = new_subroot;
+                    parent_slot = new_subroot;
                     sibling = fixup_parent->right;
                 }
                 if (!sibling || (is_black(sibling->left) && is_black(sibling->right))) {
@@ -531,15 +532,17 @@ private:
                     if (is_black(sibling->right)) {
                         if (sibling->left) sibling->left->is_red = false;
                         sibling->is_red = true;
+                        Node*& parent_slot = parent_link(sibling);
                         Node* new_subroot = rotate_right(sibling);
-                        parent_link(sibling) = new_subroot;
+                        parent_slot = new_subroot;
                         sibling = fixup_parent->right;
                     }
                     sibling->is_red = fixup_parent->is_red;
                     fixup_parent->is_red = false;
                     if (sibling->right) sibling->right->is_red = false;
+                    Node*& parent_slot = parent_link(fixup_parent);
                     Node* new_subroot = rotate_left(fixup_parent);
-                    parent_link(fixup_parent) = new_subroot;
+                    parent_slot = new_subroot;
                     fixup_node = root;
                 }
             } else {
@@ -547,8 +550,9 @@ private:
                 if (is_red(sibling)) {
                     sibling->is_red = false;
                     fixup_parent->is_red = true;
+                    Node*& parent_slot = parent_link(fixup_parent);
                     Node* new_subroot = rotate_right(fixup_parent);
-                    parent_link(fixup_parent) = new_subroot;
+                    parent_slot = new_subroot;
                     sibling = fixup_parent->left;
                 }
                 if (!sibling || (is_black(sibling->left) && is_black(sibling->right))) {
@@ -559,15 +563,17 @@ private:
                     if (is_black(sibling->left)) {
                         if (sibling->right) sibling->right->is_red = false;
                         sibling->is_red = true;
+                        Node*& parent_slot = parent_link(sibling);
                         Node* new_subroot = rotate_left(sibling);
-                        parent_link(sibling) = new_subroot;
+                        parent_slot = new_subroot;
                         sibling = fixup_parent->left;
                     }
                     sibling->is_red = fixup_parent->is_red;
                     fixup_parent->is_red = false;
                     if (sibling->left) sibling->left->is_red = false;
+                    Node*& parent_slot = parent_link(fixup_parent);
                     Node* new_subroot = rotate_right(fixup_parent);
-                    parent_link(fixup_parent) = new_subroot;
+                    parent_slot = new_subroot;
                     fixup_node = root;
                 }
             }

@@ -85,16 +85,20 @@ spinlock_interrupt_about_guard::spinlock_interrupt_about_guard(spinlock_cpp_t& l
 {
     lock_ref.lock();
     flag.if_enable_accept_interrupt=get_if_enable_accept_interrupt();
+    #ifdef KERNEL_MODE
     disable_interrupts();
+    #endif
 }
 
 spinlock_interrupt_about_guard::~spinlock_interrupt_about_guard()
 {
+    #ifdef KERNEL_MODE
     if(flag.if_enable_accept_interrupt){
         enable_interrupts();
     }else{
         disable_interrupts();
     }
+    #endif
     lock_ref.unlock();
 }
 

@@ -7,9 +7,10 @@
 #include "util/kptrace.h"
 #include "util/kout.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "panic.h"
 #include "util/arch/x86-64/cpuid_intel.h"
-#include "firmware/ACPI_APIC.h"
+#include "ktime.h"
 spinlock_cpp_t kspace_pagetable_modify_lock;
 int VM_vaddr_cmp(VM_DESC *a, VM_DESC *b)
 {
@@ -310,6 +311,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
 
 KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
 {
+    using namespace MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS;
    KspacePageTableStatisitcs* stat = kpt_stat_for_current_cpu();
    if (stat) {
        stat->disable_vmentry_count++;
@@ -323,12 +325,12 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
 
     // basic alignment checks (4KB)
    if (interval.vbase % _4KB_SIZE || interval.size % _4KB_SIZE || interval.pbase % _4KB_SIZE) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+        fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
        return fail;
     }
 
    if (interval.size == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+        fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
        return fail;
     }
     spinlock_interrupt_about_guard guard(GMlock);
@@ -357,7 +359,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
                uint64_t psize = e.page_size_in_byte;
                 // sanity check: vbase and base should be aligned to page size
                if ((e.vbase % psize) != 0 || (e.phybase % psize) != 0) {
-                    fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+                    fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
                    return fail;
                 }
 
@@ -378,7 +380,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
                         break;
                     }
                     default:
-                        fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
+                        fatal.reason = FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
                        return fatal;
                 }
                if (rc.result != result_code::SUCCESS) {
@@ -395,7 +397,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
                uint64_t psize = e.page_size_in_byte;
                 // sanity check: vbase and base should be aligned to page size
                if ((e.vbase % psize) != 0 || (e.phybase % psize) != 0) {
-                    fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+                    fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
                    return fail;
                 }
 
@@ -416,7 +418,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
                         break;
                     }
                     default:
-                        fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
+                        fatal.reason = FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
                        return fatal;
                 }
                if (rc.result != result_code::SUCCESS) {
@@ -442,7 +444,7 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
             break;
         }
         default:
-            //fatal.reason= MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALID_CONGRUENCE_LEVEL;
+            fatal.reason= FATAL_REASONS::REASON_CODE_INVALID_CONGRUENCE_LEVEL;
            return fatal;
     }
     shared_inval_kspace_VMentry_info.info_package = pkg;
@@ -451,9 +453,20 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
     asm volatile("mfence");
     if(GlobalKernelStatus>=SCHEDUL_READY){
         x2apic::x2apic_driver::broadcast_exself_fixed_ipi(invalidate_seg);
-        //这里要做自旋等待，若1000mius每完成认为失败要panic
-    }
+        uint64_t start=ktime::get_microsecond_stamp();
+        uint32_t expect_responser_count=logical_processor_count-1;
+        while(shared_inval_kspace_VMentry_info.completed_processors_count.load()!=expect_responser_count){
+            if(ktime::get_microsecond_stamp()-start>1000){
+                fatal.reason=FATAL_REASONS::REASON_CODE_BROADCAST_TLB_SHUTDOWN_TIMEOUT;
+                Panic::panic(default_panic_behaviors_flags,"KspacePageTable::disable_VMentry: broadcast TLB shootdown timeout",nullptr,nullptr,fatal);
+            }else{
+                asm volatile("pause");
+            }
+        }
+        //uint64_t span=ktime::get_microsecond_stamp()-start;
+        //bsp_kout<<"[KSPACE_MAPPER] disable_VMentry: broadcast TLB shootdown completed, span "<<span<<" microseconds"<<kendl;
 
+    }
    return success;
 }
 KURD_t KspacePageTable::v_to_phyaddrtraslation(vaddr_t vaddr, phyaddr_t &result)

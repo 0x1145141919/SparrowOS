@@ -18,6 +18,7 @@
 #include "util/bitmap.h"
 #include "panic.h"
 #include <util/kptrace.h>
+#include <util/lock.h>
 #include "ktime.h"
 
 x64_local_processor *x86_smp_processors_container::local_processor_interrupt_mgr_array[x86_smp_processors_container::max_processor_count];
@@ -159,6 +160,7 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
         Panic::panic(default_panic_behaviors_flags,
             "[x64_local_processor]x2apic not supported",nullptr,&inshort,KURD_t());
     }
+    handler_register_bitmap=new Ktemplats::kernel_bitmap(allocatable_handler_count);
 }
 
 KURD_t x64_local_processor::default_kurd()
@@ -207,7 +209,7 @@ KURD_t x86_smp_processors_container::default_fatal()
     result=set_fatal_result_level(result);
     return result;
 }
-void x64_local_processor::unsafe_handler_register_without_vecnum_chech(uint8_t vector, void *handler)
+void x64_local_processor::unsafe_handler_register_without_vecnum_check(uint8_t vector, void *handler)
 {
     idt[vector].offset_low = static_cast<uint16_t>(reinterpret_cast<uint64_t>(handler) & 0xFFFF);
     idt[vector].offset_mid = static_cast<uint16_t>((reinterpret_cast<uint64_t>(handler) >> 16) & 0xFFFF);
@@ -218,25 +220,49 @@ void x64_local_processor::unsafe_handler_register_without_vecnum_chech(uint8_t v
     idt[vector].reserved1 = 0;
 }
 
-void x64_local_processor::unsafe_handler_unregister_without_vecnum_chech(uint8_t vector)
+void x64_local_processor::unsafe_handler_unregister_without_vecnum_check(uint8_t vector)
 {
-    x64_local_processor::unsafe_handler_register_without_vecnum_chech(vector,template_idt[vector].handler);
+    x64_local_processor::unsafe_handler_register_without_vecnum_check(vector,template_idt[vector].handler);
 }
 bool x64_local_processor::handler_unregister(uint8_t vector){
-        if(vector < 32 || vector >= ivec::BOTTOM_FOR_SYSTEM_RESERVED_VECS){
-            return false;
-        }
-        unsafe_handler_unregister_without_vecnum_chech(vector);
-        return true;
+    spinlock_interrupt_about_guard g(lock);
+    if(vector < 32 || vector >= ivec::BOTTOM_FOR_SYSTEM_RESERVED_VECS){
+        return false;
     }
+    unsafe_handler_unregister_without_vecnum_check(vector);
+    handler_register_bitmap->bit_set(vector-allocatable_handler_base,0);
+    return true;
+}
 bool x64_local_processor::handler_register(uint8_t vector,void*handler){
     if(vector < 32 || vector >= ivec::BOTTOM_FOR_SYSTEM_RESERVED_VECS){
         return false;
     }
-    unsafe_handler_register_without_vecnum_chech(vector,handler);
+    if(handler_register_bitmap->bit_get(vector-allocatable_handler_base)){
+            return false;
+        }
+    handler_register_bitmap->bit_set(vector-allocatable_handler_base,1);
+    
+    unsafe_handler_register_without_vecnum_check(vector,handler);
     return true;
 }
-
+uint8_t x64_local_processor::handler_alloc(void *handler)
+{
+    spinlock_interrupt_about_guard g(lock);
+    uint8_t i = 0;
+    for(; i < allocatable_handler_count; i++){
+        if(handler_register_bitmap->bit_get(i)){
+            continue;
+        }else{
+            break;
+        }
+    }
+    if(i == allocatable_handler_count){
+        return 0xff;//代表分配失败，无多余
+    }
+    unsafe_handler_register_without_vecnum_check(allocatable_handler_base+i,handler);
+    handler_register_bitmap->bit_set(i,1);
+    return allocatable_handler_base+i;
+}
 void x64_local_processor::GS_slot_write(uint32_t idx, uint64_t content)
 {
     if(idx == 0 || idx >= GS_SLOT_MAX_ENTRY_COUNT){

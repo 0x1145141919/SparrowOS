@@ -66,9 +66,6 @@ public:
     /**
     * 行为控制位
     */
-    
-    static panic_context::x64_context convert_to_panic_context(x64_Interrupt_saved_context_no_errcode*regs);
-    static panic_context::x64_context convert_to_panic_context(x64_Interrupt_saved_context*regs,uint8_t vec_num);
     static void panic(
         panic_behaviors_flags behaviors,
         char*message,

@@ -4,6 +4,7 @@
 #include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "util/lock.h"
 #include "Interrupt_errors.h"
+#include "util/Ktemplats.h"
 namespace gdtentry
 {
     constexpr uint8_t execute_only_type = 0b1001;
@@ -169,7 +170,6 @@ typedef uint64_t FS_struct[6];
 constexpr uint8_t  STACK_PROTECTOR_CANARY_IDX = 0x5;
 class x64_local_processor {//承担部分当前核心状态机切换维护的语义
     private:
-    
     IDTEntry idt[256];
     x64GDT gdt;
     TSSentry tss;
@@ -183,7 +183,10 @@ class x64_local_processor {//承担部分当前核心状态机切换维护的语
         bool is_avx_supported;
         bool is_x2apic_supported;
     }processor_features;
-    spinlock_interrupt_about_cpp_t  lock;
+    spinlock_cpp_t  lock;
+    Ktemplats::kernel_bitmap*handler_register_bitmap;
+    constexpr static uint8_t allocatable_handler_count = 192; 
+    constexpr static uint8_t allocatable_handler_base = 32; 
     KURD_t default_kurd();
     KURD_t default_success();
     KURD_t default_fail();
@@ -202,13 +205,13 @@ class x64_local_processor {//承担部分当前核心状态机切换维护的语
     static constexpr uint32_t  L_PROCESSOR_GS_IDX= 0;
     static int template_init();
     x64_local_processor(uint32_t alloced_id);
-    void unsafe_handler_register_without_vecnum_chech(uint8_t vector,void*handler);
-    void unsafe_handler_unregister_without_vecnum_chech(uint8_t vector);
+    void unsafe_handler_register_without_vecnum_check(uint8_t vector,void*handler);
+    void unsafe_handler_unregister_without_vecnum_check(uint8_t vector);
     bool handler_register(uint8_t vector,void*handler);
+    uint8_t handler_alloc(void*handler);
     bool handler_unregister(uint8_t vector);
     void GS_slot_write(uint32_t idx,uint64_t content);//0号是被占用了，静默失败，超过索引（GS_SLOT_MAX_ENTRY_COUNT）则静默失败其它情况正常写
     uint64_t GS_slot_get(uint32_t idx);//超过索引（GS_SLOT_MAX_ENTRY_COUNT）则返回~0其它情况正常读
-
     uint32_t get_apic_id();
     uint32_t get_processor_id();
     uint64_t get_tss_rsp0();

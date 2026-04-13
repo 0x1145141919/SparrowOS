@@ -368,24 +368,6 @@ extern  bsp_init_idt_entries;这个IDT表
     shr rax, 16
     mov dword [rbx + 20*16 + 8], eax    ; offset_high
     mov dword [rbx + 20*16 + 12], 0     ; reserved
-
-    ; 设置定时器中断 (中断号 0x20)
-    mov rax, qword timer_bare_enter
-    mov word  [rbx + 0x20*16 + 0], ax   ; offset_low
-    shr rax, 16
-    mov word  [rbx + 0x20*16 + 6], ax   ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 0x20*16 + 8], eax  ; offset_high
-    mov dword [rbx + 0x20*16 + 12], 0   ; reserved
-
-    ; 设置IPI中断 (中断号 0x21)
-    mov rax, qword ipi_bare_enter
-    mov word  [rbx + 0x21*16 + 0], ax   ; offset_low
-    shr rax, 16
-    mov word  [rbx + 0x21*16 + 6], ax   ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 0x21*16 + 8], eax  ; offset_high
-    mov dword [rbx + 0x21*16 + 12], 0   ; reserved
     jmp .paging_done
 secure_hlt:
     sti 

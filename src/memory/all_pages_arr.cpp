@@ -21,6 +21,22 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
     if (!mem_map || mem_map_entry_count == 0) {
         return nullptr;
     }
+    
+    // 辅助函数：将 mem_map 数组索引转换为物理地址
+    auto index_to_phyaddr = [](uint64_t memmap_idx) -> phyaddr_t {
+        for (uint64_t i = 0; i < mem_map_intervals_count; i++) {
+            auto& interval = mem_map_intervals[i];
+            if (memmap_idx >= interval.baseidx_in_memmap && 
+                memmap_idx < interval.baseidx_in_memmap + interval.numof4kbpgs) {
+                // 在该区间内，计算偏移量
+                uint64_t offset_in_interval = memmap_idx - interval.baseidx_in_memmap;
+                return interval.base + (offset_in_interval << 12);
+            }
+        }
+        // 索引无效，返回0（理论上不应该发生）
+        return 0;
+    };
+    
     auto is_free_4kb = [](const page& p) -> bool {
         return !p.page_flags.bitfield.is_skipped
             && p.head.order == 0
@@ -65,8 +81,10 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
             }
         } else if (in_run) {
             uint64_t run_len = idx - run_start;
+            // ✅ 修正：通过索引转换获取真实的物理地址
+            uint64_t phy_base = index_to_phyaddr(run_start);
             result->entries[out_idx++] = {
-                .base = run_start << 12,
+                .base = phy_base,
                 .size = run_len << 12
             };
             in_run = false;
@@ -74,8 +92,10 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
     }
     if (in_run) {
         uint64_t run_len = mem_map_entry_count - run_start;
+        // ✅ 修正：通过索引转换获取真实的物理地址
+        uint64_t phy_base = index_to_phyaddr(run_start);
         result->entries[out_idx++] = {
-            .base = run_start << 12,
+            .base = phy_base,
             .size = run_len << 12
         };
     }
@@ -132,7 +152,7 @@ KURD_t all_pages_arr::Init(init_to_kernel_info *info)
         result=simp_pages_set(interval.pbase, interval.size >> 12, type);
     }
     simp_pages_set(info->kmmu_interval.start, info->kmmu_interval.size >> 12, page_state_t::kernel_persisit);
-    simp_pages_set(info->kmmu_interval.start, info->kmmu_interval.size>> 12, page_state_t::kernel_persisit);
+    simp_pages_set((phyaddr_t)info,info->self_pages_count, page_state_t::kernel_persisit);
     PhyAddrAccessor::BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG=mem_map_entry_count<<12;
     return KURD_t();
 }

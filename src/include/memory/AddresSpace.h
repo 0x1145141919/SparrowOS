@@ -132,7 +132,8 @@ namespace MEMMODULE_LOCAIONS{
                 }
             namespace FATAL_REASONS{
                     constexpr uint16_t REASON_CODE_INVALIDE_PAGES_SIZE=0x1;//AddressSpace的设计的能力有限，
-                    
+                    constexpr uint16_t REASON_CODE_BROADCAST_TLB_SHUTDOWN_TIMEOUT=0x2;//AddressSpace的设计的能力有限，
+                    constexpr uint16_t REASON_CODE_INVALID_CONGRUENCE_LEVEL=0x3;
                 } 
         }
         namespace INVALIDATE_TLB_RESULTS{
@@ -380,3 +381,7 @@ static KURD_t v_to_phyaddrtraslation(vaddr_t vaddr,phyaddr_t& result);
 };
 extern shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
 extern spinlock_cpp_t kspace_pagetable_modify_lock;//此锁的用途在于保证“修改vm区间红黑树+修改页表结构”的原子性
+extern "C" int userspace_compatible_phymem_direct_map_enable();
+extern "C" vaddr_t phyaddr_direct_map(vm_interval*interval,KURD_t* kurd_out);
+extern "C" KURD_t phyaddr_direct_unmap(vm_interval *interval,uint64_t size);
+extern "C" int userspace_compatible_phymem_direct_map_disable();
