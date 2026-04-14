@@ -228,7 +228,7 @@ class  x86_smp_processors_container {
     static uint32_t total_processor_count;
     static uint32_t bsp_apic_id;
     static x64_local_processor *local_processor_interrupt_mgr_array[max_processor_count];
-    static spinlock_interrupt_about_cpp_t lock;
+    static spinlock_cpp_t lock;
     static KURD_t default_kurd();
     static KURD_t default_success();
     static KURD_t default_fail();

@@ -56,29 +56,7 @@ void spinlock_cpp_t::unlock()
 {
     __atomic_clear(&status, __ATOMIC_RELEASE);
 }
-void spinlock_interrupt_about_cpp_t::lock(lock_flags flag)
- {
-        while (__atomic_test_and_set(&status, __ATOMIC_ACQUIRE)) {
-                while (__atomic_load_n(&status, __ATOMIC_RELAXED) == LOCKED) {
-                        cpu_relax();
-                }
-        }
-        if(!flag.if_enable_accept_interrupt){
-            disable_interrupts();
-        }else enable_interrupts();
-}
 
-bool spinlock_interrupt_about_cpp_t::is_locked()
-{
-    return __atomic_load_n(&status, __ATOMIC_RELAXED) == LOCKED;
-}
-void spinlock_interrupt_about_cpp_t::unlock(lock_flags flag)
-{
-    __atomic_clear(&status, __ATOMIC_RELEASE);
-    if(!flag.if_enable_accept_interrupt){
-            disable_interrupts();
-        }else enable_interrupts();
-}
 constexpr lock_flags DISABLE_INTERRUPT_FLAG=lock_flags{.if_enable_accept_interrupt=false};
 spinlock_interrupt_about_guard::spinlock_interrupt_about_guard(spinlock_cpp_t& lock)
     : lock_ref(lock)
@@ -239,39 +217,6 @@ void spinrwlock_cpp_t::write_lock() {
 void spinrwlock_cpp_t::write_unlock() {
     writelock.unlock();   // 直接释放写锁
 }
-
-// 读锁实现
-void spinrwlock_interrupt_about_cpp_t::read_lock(lock_flags flag) {
-    readlock.lock(DISABLE_INTERRUPT_FLAG);      // 保护readers计数器
-    readers++;
-    if (readers == 1) {
-        // 第一个读者需要获取写锁
-        writelock.lock(DISABLE_INTERRUPT_FLAG);
-    }
-    readlock.unlock(flag);
-}
-
-// 读解锁实现  
-void spinrwlock_interrupt_about_cpp_t::read_unlock(lock_flags flag) {
-    readlock.lock(DISABLE_INTERRUPT_FLAG);      // 保护readers计数器
-    readers--;
-    if (readers == 0) {
-        // 最后一个读者释放写锁
-        writelock.unlock(DISABLE_INTERRUPT_FLAG);
-    }
-    readlock.unlock(flag);
-}
-
-// 写锁实现
-void spinrwlock_interrupt_about_cpp_t::write_lock(lock_flags flag) {
-    writelock.lock(flag);     // 直接获取写锁
-}
-
-// 写解锁实现
-void spinrwlock_interrupt_about_cpp_t::write_unlock(lock_flags flag) {
-    writelock.unlock(flag);   // 直接释放写锁
-}
-
 spinrwlock_interrupt_about_read_guard::spinrwlock_interrupt_about_read_guard(spinrwlock_cpp_t& lock)
     : lock_ref(lock)
 {

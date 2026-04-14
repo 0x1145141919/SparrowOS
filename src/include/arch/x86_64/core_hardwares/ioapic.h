@@ -51,13 +51,35 @@ class ioapic_driver {
             uint64_t remmap_idx_0_14:15;
         }filed;
         static_assert(sizeof(filed)==8,"RTE_remmap_union size error");
+    };union RTE_compact_union {
+        uint64_t value;
+        struct {
+            uint64_t vector:8;
+            uint64_t delivery_mode:3;
+            uint64_t destination_mode:1;
+            uint64_t delivery_status:1;
+            uint64_t pin_polarity:1;
+            uint64_t remote_irr:1;
+            uint64_t trigger_mode:1;
+            uint64_t mask:1;
+            uint64_t reserved:39;
+            uint64_t destination:8;
+        }filed;
+        static_assert(sizeof(filed)==8,"RTE_remmap_union size error");
     };
     dmar::driver* belonged_dmar;
     uint64_t get_rte_raw(uint8_t rte);
     void set_rte_raw(uint8_t irq,uint64_t value);
 public:
     ioapic_driver(APICtb_analyzed_structures::io_apic_structure* entry);
+    struct compact_flag{
+        uint8_t vec;
+        uint8_t target_apicid;
+        uint8_t trigger_mode:1;
+        uint8_t polarity:1;
+    };
     KURD_t irq_regist(uint8_t rte,uint16_t remmap_idx,bool polarity);
+    KURD_t irq_regist(uint8_t rte,compact_flag flag);
     KURD_t irq_unregist(uint8_t rte);
 };
 extern ioapic_driver *main_router;

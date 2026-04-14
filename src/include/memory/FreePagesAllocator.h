@@ -305,4 +305,4 @@ public:
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();
 };
-extern spinlock_interrupt_about_cpp_t FPA_modify;
+extern spinlock_cpp_t FPA_modify;

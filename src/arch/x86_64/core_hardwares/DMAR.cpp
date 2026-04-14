@@ -7,6 +7,7 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/pt_regs.h"
 #include "util/kout.h"
+#include "global_controls.h"
 uint8_t dmar::iommu_fault_alloced_vector;
 extern "C" char iommu_fault_deal;
  dmar::driver** dmar::dmar_table;
@@ -24,7 +25,8 @@ extern "C" void iommu_fault_cpp_enter(x64_standard_context*regs){
 }
 int dmar::Init(acpi::DMAR_head *head)
 {
-    if(head==nullptr){
+    if(is_iremap_try)
+    {if(head==nullptr){
         return OS_INVALID_PARAMETER;
     }
     if(!head->flag_interrupt_remap_enable){
@@ -144,6 +146,9 @@ int dmar::Init(acpi::DMAR_head *head)
 
     dmars_count = dmar_idx;
     return OS_SUCCESS;
+    }else{
+        return OS_SUCCESS;
+    }
 }
 dmar::driver::driver(acpi::DRHD_table *drhd)
 {

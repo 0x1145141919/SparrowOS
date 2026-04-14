@@ -14,4 +14,5 @@ namespace i8042_regs{
     constexpr uint8_t CONTROL_MOUSE_DENY_MASK = 0x1<<5;
 }
 extern void i8042_interrupt_enable();
+const char* scancode_to_key(uint8_t scancode);
 // 扫描码集 2 的部分映射表（可继续扩展）

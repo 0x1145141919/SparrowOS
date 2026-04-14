@@ -170,6 +170,7 @@ KURD_t kpoolmemmgr_t::free_heap(uint32_t idx)
 }
 kpoolmemmgr_t::HCB_v2 *kpoolmemmgr_t::find_hcb_by_address(void *ptr)
 {
+
     if(first_linekd_heap.is_addr_belong_to_this_hcb(ptr))return &first_linekd_heap;
     if((uint64_t)ptr>=heap_area.end||(uint64_t)ptr<heap_area.start)return nullptr;
     uint64_t offset=(uint64_t)ptr-(uint64_t)heap_area.start;
@@ -202,6 +203,7 @@ static void handle_heap_obj_destroyed(const char* operation, void* ptr) {
 
 void* kpoolmemmgr_t::kalloc(uint64_t size,KURD_t&no_succes_report,alloc_flags_t flags)
 {
+    interrupt_guard g;
     KURD_t success=default_success();
     KURD_t fail=default_fail();
     KURD_t fatal=default_fatal();
@@ -265,6 +267,7 @@ void* kpoolmemmgr_t::kalloc(uint64_t size,KURD_t&no_succes_report,alloc_flags_t 
 
 void* kpoolmemmgr_t::realloc(void* ptr,KURD_t&no_succes_report, uint64_t size, alloc_flags_t flags)
 {
+    interrupt_guard g;
     KURD_t success=default_success();
     KURD_t fail=default_fail();
     KURD_t fatal=default_fatal();
@@ -343,6 +346,7 @@ void* kpoolmemmgr_t::realloc(void* ptr,KURD_t&no_succes_report, uint64_t size, a
 
 void kpoolmemmgr_t::clear(void* ptr)
 {
+    interrupt_guard g;
     if (!ptr) return;
     
     KURD_t subhcb_results_contianer = KURD_t();
@@ -375,6 +379,7 @@ void kpoolmemmgr_t::clear(void* ptr)
 
 void kpoolmemmgr_t::kfree(void* ptr)
 {
+    interrupt_guard g;
     if (!ptr) return;
     
     KURD_t subhcb_results_contianer = KURD_t();
@@ -437,6 +442,7 @@ namespace {
 
 phyaddr_t kpoolmemmgr_t::get_phy(vaddr_t addr)
 {
+    interrupt_guard g;
     constexpr uint64_t MIN_KVADDR = get_min_kvaddr();
     constexpr uint64_t MAX_PHYADDR = get_max_phyaddr();
     
@@ -456,6 +462,7 @@ phyaddr_t kpoolmemmgr_t::get_phy(vaddr_t addr)
 
 vaddr_t kpoolmemmgr_t::get_virt(phyaddr_t addr)
 {
+    interrupt_guard g;
     constexpr uint64_t MIN_KVADDR = get_min_kvaddr();
     constexpr uint64_t MAX_PHYADDR = get_max_phyaddr();
     

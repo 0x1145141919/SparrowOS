@@ -21,16 +21,6 @@ public:
     bool is_locked();
     void unlock();
 };
-
-class spinlock_interrupt_about_cpp_t {
-    uint8_t status;  
-public:
-    spinlock_interrupt_about_cpp_t() : status(UNLOCKED){}
-    
-    void lock(lock_flags flag);
-    bool is_locked();
-    void unlock(lock_flags flag);
-};
 class reentrant_spinlock_cpp_t {
     
     u64ka complex;
@@ -71,17 +61,6 @@ public:
     void read_unlock();
     void write_lock();
     void write_unlock();
-};
-class spinrwlock_interrupt_about_cpp_t{
-    spinlock_interrupt_about_cpp_t readlock;
-    spinlock_interrupt_about_cpp_t writelock;
-    uint32_t readers=0;
-public:
-    spinrwlock_interrupt_about_cpp_t()=default;
-    void read_lock(lock_flags flag);
-    void read_unlock(lock_flags flag);
-    void write_lock(lock_flags flag);
-    void write_unlock(lock_flags flag);
 };
 class spinrwlock_interrupt_about_read_guard {
     spinrwlock_cpp_t& lock_ref;

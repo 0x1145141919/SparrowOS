@@ -3,6 +3,9 @@
 #include "memory/AddresSpace.h"
 #include "panic.h"
 #include "util/kout.h"
+#define COMPILER_BARRIER() asm volatile("" ::: "memory")
+#define MEMORY_BARRIER() asm volatile("mfence" ::: "memory")
+#define MMIO_BARRIER() asm volatile("sfence" ::: "memory")  // 写屏障
 ioapic_driver *main_router;
 ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entry)
 {
@@ -18,7 +21,7 @@ ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entr
         .cache_strategy=UC
     };
     head=(regs_head*)phyaddr_direct_map(&ioapic_regs_interval,&kurd);
-    belonged_dmar=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id];
+    //belonged_dmar=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id];
     if(error_kurd(kurd)){
         panic_info_inshort info={
             .is_bug=false,
@@ -139,4 +142,18 @@ KURD_t ioapic_driver::irq_unregist(uint8_t rte)
     }
     set_rte_raw(rte, 0x10000);
     return success;
+}
+KURD_t ioapic_driver::irq_regist(uint8_t rte, compact_flag flag)
+{
+    RTE_compact_union entry={.value=0};
+    entry.filed.delivery_mode=0;
+    entry.filed.pin_polarity=flag.polarity;
+    entry.filed.trigger_mode=flag.trigger_mode;
+    entry.filed.vector=flag.vec;
+    entry.filed.mask=0;
+    entry.filed.destination_mode=0;
+    entry.filed.destination=flag.target_apicid;
+    entry.filed.reserved=0;
+    set_rte_raw(rte, entry.value);
+    return default_success;
 }

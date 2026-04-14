@@ -76,6 +76,17 @@ void* Collatz_kthread(void* init_value){
         }
     }
 }
+void* i8042_spin_read(void* init_value){
+    uint64_t value = (uint64_t)init_value;
+    while (true) {
+        if(inb(0x64)&0x1){
+            bsp_kout<<"thread_listening: "<<scancode_to_key(inb(0x60))<<kendl;
+        }else{
+            kthread_sleep(10000);
+        }
+    }
+}
+
 
 constexpr uint8_t test_kthread_count = 100;
 uint64_t test_kthreads[test_kthread_count];
@@ -83,6 +94,7 @@ uint64_t test_kthreads[test_kthread_count];
 void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
+    uint64_t kthread_ymir_tid=create_kthread(i8042_spin_read,nullptr,&kurd);
     while (true)
     {
         kthread_sleep(1000000);
@@ -300,11 +312,6 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     x86_smp_processors_container::template_idt_init();
     x86_smp_processors_container::regist_core(0);
     ktime::heart_beat_alarm::processor_regist();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"HPET Init Failed"<<kendl;
-        asm volatile("hlt");
-    }
-    bsp_kout<<now<<"HPET Initialized Success"<<kendl;
     bsp_kout<<now<<"BSP online"<<kendl;
     gAnalyzer=new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
     bsp_init_kurd=kpoolmemmgr_t::multi_heap_enable();

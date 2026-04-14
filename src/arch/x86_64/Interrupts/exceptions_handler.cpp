@@ -160,7 +160,7 @@ void double_fault_cpp_enter(x64_errcode_exception_frame *frame)
             .is_mem_corruption=0,
             .is_escalated=0
         };
-    bsp_kout<<"double_fault_cpp_enter"<<kendl;
+    //bsp_kout<<"double_fault_cpp_enter"<<kendl;
    x64_standard_context standard;
    filt_frame(&standard,frame);
     double_fault_handler(&standard,frame->errcode);

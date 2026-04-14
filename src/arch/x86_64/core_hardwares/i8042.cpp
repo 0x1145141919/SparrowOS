@@ -4,6 +4,8 @@
 #include <arch/x86_64/core_hardwares/DMAR.h>
 #include <arch/x86_64/Interrupt_system/loacl_processor.h>
 #include <util/kout.h>
+#include <global_controls.h>
+extern "C" char i8042_code_deal;
 const char* scancode_to_key(uint8_t scancode);
 extern "C" void i8042_cpp_enter(x64_standard_context* frame){
     bsp_kout<<"i8042_cpp_enter: "<<scancode_to_key(inb(0x60))<<kendl;
@@ -68,11 +70,13 @@ const char* scancode_to_key(uint8_t scancode) {
 void i8042_interrupt_enable(){
     x64_local_processor* manage=x86_smp_processors_container::get_processor_mgr_by_processor_id(++legacy_rotate_interrupt_alloc_id);
     uint32_t target_apicid=manage->get_apic_id();
-    uint8_t vec= manage->handler_alloc((void*)&i8042_cpp_enter);
+    uint8_t vec= manage->handler_alloc((void*)&i8042_code_deal);
     if(vec==0xff){
         //panic
     }
-    pcie_location ioapic_ioapic_location=dmar::special_locations[dmar::ioapic_idx].location;
+    KURD_t kurd;
+    if(is_iremap_try)
+    {pcie_location ioapic_ioapic_location=dmar::special_locations[dmar::ioapic_idx].location;
     dmar::regist_remmap_struct arg={
         .location=ioapic_ioapic_location,
         .vec=vec,
@@ -84,13 +88,22 @@ void i8042_interrupt_enable(){
     };
     uint16_t remap_table_idx;
     uint32_t dmar_id;
-    KURD_t kurd=dmar::regist_interrupt_simp(arg,remap_table_idx,dmar_id);
+    kurd=dmar::regist_interrupt_simp(arg,remap_table_idx,dmar_id);
     if(error_kurd(kurd)){
 
     }
     kurd=main_router->irq_regist(1,remap_table_idx,false);
     if(error_kurd(kurd)){
 
+    }
+    }else{
+        ioapic_driver::compact_flag flag={
+            .vec=vec,
+            .trigger_mode=0,
+            .polarity=0  
+        };
+        flag.target_apicid=target_apicid;
+        kurd=main_router->irq_regist(1,flag);
     }
     while(inb(0x64)&0x3);
     outb(0x64,0x20);
