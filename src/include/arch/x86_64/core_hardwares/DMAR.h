@@ -105,7 +105,8 @@ namespace dmar{
         interval_verify=2,
         reserved=3
     };
-    struct irte{
+    namespace translation_structs{
+        struct irte{
         uint32_t present:1;
         uint32_t fpd:1;
         uint32_t destination_mode:1;
@@ -122,6 +123,31 @@ namespace dmar{
         uint64_t source_validation_type:2;
         uint64_t reserved3:44;
     }__attribute__((packed));
+        union legacy_root_entry{ //数据定义错误
+            uint64_t unit[2];
+            struct{
+                uint64_t present:1;
+                uint64_t reserved:63;
+                uint64_t reserved1;
+            }field;
+        };
+        union legacy_context_entry{//数据定义错误
+            uint64_t unit[2];
+            struct{
+                uint64_t present:1;
+                uint64_t FPD:1;
+                uint64_t translation_type:2;
+                uint64_t reserved:60;
+                uint64_t addr_width:3;
+                uint64_t reserved1:5;
+                uint64_t domain_identifier:16;
+                uint64_t reserved2:40;
+            }field;
+            static_assert(sizeof(field)==16,"legacy_context_entry size error");
+        };
+        static_assert(sizeof(irte)==16,"irte size error");
+    };
+    
     struct regist_remmap_struct_simp{
         pcie_location location;
         uint32_t target_processor_id;
@@ -143,8 +169,8 @@ namespace dmar{
             constexpr uint64_t mask_dtlb=1ull<<2;
             constexpr uint64_t mask_iremap=1ull<<3;
             constexpr uint64_t mask_iremap_x2apicsupport=1ull<<4;
-            constexpr uint64_t mask_smallest_cap_set=
-            mask_queue_invalidation|mask_iremap|mask_iremap_x2apicsupport;
+            constexpr uint64_t mask_smallest_cap_set=mask_iremap_x2apicsupport|mask_dtlb|
+            mask_queue_invalidation|mask_iremap;
         };
         union fault_recording_reg{
             uint64_t value[2];
@@ -178,8 +204,9 @@ namespace dmar{
             constexpr uint32_t mask_iremap_x2apic_support=1<<11;
         };
     };
-    static_assert(sizeof(irte)==16,"irte size error");
+    
     class driver{
+    
     vm_interval regs_interval;
     vm_interval interrupt_remmaptable_interval;
     KURD_t default_kurd=KURD_t(0,0,module_code::DEVICES_CORE,COREHARDWARES_LOCATIONS::LOCATION_CODE_DMAR,0,0,err_domain::ARCH);
@@ -191,6 +218,31 @@ namespace dmar{
     }();
     KURD_t default_err=set_result_fail_and_error_level(default_kurd);
     KURD_t default_fatal=set_fatal_result_level(default_kurd);
+    uint16_t fault_record_regs_count=0;
+
+    struct fault_record_reg_raw{
+        uint64_t value[2];
+    };
+    fault_record_reg_raw*fault_regs_bases;
+    union fault_record{
+        fault_record_reg_raw raw;
+        struct{
+            uint64_t reserved0:12;
+            uint64_t FI:52;
+            uint64_t SID:16;
+            uint64_t reserved2:12;
+            uint64_t T2:1;
+            uint64_t PRIV:1;
+            uint64_t EXE:1;
+            uint64_t PASID_P:1;
+            uint64_t FAULT_REASON:8;
+            uint64_t PASID_VALUE:20;
+            uint64_t ADDR_TYPE:2;
+            uint64_t T1:1;
+            uint64_t F:1;
+        }fields;
+        static_assert(sizeof(fields)==16,"fault_record size error");
+    };
     struct head_regs{
         uint32_t version;
         uint32_t reserved_1;
@@ -292,14 +344,24 @@ namespace dmar{
         uint32_t page_request_event_addr;
         uint32_t page_request_event_addr_high;
     }__attribute__((packed));
-    head_regs* regs_vbase;
+    static_assert(sizeof(head_regs)==0xF0,"head_regs size error");
+    head_regs* regs;
     acpi::DRHD_table* drhd;
-    irte* interrupt_remmaptable;
+    translation_structs::irte* interrupt_remmaptable;
+    translation_structs::legacy_root_entry* legacy_root_entry;
+
+    void set_command_enable_iremap();
+    void set_command_disable_iremap();
+    void set_command_disable_compatiable_format_interrupt();
+    void set_command_set_iremap_tbptr();
+    void command_disable_traslation();
+    void command_enable_traslation();
+    void command_enable_root_table();
     public:
-    
+    KURD_t device_regist(pcie_location location);//根据一个BDF进行相关上下文表的注册，现在统一初始化为PT,FDP简化设计
     driver(acpi::DRHD_table* drhd);//构造会强制开启对应的重映射硬件的下游设备的中断重映射，dma重映射,以及msi的错误报告中断
     // 提供公共访问方法以获取中断重映射表
-    irte* get_interrupt_remmaptable() const { return interrupt_remmaptable; }
+    translation_structs::irte* get_interrupt_remmaptable() const { return interrupt_remmaptable; }
     KURD_t regist_interrupt_simp(regist_remmap_struct arg,uint16_t&idx);//支持持投递到一个CPU
     KURD_t disable_remappentry(uint16_t idx);
     KURD_t err_handle();//

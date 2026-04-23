@@ -29,6 +29,7 @@
 #include "arch/x86_64/core_hardwares/DMAR.h"
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
+#include "arch/x86_64/PCIe/prased.h"
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
 // 定义C++运行时需要的符号
@@ -76,16 +77,6 @@ void* Collatz_kthread(void* init_value){
         }
     }
 }
-void* i8042_spin_read(void* init_value){
-    uint64_t value = (uint64_t)init_value;
-    while (true) {
-        if(inb(0x64)&0x1){
-            bsp_kout<<"thread_listening: "<<scancode_to_key(inb(0x60))<<kendl;
-        }else{
-            kthread_sleep(10000);
-        }
-    }
-}
 
 
 constexpr uint8_t test_kthread_count = 100;
@@ -94,7 +85,7 @@ uint64_t test_kthreads[test_kthread_count];
 void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
-    uint64_t kthread_ymir_tid=create_kthread(i8042_spin_read,nullptr,&kurd);
+    //uint64_t kthread_ymir_tid=create_kthread(i8042_spin_read,nullptr,&kurd);
     while (true)
     {
         kthread_sleep(1000000);
@@ -111,6 +102,7 @@ void create_first_kthread(){
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
     per_processor_scheduler&sc=global_schedulers[0];
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
+    asm volatile("cli");
     sc.sched();
 }
 
@@ -333,6 +325,8 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
+    global_container=new ecams_container_t((MCFG_Table*)gAcpiVaddrSapceMgr.get_acpi_table("MCFG"));
+    //pcie_text_praser();
     create_first_kthread();
 }
 extern "C" void ap_final_work();
@@ -342,10 +336,8 @@ extern "C" void ap_init(uint32_t processor_id)
     asm volatile("sfence");
     gKernelSpace->unsafe_load_pml4_to_cr3(KERNEL_SPACE_PCID);
     x86_smp_processors_container::regist_core(processor_id); 
-    tsc_regist();
     ktime::heart_beat_alarm::processor_regist();
     new(global_schedulers+processor_id) per_processor_scheduler;
-    //x2apic::x2apic_driver::write_eoi();
     init_finish_checkpoint.success_word=~query_x2apicid();
     asm volatile("sfence");
     ap_final_work();

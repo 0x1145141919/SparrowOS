@@ -7,6 +7,8 @@ bits 64
 %define KTHREAD_CALL_YIELD  2
 %define KTHREAD_CALL_WAIT   3
 %define KTHREAD_CALL_BLOCK  4
+%define KTHREAD_CALL_BLOCK_QUEUE  5
+%define KTHREAD_CALL_BLOCK_QUEUE_IF_EQUAL  6
 atoimc_kthread_load:
     mov rsp, rdi
     pop rax
@@ -25,39 +27,43 @@ atoimc_kthread_load:
     pop r15
     pop rbp  
     iretq
-extern kthread_yield_true_enter
-extern get_scheduler_private_stack_top
+%macro KTREAD_CALL_TEMPLATE 1
+mov rax, %1
+int kthread_call_ivec
+ret 
+nop
+%endmacro
+
 global kthread_yield
 kthread_yield:
-    
-    mov rax, KTHREAD_CALL_YIELD
-    int kthread_call_ivec
-    ret
-    nop
-global kthread_exit
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_YIELD
 
+
+global kthread_exit
 kthread_exit:
     mov rax, KTHREAD_CALL_EXIT
     int kthread_call_ivec
     ud2
+
+
 global kthread_self_blocked
-
 kthread_self_blocked:
-    mov rax, KTHREAD_CALL_BLOCK
-    int kthread_call_ivec
-    ret
-    nop
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK
+
 global kthread_sleep
-
 kthread_sleep:
-    mov rax, KTHREAD_CALL_SLEEP
-    int kthread_call_ivec
-    ret
-    nop
-global kthread_wait_truly_wait
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_SLEEP
 
+global kthread_wait_truly_wait
 kthread_wait_truly_wait:
-    mov rax, KTHREAD_CALL_WAIT
-    int kthread_call_ivec
-    ret
-    nop
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_WAIT
+
+
+global block_queue
+block_queue:
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE
+
+
+global block_if_equal
+block_queue_if_equal:
+KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE_IF_EQUAL

@@ -108,12 +108,12 @@ KURD_t ioapic_driver::irq_regist(uint8_t rte, uint16_t remmap_idx,bool polarity)
     fail.event_code=COREHARDWARES_LOCATIONS::IO_APIC_DRIVERS_EVENTS::RTE_REGIST;
     success.event_code=COREHARDWARES_LOCATIONS::IO_APIC_DRIVERS_EVENTS::RTE_REGIST;
     if(rte>=max_rte_num||
-    remmap_idx*sizeof(dmar::irte)>=dmar::interrupt_remapp_table_default_size)
+    remmap_idx*sizeof(dmar::translation_structs::irte)>=dmar::interrupt_remapp_table_default_size)
     {
         fail.reason=FAIL_RESULTS::FAIL_BAD_PARAM;
         return fail;
     }
-    dmar::irte copy=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id]->get_interrupt_remmaptable()[remmap_idx];
+    dmar::translation_structs::irte copy=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id]->get_interrupt_remmaptable()[remmap_idx];
     RTE_remmap_union entry={.value=0};
     entry.filed.vector = copy.vec;
     entry.filed.delivery_mode = 0;

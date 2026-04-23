@@ -105,7 +105,7 @@ void x2apic::lapic_timer_one_shot::processor_regist()
     x2apic_driver::raw_config_timer(timer_config);
     x2apic_driver::raw_config_timer_divider(devide_config);
     x2apic_driver::raw_config_timer_init_count(0xFFFFFFFF);
-    ktime::microsecond_polling_delay(10000);//这里是刻意假设不会把~0跑光
+    ktime::microsecond_polling_delay_by_hpet(10000);//这里是刻意假设不会把~0跑光
     uint64_t current=x2apic_driver::get_timer_current_count();
     time_complex*complex=(time_complex*)read_gs_u64(TIME_COMPLEX_GS_INDEX);
     complex->lapic_fs_per_cycle=(__uint128_t)(10000*(__uint128_t)FS_per_mius)/(0xFFFFFFFF-current);
@@ -143,8 +143,6 @@ bool x2apic::lapic_timer_one_shot::is_alarm_valid()
 }
 void x2apic::lapic_timer_tsc_ddline::set_clock_by_offset(uint64_t offset_mius)
 {
-    time_complex*complex=(time_complex*)read_gs_u64(TIME_COMPLEX_GS_INDEX);
-    uint32_t tsc_fs_per_cycle=complex->complex.tsc_fs_per_cycle;
     uint64_t target_tsc=rdtsc()+(__uint128_t)offset_mius*FS_per_mius/tsc_fs_per_cycle;
     wrmsr_func(msr::timer::IA32_TSC_DEADLINE,target_tsc);
 }

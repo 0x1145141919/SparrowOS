@@ -17,6 +17,8 @@ class PhyAddrAccessor {
     static uint16_t readu16(phyaddr_t addr);
     static uint32_t readu32(phyaddr_t addr);
     static uint64_t readu64(phyaddr_t addr);
+    static void cache_flush(phyaddr_t addr);
+    static void cache_flush_serial(phyaddr_t addr);
     static void writeu8(phyaddr_t addr,uint8_t value);
     static void writeu16(phyaddr_t addr,uint16_t value);
     static void writeu32(phyaddr_t addr,uint32_t value);

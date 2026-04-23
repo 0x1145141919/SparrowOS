@@ -12,7 +12,7 @@ namespace ktime
     int modify_time(EFI_TIME time);
     uint64_t get_microsecond_stamp();
     uint64_t get_nanosecond_stamp();
-    void microsecond_polling_delay(uint64_t microseconds);
+    void microsecond_polling_delay_by_hpet(uint64_t microseconds);
     namespace heart_beat_alarm
     {
     void processor_regist();//在x86_64上必须要先tsc_regist后再运行

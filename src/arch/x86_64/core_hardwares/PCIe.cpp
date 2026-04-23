@@ -48,11 +48,11 @@ void pcie_an_ecam_print(vaddr_t vbase, uint32_t depth){//vbase为直接的底
         for(uint32_t i = 0; i < depth; i++) {
             bsp_kout << "    ";
         }
-        bsp_kout << "[PCIe] Command: 0x" << header->command.value << "\n";
+        bsp_kout << "[PCIe] Command: 0x" << header->command << "\n";
         for(uint32_t i = 0; i < depth; i++) {
             bsp_kout << "    ";
         }
-        bsp_kout << "[PCIe] Status: 0x" << header->status.value << "\n";
+        bsp_kout << "[PCIe] Status: 0x" << header->status << "\n";
         for(uint32_t i = 0; i < depth; i++) {
             bsp_kout << "    ";
         }
@@ -73,7 +73,7 @@ void pcie_an_ecam_print(vaddr_t vbase, uint32_t depth){//vbase为直接的底
             bsp_kout << "    ";
         }
         bsp_kout << "[PCIe] Latency Timer: " << static_cast<uint32_t>(header->latency_timer) << "\n";
-        
+        #ifdef USER_MODE
         // 打印BARs
         for(int i = 0; i < 6; i++) {
             if(header->bars[i] != 0) {
@@ -100,11 +100,103 @@ void pcie_an_ecam_print(vaddr_t vbase, uint32_t depth){//vbase为直接的底
                         bsp_kout << header->bars[i] << " (32-bit Memory)\n";
                     }
                 } else {
-                    bsp_kout << header->bars[i] << " (I/O Space)\n";
+                    bs p_kout << header->bars[i] << " (I/O Space)\n";
                 }
             }
         }
-        
+        #endif
+        #ifdef KERNEL_MODE
+        pci_command_t command={
+            .value=header->command
+        };
+        command.fields.memory_space=0;
+        command.fields.io_space=0;
+        command.fields.bus_master=0;
+        header->command=command.value;
+        uint8_t bar_idx=0;
+        while(true){
+            if(bar_idx>=6)break;
+            bar_t bar={
+                .value=header->bars[bar_idx]
+            };
+            if(bar.io_field.identifier){
+                for(uint32_t j = 0; j < depth; j++) {
+                    bsp_kout << "    ";
+                }
+                uint32_t base=bar.value&~0x3;
+                bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << base << DEC<<" (I/O Space)\n";
+                bar_idx++;
+                continue; 
+            }else{
+                if(bar.mem_field.mem_type==0b10){
+                    bar_t bar_up={
+                        .value=header->bars[bar_idx+1]
+                    };
+                    phyaddr_t bar_base=(bar.value&~0xf)|(uint64_t(bar_up.value)<<32);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << bar_base << DEC<<" (64-bit Memory)\n";
+                    // 先写高32位,再写低32位(符合PCIe规范)
+                    header->bars[bar_idx+1]=~0;
+                    __sync_synchronize();
+                    header->bars[bar_idx]=~0;
+                    __sync_synchronize();
+                    uint32_t probe=header->bars[bar_idx];
+                    __sync_synchronize();
+                    uint32_t probe_up=header->bars[bar_idx+1];
+                    probe&=~0xF;
+                    uint64_t bar_size=1+~((uint64_t(probe_up)<<32)|probe);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": Size: " << bar_size << " bytes\n";
+                    // 恢复时同样先写高位,再写低位
+                    header->bars[bar_idx+1]=bar_up.value;
+                    __sync_synchronize();
+                    header->bars[bar_idx]=bar.value;
+                    __sync_synchronize();
+                    bar_idx+=2;
+                    continue;
+                }else if(bar.mem_field.mem_type==0){
+                    if(bar.value==0){
+                        bar_idx++;
+                        continue;
+                    }
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    uint32_t base=bar.value&~0xF;
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << base << DEC<<" (32-bit Memory)\n";
+                    header->bars[bar_idx]=~0;
+                    __sync_synchronize();
+                    uint32_t probe=header->bars[bar_idx];
+                    __sync_synchronize();
+                    probe&=~0xF;
+                    uint64_t bar_size=1+static_cast<uint64_t>(~probe);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": Size: " << bar_size << " bytes\n";
+                    __sync_synchronize();
+                    header->bars[bar_idx]=bar.value;
+                    __sync_synchronize();
+                    bar_idx++;
+                    continue;
+                }else{
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout<<"BAD BAR type"<<kendl;
+                    bar_idx++;
+                    continue;
+                }
+            }
+        }
+        command.fields.memory_space=1;
+        command.fields.bus_master=1;
+        header->command=command.value;
+        #endif
         for(uint32_t i = 0; i < depth; i++) {
             bsp_kout << "    ";
         }
@@ -168,6 +260,126 @@ void pcie_an_ecam_print(vaddr_t vbase, uint32_t depth){//vbase为直接的底
         bsp_kout << static_cast<uint32_t>(header->base_class) << ":"
                      << static_cast<uint32_t>(header->sub_class) << ":"
                      << static_cast<uint32_t>(header->prog_if) << "\n";
+        
+        #ifdef USER_MODE
+        // 打印BARs (PCI桥只有2个BAR)
+        for(int i = 0; i < 2; i++) {
+            if(header->bars[i] != 0) {
+                for(uint32_t j = 0; j < depth; j++) {
+                    bsp_kout << "    ";
+                }
+                bsp_kout << "[PCIe] BAR" << i << ": 0x";
+                bsp_kout.shift_hex();
+                
+                // 检查是否为64位BAR
+                if((header->bars[i] & 0x1) == 0) {  // 内存空间
+                    uint8_t bar_type = (header->bars[i] >> 1) & 0x3;
+                    if(bar_type == PCI_BAR_TYPE_64BIT) {
+                        // 64位BAR: 需要组合下一个BAR
+                        if(i + 1 < 2 && header->bars[i + 1] != 0) {
+                            uint64_t full_addr = static_cast<uint64_t>(header->bars[i]) | 
+                                               (static_cast<uint64_t>(header->bars[i + 1]) << 32);
+                            bsp_kout << full_addr << " (64-bit Memory, Full Address)\n";
+                            i++;  // 跳过下一个BAR,因为它已经被使用了
+                        } else {
+                            bsp_kout << header->bars[i] << " (64-bit Memory, Incomplete)\n";
+                        }
+                    } else {
+                        bsp_kout << header->bars[i] << " (32-bit Memory)\n";
+                    }
+                } else {
+                    bsp_kout << header->bars[i] << " (I/O Space)\n";
+                }
+            }
+        }
+        #endif
+        
+        #ifdef KERNEL_MODE
+        pci_command_t command={
+            .value=header->command
+        };
+        command.fields.memory_space=0;
+        command.fields.io_space=0;
+        command.fields.bus_master=0;
+        header->command=command.value;
+        uint8_t bar_idx=0;
+        while(true){
+            if(bar_idx>=2)break;  // PCI桥只有2个BAR
+            bar_t bar={
+                .value=header->bars[bar_idx]
+            };
+            if(bar.io_field.identifier){
+                for(uint32_t j = 0; j < depth; j++) {
+                    bsp_kout << "    ";
+                }
+                bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << bar.value << DEC<<" (I/O Space)\n";
+                bar_idx++;
+                continue; 
+            }else{
+                if(bar.mem_field.mem_type==0b10){
+                    bar_t bar_up={
+                        .value=header->bars[bar_idx+1]
+                    };
+                    phyaddr_t bar_base=(bar.value&~0xf)|(uint64_t(bar_up.value)<<32);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << bar_base << DEC<<" (64-bit Memory)\n";
+                    // 先写高32位,再写低32位(符合PCIe规范)
+                    header->bars[bar_idx+1]=~0;
+                    __sync_synchronize();
+                    header->bars[bar_idx]=~0;
+                    __sync_synchronize();
+                    uint32_t probe=header->bars[bar_idx];
+                    __sync_synchronize();
+                    uint32_t probe_up=header->bars[bar_idx+1];
+                    probe&=~0xF;
+                    uint64_t bar_size=1+~((uint64_t(probe_up)<<32)|probe);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": Size: " << bar_size << " bytes\n";
+                    // 恢复时同样先写高位,再写低位
+                    header->bars[bar_idx+1]=bar_up.value;
+                    __sync_synchronize();
+                    header->bars[bar_idx]=bar.value;
+                    __sync_synchronize();
+                    bar_idx+=2;
+                    continue;
+                }else if(bar.mem_field.mem_type==0){
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": 0x"<<HEX << bar.value << DEC<<" (32-bit Memory)\n";
+                    header->bars[bar_idx]=~0;
+                    __sync_synchronize();
+                    uint32_t probe=header->bars[bar_idx];
+                    __sync_synchronize();
+                    probe&=~0xF;
+                    uint64_t bar_size=1+~static_cast<uint64_t>(probe);
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout << "[PCIe] BAR" << bar_idx << ": Size: " << bar_size << " bytes\n";
+                    __sync_synchronize();
+                    header->bars[bar_idx]=bar.value;
+                    __sync_synchronize();
+                    bar_idx++;
+                    continue;
+                }else{
+                    for(uint32_t j = 0; j < depth; j++) {
+                        bsp_kout << "    ";
+                    }
+                    bsp_kout<<"BAD BAR type"<<kendl;
+                    bar_idx++;
+                    continue;
+                }
+            }
+        }
+        command.fields.memory_space=1;
+        command.fields.bus_master=1;
+        header->command=command.value;
+        #endif
         
         for(uint32_t i = 0; i < depth; i++) {
             bsp_kout << "    ";
@@ -335,7 +547,7 @@ void pcie_text_praser()
         return;
     }
     
-    bsp_kout << "[PCIe] Starting PCIe enumeration...\n";
+    bsp_kout<<HEX << "[PCIe] Starting PCIe enumeration...\n";
     
     // 遍历所有ECAM节点
     for(auto it = global_container->begin(); it != global_container->end(); ++it) {

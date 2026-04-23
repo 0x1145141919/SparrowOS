@@ -127,8 +127,40 @@ namespace Scheduler{
         namespace kthread_exit_results{
             namespace fatal_reasons{
                 constexpr uint16_t bad_task_state=1;
-                constexpr uint16_t waiter_bad_state_and_block_reason=2;
+                constexpr uint16_t waiter_bad_block_reason=2;
                 constexpr uint16_t context_stackptr_out_of_range=4;
+            }
+        }
+        constexpr uint8_t kthread_block_queue=10;
+        namespace kthread_block_queue_results{
+            namespace fatal_reasons{
+                constexpr uint16_t bad_task_type=1;
+                constexpr uint16_t context_nullptr=2;
+                constexpr uint16_t context_null_stack_size=3;
+                constexpr uint16_t context_stackptr_out_of_range=4;
+                constexpr uint16_t illeage_state=5;
+            }
+        }
+        constexpr uint8_t kthread_block_queue_if_equal=11;
+        namespace kthread_block_queue_if_equal_results{
+            namespace fatal_reasons{
+                constexpr uint16_t bad_task_type=1;
+                constexpr uint16_t context_nullptr=2;
+                constexpr uint16_t context_null_stack_size=3;
+                constexpr uint16_t context_stackptr_out_of_range=4;
+                constexpr uint16_t illeage_state=5;
+            }
+        }
+        constexpr uint8_t kthread_common_save=12;
+        namespace kthread_common_save_results{
+            namespace fatal_reasons{
+                constexpr uint16_t bad_task_type=1;
+                constexpr uint16_t context_nullptr=2;
+                constexpr uint16_t bad_task_state=3;
+                constexpr uint16_t context_stackptr_out_of_range=4;
+            }
+            namespace fail_reasons{
+                constexpr uint16_t nullptr_param=1;
             }
         }
     }
@@ -159,6 +191,8 @@ namespace kthread_call_num{
     constexpr uint64_t yield=2;
     constexpr uint64_t wait=3;
     constexpr uint64_t block=4;
+    constexpr uint64_t block_to_queue=5;
+    constexpr uint64_t block_to_queue_if_equal=6;
 };
 constexpr uint64_t INVALID_TID=~0ull;
 constexpr uint8_t DEFAULT_STACK_PG_COUNT=7;
@@ -222,6 +256,14 @@ struct task_in_pool{
     task*task_ptr;
     uint32_t slot_version;
 };
+class tid_wait_queue:Ktemplats::list_doubly<uint64_t>{
+    
+    public:
+    using list_doubly::push_back;
+    using list_doubly::pop_front_value;
+    void wakeup_all();//假定外部有锁，调用此接口唤醒所有等待者
+    spinlock_cpp_t lock;
+};
 /**
  * 
  */
@@ -279,7 +321,10 @@ class alignas(64) per_processor_scheduler {
         public:
         using list_doubly<task*>::empty;
         using list_doubly<task*>::front;
+        using list_doubly<task*>::back;
         using list_doubly<task*>::pop_front_value;
+        using list_doubly<task*>::size;
+        using list_doubly<task*>::pop_front;
         sleep_queue_t()=default;
         KURD_t insert(task*task_ptr);//由于期望出队列的时候用pop_head_value的时候是时间戳最低的，因此这个insert要注意排序
     };
@@ -307,4 +352,15 @@ extern "C"{
     void kthread_sleep_cppenter(x64_standard_context* context);
     void kthread_self_blocked_cppenter(x64_standard_context* context);
     uint64_t wakeup_thread(uint64_t tid);//返回的是KURD但是受限于abi，需要分析
+    void block_queue(tid_wait_queue* block_queue);
+    void block_queue_cppenter(x64_standard_context* context);
+    void block_if_equal(tid_wait_queue* block_queue,uint64_t*checker,uint64_t block_token);
+    void block_if_equal_cppenter(x64_standard_context* context);
 }
+/**
+ * 内核线程接口里面锁顺序纪律：
+ * 1.task锁永远比scheduler的锁先锁
+ * 2.wait/exit接口对中waited锁的临界区覆盖waiters锁的临界区
+ * 3.block_queue和block_if_equal_cppenter的block_queue锁临界区覆盖放弃执行流的线程的锁的临界区
+ * 4.task锁临界区内可以调用task_pool相关接口，只在其内部有锁
+ */

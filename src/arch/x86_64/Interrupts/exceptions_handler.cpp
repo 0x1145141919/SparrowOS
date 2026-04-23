@@ -11,7 +11,7 @@
 void (*global_ipi_handler)()=nullptr;
 void double_fault_handler(x64_standard_context* frame,uint64_t errcode){
     // 双重故障只能发生在内核态,直接 panic
-    bsp_kout<<"[PANIC] Double Fault (#DF), errcode: "<<errcode<<kendl;
+    //bsp_kout<<"[PANIC] Double Fault (#DF), errcode: "<<errcode<<kendl;
     panic_info_inshort inshort={
         .is_bug=1,
         .is_policy=0,
@@ -29,7 +29,7 @@ void page_fault_handler(x64_standard_context* frame,uint64_t errcode,vaddr_t lin
         // TODO: 实现用户态缺页处理
     } else if((frame->iret_complex.cs & 0x3) == 0x0){
         // 内核态, panic
-        bsp_kout<<"[PANIC] Page Fault (#PF) at addr: "<<liner_addr<<", errcode: "<<errcode<<kendl;
+        //bsp_kout<<"[PANIC] Page Fault (#PF) at addr: "<<liner_addr<<", errcode: "<<errcode<<kendl;
         panic_info_inshort inshort={
             .is_bug=1,
             .is_policy=0,
@@ -48,7 +48,7 @@ void general_protection_handler(x64_standard_context* frame,uint64_t errcode){
         // TODO: 实现用户态 GPF 处理
     } else if((frame->iret_complex.cs & 0x3) == 0x0){
         // 内核态, panic
-        bsp_kout<<"[PANIC] General Protection (#GP), errcode: "<<errcode<<kendl;
+        //bsp_kout<<"[PANIC] General Protection (#GP), errcode: "<<errcode<<kendl;
         panic_info_inshort inshort={
             .is_bug=1,
             .is_policy=0,
@@ -105,7 +105,7 @@ void debug_cpp_enter(x64_standard_context *frame)
 
 void nmi_cpp_enter(x64_standard_context *frame)
 {
-
+    bsp_kout<<"NMI listening"<<kendl;
 }
 
 void breakpoint_cpp_enter(x64_standard_context *frame)

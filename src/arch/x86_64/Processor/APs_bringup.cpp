@@ -73,7 +73,7 @@ KURD_t x86_smp_processors_container::AP_Init_one_by_one()
     bsp_kout<<now<<"[x64_local_processor]AP_Init_one_by_one try init all exclued self prcessor"<<kendl;
     x2apic::x2apic_driver::raw_send_ipi(icr_init);
     bsp_kout<<now<<"[x64_local_processor]AP_Init_one_by_one init all exclued self prcessor sucess"<<kendl;
-    ktime::microsecond_polling_delay(20000);
+    ktime::microsecond_polling_delay_by_hpet(20000);
     }
     {
         x2apic::x2apic_icr_t icr_init_de_assert={
@@ -93,7 +93,7 @@ KURD_t x86_smp_processors_container::AP_Init_one_by_one()
     bsp_kout<<now<<"[x64_local_processor]AP_Init_one_by_one try init-de-assert all exclued self prcessor"<<kendl;
     x2apic::x2apic_driver::raw_send_ipi(icr_init_de_assert);
     bsp_kout<<now<<"[x64_local_processor]AP_Init_one_by_one init-de-assert all exclued self prcessor sucess"<<kendl;
-    ktime::microsecond_polling_delay(1000);
+    ktime::microsecond_polling_delay_by_hpet(1000);
     }
     
     uint32_t processor_id = 1;

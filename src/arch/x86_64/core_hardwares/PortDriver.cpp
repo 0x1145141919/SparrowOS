@@ -4,17 +4,8 @@
 #include "util/OS_utils.h"
 #include "Scheduler/per_processor_scheduler.h"
 #include "util/arch/x86-64/cpuid_intel.h"
+#include <sys/io.h>
 #define COM1_PORT 0x3F8
-static inline void outb(UINT16 port, UINT8 value) {
-    asm volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-// 端口输入函数(内联汇编)
-static inline UINT8 inb(UINT16 port) {
-    UINT8 ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
 void uart_print_num(uint64_t raw, num_format_t format, numer_system_select radix);
 void uart_runtime_p_num(uint64_t raw, num_format_t format, numer_system_select radix);
 void uart_runtime_puts(const char* str, uint64_t len);
@@ -89,18 +80,18 @@ bool uart_runtime_submit_num(uint64_t raw, num_format_t format, numer_system_sel
 
 void serial_init_stage1() {
     // 禁用中断
-    outb(COM1_PORT + 1, 0x00);
+    outb(0x00, COM1_PORT + 1);
     
     // 设置波特率(115200)
-    outb(COM1_PORT + 3, 0x80);    // 启用DLAB(除数锁存访问位)
-    outb(COM1_PORT + 0, 0x01);     // 设置除数为1 (低位)
-    outb(COM1_PORT + 1, 0x00);     // 设置除数为1 (高位)
+    outb(0x80, COM1_PORT + 3);    // 启用DLAB(除数锁存访问位)
+    outb(0x01, COM1_PORT + 0);     // 设置除数为1 (低位)
+    outb(0x00, COM1_PORT + 1);     // 设置除数为1 (高位)
     
     // 8位数据，无奇偶校验，1位停止位
-    outb(COM1_PORT + 3, 0x03);
+    outb(0x03, COM1_PORT + 3);
     
     // 启用FIFO，清除接收/发送FIFO缓冲区
-    outb(COM1_PORT + 2, 0xC7);
+    outb(0xC7, COM1_PORT + 2);
     kio::kout_backend backend={
         .name="COM1",
         .is_masked=0,
@@ -119,7 +110,7 @@ void serial_init_stage1() {
     g_uart_runtime_ring.pop_count = 0;
     g_uart_runtime_ready = true;
     // 启用中断(可选)
-   //outb(COM1_PORT + 1, 0x0F);
+   //outb(0x0F, COM1_PORT + 1);
 }
 // 串口运行时发送服务线程（轮询发送，不使用串口中断）
 int serial_init_stage2() {
@@ -147,7 +138,7 @@ int serial_is_transmit_empty() {
 // 发送一个字符
 void serial_putc(char c) {
     while (serial_is_transmit_empty() == 0);
-    outb(COM1_PORT, c);
+    outb(c, COM1_PORT);
 }
 
 // 发送字符串

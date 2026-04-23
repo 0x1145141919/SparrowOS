@@ -20,7 +20,7 @@ typedef union {
         uint16_t fast_back2back:1;       // bit9: 快速背靠背
         uint16_t interrupt_disable:1;     // bit10: 中断禁用
         uint16_t reserved2:5;            // bits11-15: 保留
-    };
+    }fields;
 } __attribute__((packed)) pci_command_t;
 
 // ========== 3. Status寄存器位定义 ==========
@@ -41,7 +41,7 @@ typedef union {
         uint16_t received_master_abort:1;  // bit13: 收到主终止
         uint16_t signaled_system_error:1;  // bit14: 发送系统错误
         uint16_t detected_parity_error:1;  // bit15: 检测到奇偶错误
-    };
+    }fields;
 } __attribute__((packed)) pci_status_t;
 
 // ========== 4. Header Type 定义 ==========
@@ -54,15 +54,28 @@ constexpr uint8_t PCI_HEADER_TYPE_CARDBUS = 0x02;     // Type 2 (CardBus 桥)
 constexpr uint16_t ECAM_size=0x1000;
 constexpr uint8_t func_bit_width=3;
 constexpr uint8_t device_bit_num=5;
-
+union bar_t{
+    uint32_t value;
+    struct bar_mem{
+        uint32_t identifier:1;
+        uint32_t mem_type:2;
+        uint32_t mem_prefetchable:1;
+        uint32_t base_address:28;
+    }mem_field;
+    struct bar_io{
+        uint32_t identifier:1;
+        uint32_t reserved:1;
+        uint32_t size:30;
+    }io_field;
+};
 typedef struct {
     // 0x00-0x03: 设备标识
     uint16_t vendor_id;           // 厂商ID (读)
     uint16_t device_id;           // 设备ID (读)
     
     // 0x04-0x07: 命令和状态
-    pci_command_t command;              // 命令寄存器 (读/写)
-    pci_status_t status;               // 状态寄存器 (读)
+    uint16_t command;              // 命令寄存器 (读/写)
+    uint16_t status;               // 状态寄存器 (读)
     
     // 0x08-0x0B: 版本和类别码
     uint8_t revision_id;           // 修订版本 (读)

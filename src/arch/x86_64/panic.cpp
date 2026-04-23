@@ -33,9 +33,11 @@ Panic::~Panic()
 //第四步是allow_broadcast控制下对于非空message，context进行打印，kurd甩给kout分析
 //最后停机
 extern "C" void resources_shift();
+spinlock_cpp_t panic_lock;
 #ifdef KERNEL_MODE
 void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
 {
+    panic_lock.lock();
     if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
         x2apic::x2apic_driver::broadcast_exself_fixed_ipi(other_processors_froze_handler);
     }

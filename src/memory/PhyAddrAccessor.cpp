@@ -108,6 +108,36 @@ uint64_t PhyAddrAccessor::readu64(phyaddr_t addr)
     return 0;
 }
 
+void PhyAddrAccessor::cache_flush(phyaddr_t addr)
+{
+    if (is_init_cr3()) {
+        asm volatile("clflushopt (%0)" :: "r"(addr) : "memory");
+        return;
+    }else{
+        if(addr<BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG){
+            asm volatile("clflushopt (%0)" :: "r"(BASIC_DESC.start+addr) : "memory");
+            return;
+        }
+    }
+    // TODO: 实现非初始化页表情况下的访问逻辑
+}
+
+void PhyAddrAccessor::cache_flush_serial(phyaddr_t addr)
+{
+    if (is_init_cr3()) {
+        asm volatile("clflush (%0)" :: "r"(addr) : "memory");
+        asm volatile("mfence" ::: "memory");
+        return;
+    }else{
+        if(addr<BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG){
+            asm volatile("clflush (%0)" :: "r"(BASIC_DESC.start+addr) : "memory");
+            asm volatile("mfence" ::: "memory");
+            return;
+        }
+    }
+    // TODO: 实现非初始化页表情况下的访问逻辑
+}
+
 void PhyAddrAccessor::writeu8(phyaddr_t addr, uint8_t value)
 {
     if (is_init_cr3()) {

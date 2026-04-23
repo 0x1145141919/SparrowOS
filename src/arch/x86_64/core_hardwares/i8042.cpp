@@ -4,69 +4,80 @@
 #include <arch/x86_64/core_hardwares/DMAR.h>
 #include <arch/x86_64/Interrupt_system/loacl_processor.h>
 #include <util/kout.h>
+#include <panic.h>
 #include <global_controls.h>
 extern "C" char i8042_code_deal;
-const char* scancode_to_key(uint8_t scancode);
-extern "C" void i8042_cpp_enter(x64_standard_context* frame){
-    bsp_kout<<"i8042_cpp_enter: "<<scancode_to_key(inb(0x60))<<kendl;
-    x2apic::x2apic_driver::write_eoi();
-}
 extern "C" char i8042_fault_deal;
-const char* scancode_to_key(uint8_t scancode) {
-    switch(scancode) {
-        // 字母区
-        case 0x1c: return "ENTER";
-        case 0x15: return "Q";
-        case 0x1d: return "W";
-        case 0x24: return "E";
-        case 0x2d: return "R";
-        case 0x2c: return "T";
-        case 0x35: return "Y";
-        case 0x3c: return "U";
-        case 0x43: return "I";
-        case 0x44: return "O";
-        case 0x4d: return "P";
-        case 0x1a: return "Z";
-        case 0x1b: return "S";
-        case 0x23: return "D";
-        case 0x2b: return "F";
-        case 0x34: return "G";
-        case 0x33: return "H";
-        case 0x3b: return "J";
-        case 0x42: return "K";
-        case 0x4b: return "L";
-        case 0x29: return "SPACE";
-        
-        // 数字区
-        case 0x16: return "1";
-        case 0x1e: return "2";
-        case 0x26: return "3";
-        case 0x25: return "4";
-        case 0x2e: return "5";
-        case 0x36: return "6";
-        case 0x3d: return "7";
-        case 0x3e: return "8";
-        case 0x46: return "9";
-        case 0x45: return "0";
-        
-        // 特殊键
-        case 0x66: return "BACKSPACE";
-        case 0x0d: return "TAB";
-        case 0x58: return "CAPSLOCK";
-        case 0x77: return "NUMLOCK";
-        case 0x7e: return "SCROLLLOCK";
-        case 0x76: return "ESC";
-        
-        // 修饰键
-        case 0x12: return "LEFT_SHIFT";
-        case 0x59: return "RIGHT_SHIFT";
-        case 0x14: return "LEFT_CTRL";
-        case 0x11: return "LEFT_ALT";
-        case 0x5a: return "ENTER (keypad)";
-        
-        default: return "UNKNOWN";
+u16ka scan_code_buffer_tail_idx;
+u8ka analyzed_buffer_tail_idx;
+union led_status {
+    uint8_t raw;
+    struct {
+        uint8_t scrolllock:1;
+        uint8_t numlock:1;
+        uint8_t capslock:1;
+        uint8_t res:5;
+    }field;
+};
+alignas(4096) uint8_t scan_code_buffer[4096];
+tid_wait_queue* i8042_scancode_buffer_subscriber_queue;
+tid_wait_queue* i8042_analyzed_buffer_subscriber_queue;
+led_status key_board_led;
+const char* scancode_to_key(uint8_t scancode);
+
+void wait_until_in_buff_clear(){
+    while(inb(0x64)&0x2);
+}
+void led_set(){
+    wait_until_in_buff_clear();
+    outb(0xed,0x60);
+    uint8_t ack;
+    wait_until_in_buff_clear();
+    if(ack!=0xfa){
+        return;
+    }
+    wait_until_in_buff_clear();
+    outb(key_board_led.raw,0x60);
+    wait_until_in_buff_clear();
+    if(ack!=0xfa){
+        return;
     }
 }
+extern "C" void i8042_cpp_enter(x64_standard_context* frame){
+    uint8_t scancode= inb(0x60);
+    if(scancode==0x3a){
+        key_board_led.raw^=4;
+        led_set();
+    }else  if(scancode==0x45){
+        key_board_led.raw^=2;
+        led_set();
+    }
+    bsp_kout<<"i8042 cpp enter: "<<HEX<<scancode<<kendl;
+    uint16_t tail=scan_code_buffer_tail_idx.load();
+    tail++;
+    tail/=i8042_buffer_max_size;
+    scan_code_buffer_tail_idx.store(tail);
+    scan_code_buffer[tail]=scancode;
+    if(GlobalKernelStatus>=SCHEDUL_READY)
+    {
+        spinlock_cpp_t lock(i8042_scancode_buffer_subscriber_queue->lock);
+        i8042_scancode_buffer_subscriber_queue->wakeup_all();
+    }
+    x2apic::x2apic_driver::write_eoi();
+}
+void*scancode_analyze_kthread(void*not_use){
+    uint16_t idx;
+    while(true){
+        idx=scan_code_buffer_tail_idx.load();
+        block_queue(i8042_scancode_buffer_subscriber_queue);
+        
+    }
+}
+//然后有两个VM_interval,只读的暴露给外界，读写的给中断handler 
+
+
+
+
 void i8042_interrupt_enable(){
     x64_local_processor* manage=x86_smp_processors_container::get_processor_mgr_by_processor_id(++legacy_rotate_interrupt_alloc_id);
     uint32_t target_apicid=manage->get_apic_id();
@@ -76,7 +87,8 @@ void i8042_interrupt_enable(){
     }
     KURD_t kurd;
     if(is_iremap_try)
-    {pcie_location ioapic_ioapic_location=dmar::special_locations[dmar::ioapic_idx].location;
+    {
+    pcie_location ioapic_ioapic_location=dmar::special_locations[dmar::ioapic_idx].location;
     dmar::regist_remmap_struct arg={
         .location=ioapic_ioapic_location,
         .vec=vec,
@@ -105,6 +117,8 @@ void i8042_interrupt_enable(){
         flag.target_apicid=target_apicid;
         kurd=main_router->irq_regist(1,flag);
     }
+    key_board_led.raw=0;
+    led_set();
     while(inb(0x64)&0x3);
     outb(0x64,0x20);
     uint8_t command=inb(0x60);
@@ -114,4 +128,7 @@ void i8042_interrupt_enable(){
     while(inb(0x64)&0x3);
     outb(0x60,command);
     while(inb(0x64)&0x3);
+    
+    i8042_scancode_buffer_subscriber_queue=new tid_wait_queue;
+    
 }
