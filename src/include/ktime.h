@@ -5,6 +5,7 @@
 typedef  uint64_t miusecond_time_stamp_t;
 constexpr uint64_t fs_per_ns=1000000ull;
 constexpr uint64_t FS_per_mius=1000000000ull;
+<<<<<<< HEAD
 struct macro_tm {
     uint8_t tm_sec;     /* 秒 (0-60, 允许闰秒) */
     uint8_t tm_min;     /* 分 (0-59) */
@@ -19,6 +20,26 @@ struct macro_tm {
 namespace ktime
 {
     macro_tm GetTime_in_os();  
+=======
+
+/**
+ * @brief 内核宏观时间结构（通用日历/时间，不依赖 UEFI 方言）
+ */
+struct macro_tm {
+    uint16_t year;          // 完整年份，如 2026
+    uint8_t  month;         // 1-12
+    uint8_t  day;           // 1-31
+    uint8_t  hour;          // 0-23
+    uint8_t  minute;        // 0-59
+    uint8_t  second;        // 0-59
+    uint16_t millisecond;   // 0-999
+    int16_t  utc_offset;    // UTC 偏移（分钟），0x7FFF = 未指定
+};
+
+namespace ktime
+{
+    macro_tm GetTime_in_os();
+>>>>>>> agent_kshell
     int modify_time(macro_tm time);
     uint64_t get_microsecond_stamp();
     uint64_t get_nanosecond_stamp();
