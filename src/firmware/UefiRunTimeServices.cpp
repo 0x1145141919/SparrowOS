@@ -16,6 +16,7 @@ EFI_GET_WAKEUP_TIME EFI_RT_SVS::get_wakeup_time;
 EFI_SET_WAKEUP_TIME EFI_RT_SVS::set_wakeup_time;
 EFI_SET_VIRTUAL_ADDRESS_MAP EFI_RT_SVS::set_virtual_address_map;
 EFI_CONVERT_POINTER EFI_RT_SVS::convert_pointer;
+bool EFI_RT_SVS::is_virtual;
 EFI_RT_SVS::EFI_RT_SVS()
 {
     
