@@ -312,6 +312,16 @@ KURD_t cmd_ueficreset(const line_t* line) {
     return ok;
 }
 
+// ── uefiptrs ───────────────────────────────────────────────────
+
+KURD_t cmd_uefiptrs(const line_t* line) {
+    (void)line;
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+    EFI_RT_SVS::dump_func_ptrs();
+    return ok;
+}
+
 // ── uefishutdown ───────────────────────────────────────────────
 
 KURD_t cmd_uefishutdown(const line_t* line) {

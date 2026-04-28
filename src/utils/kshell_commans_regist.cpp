@@ -49,6 +49,7 @@ extern KURD_t cmd_uefisettime(const line_t* line);
 extern KURD_t cmd_uefireboot(const line_t* line);
 extern KURD_t cmd_ueficreset(const line_t* line);
 extern KURD_t cmd_uefishutdown(const line_t* line);
+extern KURD_t cmd_uefiptrs(const line_t* line);
 
 // 电源命令内部自行处理确认（特定确认词 REBOOT/SHUTDOWN），
 // 因此 need_confirm=false 避免框架默认的 "yes" 确认。
@@ -63,6 +64,8 @@ static command_entry_t g_uefi_command_table[] = {
         cmd_ueficreset,     command_risk_level_t::DANGEROUS, false},
     {"uefishutdown",   "System shutdown",
         cmd_uefishutdown,   command_risk_level_t::DANGEROUS, false},
+    {"uefiptrs",       "UEFI RT function pointer table",
+        cmd_uefiptrs,       command_risk_level_t::SAFE, false},
 };
 
 static constexpr size_t UEFI_CMD_COUNT =

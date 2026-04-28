@@ -25,6 +25,12 @@ class EFI_RT_SVS
         static void rt_hotreset();
         static void rt_coldreset();
         static void rt_shutdown();
+        /**
+         * @brief 打印静态函数指针表（调试用）
+         *
+         * 输出所有 7 个 UEFI 运行时服务函数指针及其地址（HEX）。
+         */
+        static void dump_func_ptrs();
 };
 extern EFI_SYSTEM_TABLE*global_gST;
 

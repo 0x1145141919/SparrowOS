@@ -1,5 +1,6 @@
 #include "firmware/UefiRunTimeServices.h"
 #include "util/OS_utils.h"
+#include "util/kout.h"
 #include "memory/memory_base.h"
 #include "memory/AddresSpace.h"
 #include "abi/os_error_definitions.h"
@@ -98,6 +99,21 @@ void EFI_RT_SVS::rt_shutdown()
 {
     rt_reset(EfiResetShutdown,EFI_SUCCESS,0,NULL);
     asm volatile("hlt");
+}
+
+void EFI_RT_SVS::dump_func_ptrs()
+{
+    using namespace kio;
+    bsp_kout << "=== UEFI RT Function Pointer Table ===" << kendl;
+    bsp_kout << "  get_time:             0x" << HEX << (uint64_t)(void*)get_time              << DEC << kendl;
+    bsp_kout << "  set_time:             0x" << HEX << (uint64_t)(void*)set_time              << DEC << kendl;
+    bsp_kout << "  get_wakeup_time:      0x" << HEX << (uint64_t)(void*)get_wakeup_time       << DEC << kendl;
+    bsp_kout << "  set_wakeup_time:      0x" << HEX << (uint64_t)(void*)set_wakeup_time       << DEC << kendl;
+    bsp_kout << "  reset_system:         0x" << HEX << (uint64_t)(void*)reset_system          << DEC << kendl;
+    bsp_kout << "  set_virtual_addr_map: 0x" << HEX << (uint64_t)(void*)set_virtual_address_map << DEC << kendl;
+    bsp_kout << "  convert_pointer:      0x" << HEX << (uint64_t)(void*)convert_pointer       << DEC << kendl;
+    bsp_kout << "  gST:                  0x" << HEX << (uint64_t)(void*)gST                   << DEC << kendl;
+    bsp_kout << "  is_virtual:           " << (is_virtual ? "true" : "false") << kendl;
 }
 
 
