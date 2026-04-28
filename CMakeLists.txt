@@ -124,6 +124,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/HPET.cpp
     src/arch/x86_64/time.cpp
     src/utils/textConsole.cpp
+    src/firmware/uefi_kshell_commands.cpp
     src/arch/x86_64/core_hardwares/primitive_gop.cpp
     src/arch/x86_64/core_hardwares/DMAR.cpp
     src/arch/x86_64/core_hardwares/i8042.cpp

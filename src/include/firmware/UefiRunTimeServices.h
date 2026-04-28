@@ -27,3 +27,8 @@ class EFI_RT_SVS
         static void rt_shutdown();
 };
 extern EFI_SYSTEM_TABLE*global_gST;
+
+// kshell UEFI 运行时服务命令注册（实现在 src/firmware/uefi_kshell_commands.cpp）
+#ifdef __cplusplus
+extern void register_uefi_kshell_commands();
+#endif
