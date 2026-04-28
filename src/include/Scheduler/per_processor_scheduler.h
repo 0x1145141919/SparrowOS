@@ -356,6 +356,7 @@ extern "C"{
     void block_queue_cppenter(x64_standard_context* context);
     void block_if_equal(tid_wait_queue* block_queue,uint64_t*checker,uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context* context);
+    uint64_t release_kthread(uint64_t tid);
 }
 /**
  * 内核线程接口里面锁顺序纪律：

@@ -387,60 +387,79 @@ void per_processor_scheduler::sleep_tasks_wake()
     int arr_len = 0;
     task* arr[arr_len_max];
     ksetmem_8(arr,0,arr_len_max);
+    Ktemplats::list_doubly<task*> to_run_list;
+    KURD_t kurd;
     miusecond_time_stamp_t current_stamp=ktime::get_microsecond_stamp();
-    this->sched_lock.lock();
-    for(;arr_len<arr_len_max;arr_len++){
-        if(sleep_queue.empty())break;
-        arr[arr_len]=sleep_queue.pop_front_value();
+    {
+        reentrant_spinlock_guard g(this->sched_lock);
+        while(true)
+        {
+        task**candidate=this->sleep_queue.front();
+        if(candidate==nullptr){
+            break;
+        }
+        task*candidate_task=*candidate;
+        if(candidate_task->sleep_wakeup_stamp<=current_stamp){
+            this->sleep_queue.pop_front();
+            to_run_list.push_back(candidate_task);
+        }else{
+            break;
+        }
+        }
     }
-    this->sched_lock.unlock();
-    for(uint64_t i=0;i<arr_len;i++){
-        if(arr[i]){
-            arr[i]->task_lock.lock();
-            sched_lock.lock();
-            if(arr[i]->sleep_wakeup_stamp>current_stamp){
-                sleep_queue.insert(arr[i]);
-            }else{
-                arr[i]->set_ready();
-                ready_queue.push_front(arr[i]);
+    if(to_run_list.empty())return;
+    for(auto it=to_run_list.begin();it!=to_run_list.end();++it){
+        task*candidate=*it;
+        {
+            reentrant_spinlock_guard g(candidate->task_lock);
+            candidate->set_ready();
+        }
+    }
+    {
+        reentrant_spinlock_guard g(this->sched_lock);
+        while(!to_run_list.empty()){
+            task*candidate=to_run_list.pop_front_value();
+            kurd=this->insert_ready_task(candidate);
+            if(error_kurd(kurd)){
+                panic_with_kurd(kurd);
             }
-            sched_lock.unlock();
-            arr[i]->task_lock.unlock();
         }
     }
 }
 void per_processor_scheduler::sched()
 {
     task* to_run=[&]()->task*{
-        this->sched_lock.lock();
-        if(this->ready_queue.empty()){
-            this->sched_lock.unlock();
-            uint32_t processor_count=[]()->uint32_t{
-                return gAnalyzer->processor_x64_list->size();
-            }();
-            for(uint32_t i=0;i<processor_count;i++){
-                if((global_schedulers+i)==this)continue;
-                global_schedulers[i].sched_lock.lock();
-                if(global_schedulers[i].ready_queue.empty()){
-                    global_schedulers[i].sched_lock.unlock();
-                    continue;
+        {
+            reentrant_spinlock_guard g(this->sched_lock);
+            if(this->ready_queue.size()){
+                task**candidate=this->ready_queue.front();
+                if(*candidate){
+                    this->ready_queue.pop_front();
+                    return *candidate;
                 }
-                task* candidate=global_schedulers[i].ready_queue.pop_front_value();
-                global_schedulers[i].sched_lock.unlock();
-                return candidate;
             }
-            return idle;
-        }else{
-            task* candidate=this->ready_queue.pop_front_value();
-            this->sched_lock.unlock();
-            return candidate;
         }
+        for(uint64_t i=0;i<logical_processor_count;i++){
+            if(global_schedulers+i==this)continue;
+            per_processor_scheduler&other=*(global_schedulers+i);
+            {
+            reentrant_spinlock_guard g(other.sched_lock);
+                if(other.ready_queue.size()){
+                    task**candidate=other.ready_queue.front();
+                    if(*candidate){
+                    other.ready_queue.pop_front();
+                    return *candidate;
+                    }
+                } 
+            }
+        }
+        return idle;
     }();
-    gs_u64_write(PROCESSOR_NOW_RUNNING_TID_GS_INDEX,to_run->get_tid());
     to_run->task_lock.lock();
     to_run->set_running();
     to_run->set_belonged_processor_id(fast_get_processor_id());
     to_run->lastest_run_stamp=ktime::get_microsecond_stamp();
+    gs_u64_write(PROCESSOR_NOW_RUNNING_TID_GS_INDEX,to_run->get_tid());
     to_run->task_lock.unlock();
     to_run->atomic_load();
 }
@@ -569,5 +588,17 @@ void task::atomic_load()
             //特殊kurd
             //return KURD_t(0,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,0,0,err_domain::CORE_MODULE);
         }
+    }
+}
+void tid_wait_queue::wakeup_all()
+{
+    for(uint64_t i=0;i<this->size();i++){
+        uint64_t tid=this->pop_front_value();
+        wakeup_thread(tid);
+        //这里要把返回的uint64_t转成KURD并且对于
+        //Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
+        //和Scheduler::self_scheduler_events::wake_up_kthread_results::fail_reasons::bad_task_state;
+        //要发起panic
+        //或者改成手动展开定制唤醒逻辑
     }
 }

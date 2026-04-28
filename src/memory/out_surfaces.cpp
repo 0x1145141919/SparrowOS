@@ -232,6 +232,7 @@ vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
         *kurd_out=fail;
         return 0;
     }
+    interval->vbase=vbase;
     *kurd_out=success;
     return vbase;
 #else

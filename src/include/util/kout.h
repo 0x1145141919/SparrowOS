@@ -24,6 +24,7 @@ struct kout_backend {
     uint64_t is_masked:1;
     uint64_t reserved:63;
     void (*running_stage_write)(const char* buf, uint64_t len);
+    void (*running_stage_putchar)(char c);
     void (*running_stage_num)(uint64_t raw,num_format_t format,numer_system_select radix);
     void (*panic_write)(const char* buf, uint64_t len);
     void (*early_write)(const char* buf, uint64_t len);
