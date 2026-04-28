@@ -25,6 +25,7 @@ class EFI_RT_SVS
         static void rt_hotreset();
         static void rt_coldreset();
         static void rt_shutdown();
+        static void dump_func_ptrs();
 };
 extern EFI_SYSTEM_TABLE*global_gST;
 

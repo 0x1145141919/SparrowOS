@@ -5,7 +5,60 @@
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "arch/x86_64/core_hardwares/tsc.h"
+#include "arch/x86_64/core_hardwares/rtc.h"
 #include "util/kout.h"
+
+// ── RTC 锚定状态 ─────────────────────────────────────────────
+static bool        g_rtc_ready = false;
+static uint64_t    g_anchor_us;
+static uint64_t    g_anchor_epoch_us;
+static int64_t     g_calib_offset_us;
+
+macro_tm ktime::GetTime_in_os() {
+    macro_tm t;
+    t.year = t.month = t.day = 0;
+    t.hour = t.minute = t.second = 0;
+    t.millisecond = 0;
+    t.utc_offset = 0x7FFF;
+
+    if (!g_rtc_ready) {
+        // 首次调用：读 RTC 锚定
+        rtc_read_time(&t);
+        g_anchor_us = get_microsecond_stamp();
+        g_anchor_epoch_us = macro_tm_to_epoch_sec(&t) * 1000000ULL;
+        g_rtc_ready = true;
+        return t;
+    }
+
+    // 后续：锚点 + 经过时间 + 校准偏移
+    uint64_t now_us = get_microsecond_stamp();
+    uint64_t elapsed = (now_us >= g_anchor_us) ? (now_us - g_anchor_us) : 0;
+    int64_t cur_epoch_us = (int64_t)g_anchor_epoch_us
+                         + (int64_t)elapsed
+                         + g_calib_offset_us;
+    if (cur_epoch_us < 0) cur_epoch_us = 0;
+    uint64_t sec  = (uint64_t)cur_epoch_us / 1000000ULL;
+    uint64_t us_f = (uint64_t)cur_epoch_us % 1000000ULL;
+    epoch_sec_to_macro_tm(sec, (uint16_t)(us_f / 1000), &t);
+    return t;
+}
+
+int ktime::modify_time(macro_tm time) {
+    if (!g_rtc_ready) {
+        // 还未锚定，直接锚定到给定时间
+        g_anchor_us = get_microsecond_stamp();
+        g_anchor_epoch_us = macro_tm_to_epoch_sec(&time) * 1000000ULL;
+        g_calib_offset_us = 0;
+        g_rtc_ready = true;
+        return 0;
+    }
+    uint64_t given_epoch_us = macro_tm_to_epoch_sec(&time) * 1000000ULL;
+    uint64_t now_us = get_microsecond_stamp();
+    uint64_t elapsed = (now_us >= g_anchor_us) ? (now_us - g_anchor_us) : 0;
+    int64_t current_epoch_us = (int64_t)g_anchor_epoch_us + (int64_t)elapsed;
+    g_calib_offset_us = (int64_t)given_epoch_us - current_epoch_us;
+    return 0;
+}
 
 miusecond_time_stamp_t ktime::get_microsecond_stamp( )
 {

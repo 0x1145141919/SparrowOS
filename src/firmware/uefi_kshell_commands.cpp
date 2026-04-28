@@ -11,6 +11,8 @@
 #include "util/lock.h"
 #include "util/OS_utils.h"
 #include "firmware/UefiRunTimeServices.h"
+#include "arch/x86_64/core_hardwares/i8042.h"
+#include "ktime.h"
 #include <efi.h>
 
 using namespace kio;
@@ -130,8 +132,7 @@ static bool confirm_with_word(const char* prompt, const char* expected) {
     char buf[64];
     size_t pos = 0;
     while (pos < sizeof(buf) - 1) {
-        i8042_blockable_keyboard_listening(buf + pos);
-        char c = buf[pos];
+        char c = i8042_blockable_keyboard_listening();
         if (c == '\r' || c == '\n') break;
         if (c == '\b' || c == 127) {
             if (pos > 0) { pos--; bsp_kout << "\b \b"; }
@@ -139,7 +140,7 @@ static bool confirm_with_word(const char* prompt, const char* expected) {
         }
         if (c == 3) { bsp_kout << "^C" << kendl; return false; }
         bsp_kout << c;
-        pos++;
+        buf[pos++] = c;
     }
     buf[pos] = '\0';
     bsp_kout << kendl;
@@ -325,5 +326,115 @@ KURD_t cmd_uefishutdown(const line_t* line) {
     }
     bsp_kout << "[uefishutdown] Shutting down..." << kendl;
     EFI_RT_SVS::rt_shutdown();
+    return ok;
+}
+
+// ── uefiptrs ───────────────────────────────────────────────────
+
+KURD_t cmd_uefiptrs(const line_t* line) {
+    (void)line;
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+    EFI_RT_SVS::dump_func_ptrs();
+    return ok;
+}
+
+// ── 打印 macro_tm ─────────────────────────────────────────────
+
+static void print_macro_tm(const macro_tm& t) {
+    bsp_kout << (uint64_t)t.year << "-";
+    if (t.month < 10) bsp_kout << "0";
+    bsp_kout << (uint64_t)t.month << "-";
+    if (t.day < 10) bsp_kout << "0";
+    bsp_kout << (uint64_t)t.day << "  ";
+    if (t.hour < 10) bsp_kout << "0";
+    bsp_kout << (uint64_t)t.hour << ":";
+    if (t.minute < 10) bsp_kout << "0";
+    bsp_kout << (uint64_t)t.minute << ":";
+    if (t.second < 10) bsp_kout << "0";
+    bsp_kout << (uint64_t)t.second;
+    bsp_kout << "." << (uint64_t)t.millisecond;
+    if (t.utc_offset != 0x7FFF) {
+        int16_t abs_off = t.utc_offset < 0 ? -t.utc_offset : t.utc_offset;
+        bsp_kout << "  UTC" << (t.utc_offset < 0 ? "-" : "+")
+                 << (abs_off / 60) << ":" << (abs_off % 60);
+    }
+}
+
+// ── get_macro_time ────────────────────────────────────────────
+
+KURD_t cmd_get_macro_time(const line_t* line) {
+    (void)line;
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+
+    macro_tm t = ktime::GetTime_in_os();
+    if (t.year == 0) {
+        bsp_kout << "[ERROR] Time not available" << kendl;
+        return ok;
+    }
+    print_macro_tm(t);
+    bsp_kout << kendl;
+    return ok;
+}
+
+// ── set_marcro_time ───────────────────────────────────────────
+
+KURD_t cmd_set_marcro_time(const line_t* line) {
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+
+    if (line->token_count < 2) {
+        bsp_kout << "[ERROR] Usage: set_marcro_time YYYY-MM-DD [HH:MM:SS]" << kendl;
+        return ok;
+    }
+
+    uint16_t y = 0; uint8_t mo = 1, d = 1, h = 0, mi = 0, s = 0;
+
+    // 日期 YYYY-MM-DD
+    const token_t& dt = line->tokens[1];
+    if (dt.len != 10 || dt.str[4] != '-' || dt.str[7] != '-') {
+        bsp_kout << "[ERROR] Date format: YYYY-MM-DD" << kendl;
+        return ok;
+    }
+    uint64_t tmp;
+    token_t yt  = {dt.str, 4};
+    token_t mot = {dt.str + 5, 2};
+    token_t dat = {dt.str + 8, 2};
+    if (parse_uint(yt, &tmp) || parse_uint(mot, &tmp) || parse_uint(dat, &tmp))
+        return ok;
+    y = (uint16_t)tmp; mo = (uint8_t)tmp; d = (uint8_t)tmp;
+
+    // 可选时间 HH:MM:SS
+    if (line->token_count >= 3) {
+        const token_t& tt = line->tokens[2];
+        if (tt.len == 8 && tt.str[2] == ':' && tt.str[5] == ':') {
+            token_t ht  = {tt.str, 2};
+            token_t mit = {tt.str + 3, 2};
+            token_t st  = {tt.str + 6, 2};
+            if (parse_uint(ht, &tmp) || parse_uint(mit, &tmp) || parse_uint(st, &tmp))
+                return ok;
+            h = (uint8_t)tmp; mi = (uint8_t)tmp; s = (uint8_t)tmp;
+        }
+    }
+
+    // 验证
+    if (!validate_datetime(y, mo, d, h, mi, s, 0, EFI_UNSPECIFIED_TIMEZONE)) {
+        bsp_kout << "[ERROR] Invalid date/time" << kendl;
+        return ok;
+    }
+
+    macro_tm target;
+    target.year        = y;
+    target.month       = mo;
+    target.day         = d;
+    target.hour        = h;
+    target.minute      = mi;
+    target.second      = s;
+    target.millisecond = 0;
+    target.utc_offset  = 0x7FFF;
+
+    ktime::modify_time(target);
+    bsp_kout << "[set_marcro_time] Calibration offset set." << kendl;
     return ok;
 }
