@@ -313,48 +313,38 @@ extern "C" void i8042_char_subscriber_init()
     }
 }
 
-extern "C" void i8042_blockable_keyboard_listening(char* buffer)
+extern "C" char i8042_blockable_keyboard_listening()
 {
-    if(buffer == nullptr){
-        return;
-    }
-    buffer[0] = '\0';
-
-    constexpr uint32_t kListenLimit = 4096;
-    constexpr char kEscapeChar = '\n';
-
-    // 这个接口设计为“只允许在内核线程上下文里阻塞使用”。
+    // 这个接口设计为"只允许在内核线程上下文里阻塞使用"。
     if(!kptrace_current_stack_has_kthread_entry()){
-        return;
+        return '\0';
     }
 
-    uint32_t out_idx = 0;
     uint64_t read_seq = i8042_char_get_publish_seq();
-    while(out_idx < kListenLimit){
+    
+    while(true){
         uint64_t publish_seq = i8042_char_get_publish_seq();
+        
+        // 如果没有新事件,等待
         if(read_seq == publish_seq){
             i8042_char_wait_event(read_seq);
             continue;
         }
+        
+        // 如果差距过大,调整read_seq避免回绕问题
         if((publish_seq - read_seq) > i8042_char_buffer_max_size){
             read_seq = publish_seq - i8042_char_buffer_max_size;
         }
 
-        while(read_seq < publish_seq && out_idx < kListenLimit){
+        // 读取下一个可用的事件
+        while(read_seq < publish_seq){
             kbd_char_event ev{};
             if(i8042_char_read_event_by_seq(read_seq, &ev)){
-                // 检查是否为终止字符（回车或换行）
-                if(ev.ch == kEscapeChar || ev.ch == '\r'){
-                    // 终止字符不写入buffer，直接结束
-                    buffer[out_idx] = '\0';
-                    return;
-                }
-                // 普通字符写入buffer
-                buffer[out_idx++] = ev.ch;
-                bsp_kout<<(char)ev.ch;
+                read_seq++;
+                // 返回接收到的字符
+                return ev.ch;
             }
             read_seq++;
         }
     }
-    buffer[out_idx] = '\0';
 }

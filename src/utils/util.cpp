@@ -91,7 +91,7 @@ int strlen_in_kernel(const char *s)
     return len;
 }
 
-int strncmp(const char* str1, const char* str2, size_t n) { 
+int strncmp_in_kernel(const char* str1, const char* str2, size_t n) { 
     while (n-- && *str1 && (*str1 == *str2)) {
         str1++;
         str2++;

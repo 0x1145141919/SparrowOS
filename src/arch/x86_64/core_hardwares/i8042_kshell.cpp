@@ -38,7 +38,7 @@ static KURD_t make_fail() {
 static bool token_eq(const token_t& tok, const char* s) {
     size_t n = strlen_in_kernel(s);
     if (tok.len != n) return false;
-    return strncmp(tok.str, s, n) == 0;
+    return strcmp_in_kernel(tok.str, s, n) == 0;
 }
 
 static void print_modifier_summary(uint8_t m) {
@@ -298,7 +298,7 @@ KURD_t cmd_kbdevents(const line_t* line) {
         if (pub > 0 && get_event(pub - 1, &rl)) recent_last_ts = rl.timestamp_us;
         uint64_t recent_span = recent_last_ts > recent_first_ts ? recent_last_ts - recent_first_ts : 1;
         bsp_kout << "Recent events:    " << recent_count << kendl;
-        bsp_kout << "Inst. rate:       " << (recent_count * 1000000ULL) / recent_span << " events/s" << kendl;
+        bsp_kout << "Inst. rate:       " << uint64_t((recent_count * 1000000ULL) / recent_span) << " events/s" << kendl;
 
         // 最大突发（events/10ms window）
         uint64_t max_burst = 0;
@@ -773,7 +773,7 @@ test_summary:
     uint64_t elapsed = ktime::get_microsecond_stamp() - start_us;
     if (elapsed > 0) {
         bsp_kout << "Elapsed:     " << elapsed / 1000 << " ms" << kendl;
-        bsp_kout << "Avg rate:    " << (total_keys * 1000000ULL) / elapsed << " keys/s" << kendl;
+        bsp_kout << "Avg rate:    " <<uint64_t( (total_keys * 1000000ULL) / elapsed) << " keys/s" << kendl;
     }
     return ok;
 }

@@ -259,6 +259,9 @@ struct task_in_pool{
 class tid_wait_queue:Ktemplats::list_doubly<uint64_t>{
     
     public:
+    using list_doubly::size;
+    using list_doubly::begin;
+    using list_doubly::end;
     using list_doubly::push_back;
     using list_doubly::pop_front_value;
     void wakeup_all();//假定外部有锁，调用此接口唤醒所有等待者

@@ -40,10 +40,9 @@ static constexpr size_t I8042_CMD_COUNT =
  * 如果 i8042 管线未初始化，注册仍会成功但命令执行时可能无法获取数据。
  */
 void register_i8042_kshell_commands() {
-    auto& framework = kshell_framework_t::get_instance();
 
     for (size_t i = 0; i < I8042_CMD_COUNT; i++) {
-        KURD_t result = framework.command_register(&g_i8042_command_table[i]);
+        KURD_t result = kshell_framework_t::command_register(&g_i8042_command_table[i]);
         if (result.result != 0) {
             bsp_kout << "[KSHELL] Failed to register command: "
                      << g_i8042_command_table[i].name << kendl;
@@ -51,4 +50,9 @@ void register_i8042_kshell_commands() {
     }
     bsp_kout << "[KSHELL] Registered " << I8042_CMD_COUNT
              << " i8042 keyboard debug commands" << kendl;
+}
+KURD_t kshell_framework_t::initial_commands_regist()
+{
+    register_i8042_kshell_commands();
+    return default_success();
 }
