@@ -12,6 +12,7 @@
 #include "util/OS_utils.h"
 #include "firmware/UefiRunTimeServices.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
+#include "ktime.h"
 #include <efi.h>
 
 using namespace kio;
@@ -319,6 +320,96 @@ KURD_t cmd_uefiptrs(const line_t* line) {
     KURD_t ok = make_ok();
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
     EFI_RT_SVS::dump_func_ptrs();
+    return ok;
+}
+
+// ── get_macro_time ────────────────────────────────────────────
+// 读 OS 系统时间（首次读 RTC 锚定，后续自由运行推算）
+
+KURD_t cmd_get_macro_time(const line_t* line) {
+    (void)line;
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+
+    EFI_TIME t = ktime::GetTime_in_os();
+    if (t.Year == 0) {
+        bsp_kout << "[ERROR] Time not available" << kendl;
+        return ok;
+    }
+
+    print_time_simple(t);
+    bsp_kout << "  (" << t.Nanosecond << " ns)" << kendl;
+    if (t.TimeZone != EFI_UNSPECIFIED_TIMEZONE) {
+        bsp_kout << "  TZ=" << (int16_t)t.TimeZone << " min" << kendl;
+    }
+    return ok;
+}
+
+// ── set_marcro_time ────────────────────────────────────────────
+// 设置 OS 系统时间校准偏移（仅校准，不写 RTC）
+
+KURD_t cmd_set_marcro_time(const line_t* line) {
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+
+    if (line->token_count < 2) {
+        bsp_kout << "[ERROR] Usage: set_marcro_time YYYY-MM-DD HH:MM:SS" << kendl;
+        return ok;
+    }
+
+    uint16_t y = 0;
+    uint8_t mo = 1, d = 1, h = 0, mi = 0, s = 0;
+
+    // 解析日期 token (YYYY-MM-DD)
+    const token_t& date_tok = line->tokens[1];
+    if (date_tok.len != 10 || date_tok.str[4] != '-' || date_tok.str[7] != '-') {
+        bsp_kout << "[ERROR] Date format: YYYY-MM-DD" << kendl;
+        return ok;
+    }
+    uint64_t tmp;
+    token_t yt = {date_tok.str, 4};
+    token_t mot = {date_tok.str + 5, 2};
+    token_t dt = {date_tok.str + 8, 2};
+    if (parse_uint(yt, &tmp)) return ok; y = (uint16_t)tmp;
+    if (parse_uint(mot, &tmp)) return ok; mo = (uint8_t)tmp;
+    if (parse_uint(dt, &tmp)) return ok; d = (uint8_t)tmp;
+
+    // 解析时间 token (HH:MM:SS) — 可选
+    if (line->token_count >= 3) {
+        const token_t& time_tok = line->tokens[2];
+        if (time_tok.len == 8 && time_tok.str[2] == ':' && time_tok.str[5] == ':') {
+            token_t ht = {time_tok.str, 2};
+            token_t mit = {time_tok.str + 3, 2};
+            token_t st = {time_tok.str + 6, 2};
+            if (parse_uint(ht, &tmp)) return ok; h = (uint8_t)tmp;
+            if (parse_uint(mit, &tmp)) return ok; mi = (uint8_t)tmp;
+            if (parse_uint(st, &tmp)) return ok; s = (uint8_t)tmp;
+        }
+    }
+
+    // 验证
+    if (!validate_datetime(y, mo, d, h, mi, s, 0, EFI_UNSPECIFIED_TIMEZONE)) {
+        bsp_kout << "[ERROR] Invalid date/time" << kendl;
+        return ok;
+    }
+
+    // 构造 EFI_TIME
+    EFI_TIME target;
+    ksetmem_8(&target, 0, sizeof(target));
+    target.Year       = y;
+    target.Month      = mo;
+    target.Day        = d;
+    target.Hour       = h;
+    target.Minute     = mi;
+    target.Second     = s;
+    target.TimeZone   = EFI_UNSPECIFIED_TIMEZONE;
+
+    int result = ktime::modify_time(target);
+    if (result == 0) {
+        bsp_kout << "[set_marcro_time] Calibration offset set." << kendl;
+    } else {
+        bsp_kout << "[ERROR] modify_time failed with code " << result << kendl;
+    }
     return ok;
 }
 
