@@ -1,7 +1,7 @@
 #include "util/kshell.h"
 #include "util/kout.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
-#include <cstring>
+#include "util/OS_utils.h"
 #include "util/kshell.h"
 
 using namespace kio;
@@ -35,7 +35,7 @@ kshell_framework_t::~kshell_framework_t() {
 
 int command_compare(const command_entry_t &a, const command_entry_t &b)
 {
-    return strcmp(a.name, b.name);
+    return strcmp_in_kernel(a.name, b.name);
 }
 
 /**
@@ -206,14 +206,14 @@ KURD_t kshell_framework_t::parse_line(const char* input, line_t* line) {
     }
     
     // 清空输出结构
-    memset(line, 0, sizeof(line_t));
+    ksetmem_8((void*)line, 0, sizeof(line_t));
     
     // 复制原始输入
-    size_t input_len = strlen(input);
+    size_t input_len = strlen_in_kernel(input);
     if (input_len >= sizeof(line->raw_buffer)) {
         input_len = sizeof(line->raw_buffer) - 1;
     }
-    memcpy(line->raw_buffer, input, input_len);
+    ksystemramcpy((void*)input, (void*)line->raw_buffer, input_len);
     line->raw_buffer[input_len] = '\0';
     line->raw_length = input_len;
     
@@ -284,7 +284,7 @@ KURD_t kshell_framework_t::show_help() {
             bsp_kout << "  " << cmd.name;
             
             // 对齐描述
-            size_t name_len = strlen(cmd.name);
+            size_t name_len = strlen_in_kernel(cmd.name);
             for (size_t i = 0; i < (20 - name_len); ++i) {
                 bsp_kout << " ";
             }
@@ -323,7 +323,7 @@ bool kshell_framework_t::confirm_dangerous_command(const command_entry_t* cmd_en
     size_t len = read_line_from_keyboard(confirm_buf, sizeof(confirm_buf) - 1);
     confirm_buf[len] = '\0';
     
-    return (strcmp(confirm_buf, "yes") == 0);
+    return (strcmp_in_kernel(confirm_buf, "yes") == 0);
 }
 
 /**
@@ -417,7 +417,7 @@ void kshell_framework_t::run_shell_loop() {
         }
         
         // 退出命令
-        if (strcmp(parsed_line.tokens[0].str, "exit") == 0 && 
+        if (strcmp_in_kernel(parsed_line.tokens[0].str, "exit") == 0 && 
             parsed_line.tokens[0].len == 4) {
             bsp_kout << "[KSHELL] Exiting shell..." << kendl;
             break;
