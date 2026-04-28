@@ -65,5 +65,5 @@ KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE
 
 
 global block_if_equal
-block_queue_if_equal:
+block_if_equal:
 KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE_IF_EQUAL

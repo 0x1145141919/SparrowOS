@@ -576,7 +576,25 @@ kio::kout &kio::kout::operator<<(tmp_buff& tmp_buff)
             }
             case tmp_buff::entry_type_t::character: {
                 #ifdef KERNEL_MODE
-                uniform_puts(&e.data.character, 1);
+                if(GlobalKernelStatus == SCHEDUL_READY){
+                    bool emitted = false;
+                    for(uint64_t j = 0; j < MAX_BACKEND_COUNT; j++){
+                        kout_backend* backend = backends[j];
+                        if(!backend || backend->is_masked) continue;
+                        if(backend->running_stage_putchar){
+                            backend->running_stage_putchar(e.data.character);
+                            emitted = true;
+                        }else if(backend->running_stage_write){
+                            backend->running_stage_write(&e.data.character, 1);
+                            emitted = true;
+                        }
+                    }
+                    if(!emitted){
+                        uniform_puts(&e.data.character, 1);
+                    }
+                }else{
+                    uniform_puts(&e.data.character, 1);
+                }
                 #endif
                 #ifdef USER_MODE
                 if (is_print_to_stdout) write(1, &e.data.character, 1);
@@ -698,7 +716,25 @@ kio::kout &kio::kout::operator<<(char c)
 {
     if(GlobalKernelStatus!=PANIC)spinlock_interrupt_about_guard guard(lock);
     #ifdef KERNEL_MODE
-    uniform_puts(&c, 1);
+    if(GlobalKernelStatus == SCHEDUL_READY){
+        bool emitted = false;
+        for(uint64_t i = 0; i < MAX_BACKEND_COUNT; i++){
+            kout_backend* backend = backends[i];
+            if(!backend || backend->is_masked) continue;
+            if(backend->running_stage_putchar){
+                backend->running_stage_putchar(c);
+                emitted = true;
+            }else if(backend->running_stage_write){
+                backend->running_stage_write(&c, 1);
+                emitted = true;
+            }
+        }
+        if(!emitted){
+            uniform_puts(&c, 1);
+        }
+    }else{
+        uniform_puts(&c, 1);
+    }
     #endif
     #ifdef USER_MODE
     if (is_print_to_stdout) write(1, &c, 1);
@@ -723,6 +759,8 @@ void kio::kout::Init()
         .is_masked=0,
         .reserved=0,        
         .running_stage_write=nullptr,
+        .running_stage_putchar=nullptr,
+        .running_stage_num=nullptr,
         .panic_write=&DmesgRingBuffer::putsk,
         .early_write=&DmesgRingBuffer::putsk,
     };

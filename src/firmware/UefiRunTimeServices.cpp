@@ -17,6 +17,7 @@ EFI_SET_VIRTUAL_ADDRESS_MAP EFI_RT_SVS::set_virtual_address_map;
 EFI_CONVERT_POINTER EFI_RT_SVS::convert_pointer;
 EFI_RT_SVS::EFI_RT_SVS()
 {
+    
 }
 int EFI_RT_SVS::Init(EFI_SYSTEM_TABLE *sti)
 {

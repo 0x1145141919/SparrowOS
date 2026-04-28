@@ -346,6 +346,8 @@ public:
         Node(const T& val) : data(val), parent(nullptr), 
                               left(nullptr), right(nullptr), is_red(true) {}
     };
+    
+    
 protected:
     Node* root;
     static Node* rotate_left(Node* old_root) { 
@@ -461,7 +463,152 @@ protected:
         while (cur && cur->left) cur = cur->left;
         return cur;
     }
+    static const Node* subtree_min(const Node* node)
+    {
+        const Node* cur = node;
+        while (cur && cur->left) cur = cur->left;
+        return cur;
+    }
+    static Node* subtree_max(Node* node)
+    {
+        Node* cur = node;
+        while (cur && cur->right) cur = cur->right;
+        return cur;
+    }
+    static const Node* subtree_max(const Node* node)
+    {
+        const Node* cur = node;
+        while (cur && cur->right) cur = cur->right;
+        return cur;
+    }
+    static Node* successor(Node* node)
+    {
+        if (!node) return nullptr;
+        if (node->right) return subtree_min(node->right);
+        Node* cur = node;
+        Node* p = cur->parent;
+        while (p && cur == p->right) {
+            cur = p;
+            p = p->parent;
+        }
+        return p;
+    }
+    static const Node* successor(const Node* node)
+    {
+        if (!node) return nullptr;
+        if (node->right) return subtree_min(node->right);
+        const Node* cur = node;
+        const Node* p = cur->parent;
+        while (p && cur == p->right) {
+            cur = p;
+            p = p->parent;
+        }
+        return p;
+    }
+    static Node* predecessor(Node* node)
+    {
+        if (!node) return nullptr;
+        if (node->left) return subtree_max(node->left);
+        Node* cur = node;
+        Node* p = cur->parent;
+        while (p && cur == p->left) {
+            cur = p;
+            p = p->parent;
+        }
+        return p;
+    }
+    static const Node* predecessor(const Node* node)
+    {
+        if (!node) return nullptr;
+        if (node->left) return subtree_max(node->left);
+        const Node* cur = node;
+        const Node* p = cur->parent;
+        while (p && cur == p->left) {
+            cur = p;
+            p = p->parent;
+        }
+        return p;
+    }
 public:
+    class iterator {
+        friend class RBTree;
+        Node* m_node;
+        const RBTree* m_owner;
+
+        iterator(Node* node, const RBTree* owner) : m_node(node), m_owner(owner) {}
+    public:
+        iterator() : m_node(nullptr), m_owner(nullptr) {}
+
+        T& operator*() const { return m_node->data; }
+        T* operator->() const { return &m_node->data; }
+
+        iterator& operator++()
+        {
+            m_node = successor(m_node);
+            return *this;
+        }
+        iterator operator++(int)
+        {
+            iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+        iterator& operator--()
+        {
+            if (m_node) m_node = predecessor(m_node);
+            else if (m_owner) m_node = subtree_max(m_owner->root);
+            return *this;
+        }
+        iterator operator--(int)
+        {
+            iterator tmp = *this;
+            --(*this);
+            return tmp;
+        }
+        bool operator==(const iterator& other) const { return m_node == other.m_node; }
+        bool operator!=(const iterator& other) const { return m_node != other.m_node; }
+    };
+
+    class const_iterator {
+        friend class RBTree;
+        const Node* m_node;
+        const RBTree* m_owner;
+
+        const_iterator(const Node* node, const RBTree* owner) : m_node(node), m_owner(owner) {}
+    public:
+        const_iterator() : m_node(nullptr), m_owner(nullptr) {}
+        const_iterator(const iterator& it) : m_node(it.m_node), m_owner(it.m_owner) {}
+
+        const T& operator*() const { return m_node->data; }
+        const T* operator->() const { return &m_node->data; }
+
+        const_iterator& operator++()
+        {
+            m_node = successor(m_node);
+            return *this;
+        }
+        const_iterator operator++(int)
+        {
+            const_iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+        const_iterator& operator--()
+        {
+            if (m_node) m_node = predecessor(m_node);
+            else if (m_owner) m_node = subtree_max(m_owner->root);
+            return *this;
+        }
+        const_iterator operator--(int)
+        {
+            const_iterator tmp = *this;
+            --(*this);
+            return tmp;
+        }
+        bool operator==(const const_iterator& other) const { return m_node == other.m_node; }
+        bool operator!=(const const_iterator& other) const { return m_node != other.m_node; }
+    };
+
     RBTree() : root(nullptr) {}
     // 清晰的返回值
     bool insert(const T value) // 返回是否成功插入（如已存在返回false）
@@ -642,7 +789,6 @@ public:
         Node* node = find_node(value);
         return node ? &node->data : nullptr;
     }
-    
     // 基本操作
     size_t size() const
     {
@@ -671,6 +817,12 @@ public:
         postorder(postorder, root);
         root = nullptr;
     }
+    iterator begin() { return iterator(subtree_min(root), this); }
+    iterator end() { return iterator(nullptr, this); }
+    const_iterator begin() const { return const_iterator(subtree_min(root), this); }
+    const_iterator end() const { return const_iterator(nullptr, this); }
+    const_iterator cbegin() const { return const_iterator(subtree_min(root), this); }
+    const_iterator cend() const { return const_iterator(nullptr, this); }
     
 private:
     // ...

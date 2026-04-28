@@ -9,6 +9,7 @@
 void uart_print_num(uint64_t raw, num_format_t format, numer_system_select radix);
 void uart_runtime_p_num(uint64_t raw, num_format_t format, numer_system_select radix);
 void uart_runtime_puts(const char* str, uint64_t len);
+void uart_runtime_putc(char c);
 void* uart_runtime_service_thread_main(void* data);
 
 namespace {
@@ -76,6 +77,32 @@ bool uart_runtime_submit_num(uint64_t raw, num_format_t format, numer_system_sel
     wakeup_thread(g_uart_runtime_service_tid);
     return true;
 }
+
+bool uart_runtime_submit_char(char ch, bool urgent)
+{
+    if (!g_uart_runtime_ready || g_uart_runtime_service_tid == INVALID_TID) {
+        return false;
+    }
+    g_uart_runtime_ring.lock.lock();
+    const uint32_t next_tail = ring_next_index(g_uart_runtime_ring.tail);
+    if (next_tail == g_uart_runtime_ring.head) {
+        g_uart_runtime_ring.drop_count++;
+        g_uart_runtime_ring.lock.unlock();
+        return false;
+    }
+    tc_uart_slot& slot = g_uart_runtime_ring.slots[g_uart_runtime_ring.tail];
+    slot.head.type = tc_uart_msg_type::single_character;
+    slot.head.reserved = 0;
+    slot.head.flags = urgent ? 1u : 0u;
+    slot.head.producer_cpu = fast_get_processor_id();
+    slot.head.seq = g_uart_runtime_ring.seq_gen++;
+    slot.payload.c.ch = ch;
+    g_uart_runtime_ring.tail = next_tail;
+    g_uart_runtime_ring.push_count++;
+    g_uart_runtime_ring.lock.unlock();
+    wakeup_thread(g_uart_runtime_service_tid);
+    return true;
+}
 } // namespace
 
 void serial_init_stage1() {
@@ -97,6 +124,7 @@ void serial_init_stage1() {
         .is_masked=0,
         .reserved=0,
         .running_stage_write=uart_runtime_puts,
+        .running_stage_putchar=uart_runtime_putc,
         .running_stage_num=uart_runtime_p_num,
         .panic_write=serial_puts,
         .early_write=serial_puts,
@@ -162,6 +190,13 @@ void uart_runtime_puts(const char* str, uint64_t len)
     if (!str || len == 0) return;
     if (!uart_runtime_submit_string(str, len, false)) {
         serial_puts(str, len);
+    }
+}
+
+void uart_runtime_putc(char c)
+{
+    if (!uart_runtime_submit_char(c, false)) {
+        serial_putc(c);
     }
 }
 

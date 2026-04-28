@@ -74,6 +74,66 @@ uint32_t ksymmanager::get_entry_count()
     return entry_count;
 }
 
+extern "C" void allthread_true_enter(void *(*entry)(void *), void *arg);
+
+static inline bool str_eq(const char* lhs, const char* rhs)
+{
+    if(lhs == nullptr || rhs == nullptr){
+        return false;
+    }
+    while(*lhs != '\0' && *rhs != '\0'){
+        if(*lhs != *rhs){
+            return false;
+        }
+        ++lhs;
+        ++rhs;
+    }
+    return (*lhs == '\0' && *rhs == '\0');
+}
+
+bool kptrace_current_stack_has_kthread_entry()
+{
+    struct StackFrame {
+        StackFrame* rbp;
+        uint64_t rip;
+    };
+
+    void* rbp_raw = nullptr;
+    asm volatile ("movq %%rbp, %0" : "=r"(rbp_raw));
+    StackFrame* frame = static_cast<StackFrame*>(rbp_raw);
+    constexpr int MAX_FRAMES = 128;
+    constexpr uint64_t kNearRangeBytes = 256;
+    const uint64_t kthread_entry_addr = reinterpret_cast<uint64_t>(&allthread_true_enter);
+
+    for(int i = 0; frame != nullptr && i < MAX_FRAMES; ++i){
+        if((reinterpret_cast<uint64_t>(frame) & 0x7ull) != 0 || frame->rip == 0){
+            return false;
+        }
+
+#ifdef KERNEL_MODE
+        symbol_entry* sym = ksymmanager::get_entry_near_addr(frame->rip);
+        if(sym != nullptr && str_eq(sym->name, "allthread_true_enter")){
+            return true;
+        }
+#endif
+
+        const uint64_t rip = frame->rip;
+        const uint64_t diff = (rip >= kthread_entry_addr)
+            ? (rip - kthread_entry_addr)
+            : (kthread_entry_addr - rip);
+        if(diff <= kNearRangeBytes){
+            return true;
+        }
+
+        StackFrame* next = frame->rbp;
+        if(next <= frame || (reinterpret_cast<uint64_t>(next) & 0x7ull) != 0){
+            return false;
+        }
+        frame = next;
+    }
+    return false;
+}
+
 void self_trace()
 {
     void* rbp;

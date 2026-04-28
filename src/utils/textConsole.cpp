@@ -22,6 +22,11 @@ static void textconsole_backend_running_write(const char* buf, uint64_t len)
     textconsole_GoP::RuntimeSubmitString(buf, len, false);
 }
 
+static void textconsole_backend_running_putchar(char c)
+{
+    textconsole_GoP::RuntimeSubmitChar(c, false);
+}
+
 static void textconsole_backend_running_num(uint64_t raw, num_format_t format, numer_system_select radix)
 {
     textconsole_GoP::RuntimeSubmitNum(raw, format, radix, false);
@@ -115,6 +120,7 @@ KURD_t textconsole_GoP::Init(
         .is_masked = 0,
         .reserved = 0,
         .running_stage_write = &textconsole_backend_running_write,
+        .running_stage_putchar = &textconsole_backend_running_putchar,
         .running_stage_num = &textconsole_backend_running_num,
         .panic_write = &textconsole_backend_write,
         .early_write = &textconsole_backend_write,

@@ -23,6 +23,7 @@
 #include "panic.h"
 #include "firmware/gSTResloveAPIs.h"
 #include "util/kptrace.h"
+#include "util/kshell.h"
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
@@ -81,11 +82,22 @@ void* Collatz_kthread(void* init_value){
 
 constexpr uint8_t test_kthread_count = 100;
 uint64_t test_kthreads[test_kthread_count];
-
-void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程”（出自进击的巨人）
+void* burnin_thread(void* arg);
+void* i8042_char_listener_thread(void* arg);
+void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
-    //uint64_t kthread_ymir_tid=create_kthread(i8042_spin_read,nullptr,&kurd);
+    
+    i8042_char_subscriber_init();
+    register_i8042_kshell_commands();
+    uint64_t i8042_char_listener_tid=create_kthread(kshell_thread,nullptr,&kurd);
+    if(error_kurd(kurd)||i8042_char_listener_tid==INVALID_TID){
+        bsp_kout<<"[i8042-char-listener] create failed"<<kendl;
+    }else{
+        bsp_kout<<"[i8042-char-listener] online tid="<<DEC<<i8042_char_listener_tid<<kendl;
+    }
+    
+    //pcie_text_praser();
     while (true)
     {
         kthread_sleep(1000000);
@@ -93,6 +105,10 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之“尤米尔线程�
     
     return nullptr;
 }
+
+
+
+
 void create_first_kthread(){
     textconsole_GoP::RuntimeInitServiceThread();
     serial_init_stage2();
@@ -100,6 +116,7 @@ void create_first_kthread(){
     x2apic::x2apic_driver::broadcast_exself_fixed_ipi(ipi_test);
     KURD_t kurd=KURD_t();
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
+    
     per_processor_scheduler&sc=global_schedulers[0];
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
     asm volatile("cli");
@@ -326,7 +343,6 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
     global_container=new ecams_container_t((MCFG_Table*)gAcpiVaddrSapceMgr.get_acpi_table("MCFG"));
-    //pcie_text_praser();
     create_first_kthread();
 }
 extern "C" void ap_final_work();

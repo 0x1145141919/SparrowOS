@@ -101,7 +101,7 @@ KURD_t kthread_common_save(task*task_ptr,x64_standard_context*frame,bool expect_
         return fatal;
     }
 }
-void allthread_true_enter(void *(*entry)(void *), void *arg){
+extern "C" void allthread_true_enter(void *(*entry)(void *), void *arg){
     uint64_t return_value=(uint64_t)entry(arg);
     kthread_exit(return_value);
 };
@@ -449,6 +449,19 @@ void block_if_equal_cppenter(x64_standard_context *context)
     }
     fatals:
     panic_with_kurd(fatal);
+}
+uint64_t release_kthread(uint64_t tid)
+{
+    KURD_t kurd=KURD_t();
+    task*task_ptr=task_pool::get_by_tid(tid,kurd);
+    kurd=__wrapped_pgs_vfree((void*)(task_ptr->context.kthread->stack_bottom-task_ptr->context.kthread->stacksize)
+    ,1+task_ptr->context.kthread->stacksize/4096);
+    if(error_kurd(kurd)){
+        return kurd_get_raw(kurd);
+    }
+    delete task_ptr->context.kthread;
+    delete task_ptr;
+    return kurd_get_raw(task_pool::release_tid(tid));
 }
 void kthread_call_cpp_enter(x64_standard_context *frame)
 {

@@ -59,6 +59,8 @@ set(SRC_COMMON
     src/utils/kptrace.cpp
     src/utils/tmp_buff.cpp
     src/utils/arch/x86_64/intel_cpuid.cpp
+    src/utils/kshell.cpp
+    src/utils/kshell_commans_regist.cpp
 )
 
 # 添加gnu-efi作为外部项目
@@ -125,6 +127,8 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/primitive_gop.cpp
     src/arch/x86_64/core_hardwares/DMAR.cpp
     src/arch/x86_64/core_hardwares/i8042.cpp
+    src/arch/x86_64/core_hardwares/i8042_char_subscriber.cpp
+    src/arch/x86_64/core_hardwares/i8042_kshell.cpp
     src/arch/x86_64/core_hardwares/ioapic.cpp
     src/arch/x86_64/core_hardwares/device_interrupt_handlers_bare_enter.asm
     src/firmware/acpimgr.cpp
@@ -133,11 +137,13 @@ add_executable(kernel.elf
     src/arch/x86_64/Processor/fixed_interrupt_resources.cpp  
     src/arch/x86_64/Processor/runtime_processor_regist.asm
     src/arch/x86_64/core_hardwares/PortDriver.cpp
+    src/arch/x86_64/core_hardwares/PCIe.cpp
     src/scheduler/per_processor_scheduler.cpp
     src/scheduler/kthread_interfaces.cpp
     src/scheduler/yield.asm
     $<TARGET_OBJECTS:Mem_module>
     ${SRC_COMMON}
+    src/tests/kthreads/key_board_listen.cpp
 )
 add_executable(init.elf
     src/init/init_init.cpp
