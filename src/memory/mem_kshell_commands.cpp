@@ -10,7 +10,6 @@
 #include "util/kout.h"
 #include "util/lock.h"
 #include "util/OS_utils.h"
-#include "arch/x86_64/core_hardwares/i8042.h"
 #include "memory/FreePagesAllocator.h"
 #include "memory/all_pages_arr.h"
 #include "memory/kpoolmemmgr.h"
@@ -84,29 +83,8 @@ static int parse_hex(const token_t& t, uint64_t* out) {
     return 0;
 }
 
-static bool confirm_y(const char* prompt) {
-    bsp_kout << "[WARNING] " << prompt << kendl;
-    bsp_kout << "Type 'y' to confirm: ";
-    char c = i8042_blockable_keyboard_listening();
-    bsp_kout << kendl;
-    return (c == 'y' || c == 'Y');
-}
-
-static bool confirm_yes(const char* prompt) {
-    bsp_kout << "[DANGEROUS] " << prompt << kendl;
-    bsp_kout << "Type 'YES' to confirm: ";
-    char buf[8];
-    size_t pos = 0;
-    for (int i = 0; i < 3; i++) {
-        char c = i8042_blockable_keyboard_listening();
-        if (c == '\r' || c == '\n') break;
-        bsp_kout << c;
-        if (pos < 7) buf[pos++] = c;
-    }
-    buf[pos] = '\0';
-    bsp_kout << kendl;
-    return (strcmp_in_kernel(buf, "YES") == 0);
-}
+// 所有内存命令视为只读意义上的安全操作，直接执行无确认。
+// 分配历史记录（256项）仍用于防重复释放等防护。
 
 // ── 分配历史记录 ──────────────────────────────────────────────
 
@@ -156,12 +134,7 @@ static void alloc_record_remove(int idx) {
     }
 }
 
-static bool force_flag(const line_t* line) {
-    for (uint16_t i = 0; i < line->token_count; i++) {
-        if (tok_eq(line->tokens[i], "-f")) return true;
-    }
-    return false;
-}
+// 所有内存命令视为 SAFE，直接执行无确认，-f 参数忽略。
 
 // Helper: approximate size → order
 static uint8_t size_to_order_calc(uint64_t size) {
@@ -195,11 +168,6 @@ KURD_t cmd_palloc(const line_t* line) {
         }
     }
 
-    if (!confirm_y("Allocate physical pages?")) {
-        bsp_kout << "[palloc] Cancelled." << kendl;
-        return ok;
-    }
-
     buddy_alloc_params params;
     params.align_log2 = (uint8_t)align;
     params.numa = 0;
@@ -227,7 +195,7 @@ KURD_t cmd_pfree(const line_t* line) {
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
 
     if (line->token_count < 3) {
-        bsp_kout << "[ERROR] Usage: pfree <phyaddr> <size_bytes> [-f]" << kendl;
+        bsp_kout << "[ERROR] Usage: pfree <phyaddr> <size_bytes>" << kendl;
         return ok;
     }
 
@@ -240,12 +208,6 @@ KURD_t cmd_pfree(const line_t* line) {
     int idx = alloc_record_find(pa, alloc_type_t::PHYS);
     if (idx < 0) {
         bsp_kout << "[ERROR] Address not found in allocation history" << kendl;
-        return ok;
-    }
-
-    bool ff = force_flag(line);
-    if (!ff && !confirm_yes("This will FREE physical pages!")) {
-        bsp_kout << "[pfree] Cancelled." << kendl;
         return ok;
     }
 
@@ -285,11 +247,6 @@ KURD_t cmd_valloc(const line_t* line) {
         }
     }
 
-    if (!confirm_y("Allocate virtual pages?")) {
-        bsp_kout << "[valloc] Cancelled." << kendl;
-        return ok;
-    }
-
     KURD_t kurd;
     void* va = __wrapped_pgs_valloc(&kurd, pages, page_state_t::allocable, (uint8_t)align);
     if (error_kurd(kurd) || va == nullptr) {
@@ -311,7 +268,7 @@ KURD_t cmd_vfree(const line_t* line) {
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
 
     if (line->token_count < 3) {
-        bsp_kout << "[ERROR] Usage: vfree <vaddr> <pages_count> [-f]" << kendl;
+        bsp_kout << "[ERROR] Usage: vfree <vaddr> <pages_count>" << kendl;
         return ok;
     }
 
@@ -324,11 +281,6 @@ KURD_t cmd_vfree(const line_t* line) {
     int idx = alloc_record_find(va, alloc_type_t::VIRT);
     if (idx < 0) {
         bsp_kout << "[ERROR] Address not found in allocation history" << kendl;
-        return ok;
-    }
-
-    if (!force_flag(line) && !confirm_yes("This will FREE virtual pages!")) {
-        bsp_kout << "[vfree] Cancelled." << kendl;
         return ok;
     }
 
@@ -420,7 +372,7 @@ KURD_t cmd_pwrite(const line_t* line) {
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
 
     if (line->token_count < 3) {
-        bsp_kout << "[ERROR] Usage: pwrite <phyaddr> <value> [size] [-f]" << kendl;
+        bsp_kout << "[ERROR] Usage: pwrite <phyaddr> <value> [size]" << kendl;
         return ok;
     }
 
@@ -432,8 +384,6 @@ KURD_t cmd_pwrite(const line_t* line) {
 
     uint64_t size = 4;
     if (line->token_count >= 4) {
-        // Check if token is a size or -f
-        if (tok_eq(line->tokens[3], "-f")) goto do_pwrite;
         uint64_t sz;
         if (parse_uint(line->tokens[3], &sz) == 0) {
             if (sz != 1 && sz != 2 && sz != 4 && sz != 8) {
@@ -442,12 +392,6 @@ KURD_t cmd_pwrite(const line_t* line) {
             }
             size = sz;
         }
-    }
-
-do_pwrite:
-    if (!force_flag(line) && !confirm_yes("This will WRITE to physical memory!")) {
-        bsp_kout << "[pwrite] Cancelled." << kendl;
-        return ok;
     }
 
     vm_interval iv;
@@ -513,11 +457,6 @@ KURD_t cmd_pmap(const line_t* line) {
         else if (tok_eq(a, "RWX")) access = KspacePageTable::PG_RWX;
     }
 
-    if (!confirm_y("Create physical→virtual mapping?")) {
-        bsp_kout << "[pmap] Cancelled." << kendl;
-        return ok;
-    }
-
     vm_interval iv;
     iv.vbase = va;  // 0 = auto-allocate
     iv.pbase = pa;
@@ -544,18 +483,13 @@ KURD_t cmd_punmap(const line_t* line) {
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
 
     if (line->token_count < 3) {
-        bsp_kout << "[ERROR] Usage: punmap <vaddr> <size_bytes> [-f]" << kendl;
+        bsp_kout << "[ERROR] Usage: punmap <vaddr> <size_bytes>" << kendl;
         return ok;
     }
 
     uint64_t va, size;
     if (parse_hex(line->tokens[1], &va) || parse_uint(line->tokens[2], &size)) {
         bsp_kout << "[ERROR] Invalid parameters" << kendl;
-        return ok;
-    }
-
-    if (!force_flag(line) && !confirm_yes("This will UNMAP virtual pages!")) {
-        bsp_kout << "[punmap] Cancelled." << kendl;
         return ok;
     }
 
@@ -591,11 +525,6 @@ KURD_t cmd_dmap(const line_t* line) {
     uint64_t pa, size;
     if (parse_hex(line->tokens[1], &pa) || parse_uint(line->tokens[2], &size)) {
         bsp_kout << "[ERROR] Invalid parameters" << kendl;
-        return ok;
-    }
-
-    if (!confirm_y("Create direct physical mapping?")) {
-        bsp_kout << "[dmap] Cancelled." << kendl;
         return ok;
     }
 
