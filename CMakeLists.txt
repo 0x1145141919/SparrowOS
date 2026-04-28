@@ -60,6 +60,7 @@ set(SRC_COMMON
     src/utils/tmp_buff.cpp
     src/utils/arch/x86_64/intel_cpuid.cpp
     src/utils/kshell.cpp
+    src/utils/kshell_commans_regist.cpp
 )
 
 # 添加gnu-efi作为外部项目
@@ -127,6 +128,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/DMAR.cpp
     src/arch/x86_64/core_hardwares/i8042.cpp
     src/arch/x86_64/core_hardwares/i8042_char_subscriber.cpp
+    src/arch/x86_64/core_hardwares/i8042_kshell.cpp
     src/arch/x86_64/core_hardwares/ioapic.cpp
     src/arch/x86_64/core_hardwares/device_interrupt_handlers_bare_enter.asm
     src/firmware/acpimgr.cpp

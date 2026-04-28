@@ -73,9 +73,9 @@ KURD_t kshell_framework_t::command_register(command_entry_t* cmd_entry) {
         return fail;
     }
     
+    // 框架未初始化时自动初始化（延迟注册的模块命令）
     if (!m_initialized) {
-        fail.reason = SHELL_NOT_INITIALIZED;
-        return fail;
+        initialize();
     }
     
     // 尝试插入红黑树
