@@ -6,55 +6,49 @@
 
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
-// 静态成员初始化
-kshell_framework_t* kshell_framework_t::s_instance = nullptr;
-
-/**
- * @brief 获取单例实例
- */
-kshell_framework_t& kshell_framework_t::get_instance() {
-    if (!s_instance) {
-        static kshell_framework_t instance;
-        s_instance = &instance;
-    }
-    return *s_instance;
-}
-
-/**
- * @brief 构造函数
- */
-kshell_framework_t::kshell_framework_t() 
-    : m_initialized(false) {
-}
-
-/**
- * @brief 析构函数
- */
-kshell_framework_t::~kshell_framework_t() {
-}
-
+Ktemplats::RBTree<command_entry_t, command_compare>*kshell_framework_t::m_command_tree;
+bool kshell_framework_t::m_initialized;
 int command_compare(const command_entry_t &a, const command_entry_t &b)
 {
     return strcmp_in_kernel(a.name, b.name);
 }
-
+KURD_t kshell_framework_t::default_kurd()
+{
+    return KURD_t(result_code::SUCCESS,0,module_code::INFRA,INFR_LOCATIONS::KSHELL,0,level_code::INFO,err_domain::CORE_MODULE);
+}
+KURD_t kshell_framework_t::default_success()
+{
+    return default_kurd();
+}
+KURD_t kshell_framework_t::default_fail()
+{
+    return set_result_fail_and_error_level(default_kurd());
+}
+KURD_t kshell_framework_t::default_fatal()
+{
+    return set_fatal_result_level(default_kurd());
+}
+void* kshell_thread_main(void*arg){
+    bsp_kout << "[KSHELL] Kernel shell started" << kendl;
+    kshell_framework_t::run_shell_loop();
+}
 /**
  * @brief 初始化 Shell 框架
  */
-KURD_t kshell_framework_t::initialize() {
-    KURD_t fail=default_fail;
-    KURD_t success=default_success;
+KURD_t kshell_framework_t::Init() {
+    KURD_t fail=default_fail();
+    KURD_t success=default_success();
     success.event_code=INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_INIT;
     fail.event_code=INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_INIT;
 
     if (m_initialized) {
         return success;  // 已初始化，返回成功
     }
-    
-    // 红黑树已在构造时初始化
+    m_command_tree = new Ktemplats::RBTree<command_entry_t, command_compare>();
+    KURD_t kurd=initial_commands_regist();
+    if(error_kurd(kurd))return kurd;
     m_initialized = true;
-    
-    bsp_kout << "[KSHELL] Framework initialized successfully" << kendl;
+    uint64_t tid=create_kthread(kshell_thread_main, nullptr,&kurd);
     return success;
 }
 
@@ -62,8 +56,8 @@ KURD_t kshell_framework_t::initialize() {
  * @brief 注册命令
  */
 KURD_t kshell_framework_t::command_register(command_entry_t* cmd_entry) {
-    KURD_t fail = default_fail;
-    KURD_t success = default_success;
+    KURD_t fail = default_fail();
+    KURD_t success = default_success();
     using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_REGISTER_RESULTS;
     fail.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_REGISTER;
     success.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_REGISTER;
@@ -73,13 +67,8 @@ KURD_t kshell_framework_t::command_register(command_entry_t* cmd_entry) {
         return fail;
     }
     
-    // 框架未初始化时自动初始化（延迟注册的模块命令）
-    if (!m_initialized) {
-        initialize();
-    }
-    
     // 尝试插入红黑树
-    bool insert_result = m_command_tree.insert(*cmd_entry);
+    bool insert_result = m_command_tree->insert(*cmd_entry);
     if (!insert_result) {
         bsp_kout << "[KSHELL] Failed to register command: " << cmd_entry->name 
                  << " (may already exist)" << kendl;
@@ -95,8 +84,8 @@ KURD_t kshell_framework_t::command_register(command_entry_t* cmd_entry) {
  * @brief 注销命令
  */
 KURD_t kshell_framework_t::command_unregister(const char* cmd_name) {
-    KURD_t fail = default_fail;
-    KURD_t success = default_success;
+    KURD_t fail = default_fail();
+    KURD_t success = default_success();
     fail.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_UNREGISTER;
     success.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_UNREGISTER;
     
@@ -120,7 +109,7 @@ KURD_t kshell_framework_t::command_unregister(const char* cmd_name) {
     
     // 注意：RBTree 的 erase 需要完整的对象来比较
     // 这里简化处理，实际可能需要遍历查找后删除
-    bool erase_result = m_command_tree.erase(dummy_entry);
+    bool erase_result = m_command_tree->erase(dummy_entry);
     if (!erase_result) {
         fail.reason = NOT_FOUND;
         return fail;
@@ -147,7 +136,7 @@ command_entry_t* kshell_framework_t::command_find(const char* cmd_name) {
     dummy_entry.need_confirm = false;
     
     // 刻意构造一个对应名字的command_entry_t调用find_node接口
-    command_entry_t* node = m_command_tree.find(dummy_entry);
+    command_entry_t* node = m_command_tree->find(dummy_entry);
     return node;
 }
 
@@ -155,8 +144,8 @@ command_entry_t* kshell_framework_t::command_find(const char* cmd_name) {
  * @brief 执行命令
  */
 KURD_t kshell_framework_t::command_execute(const line_t* line) {
-    KURD_t fail = default_fail;
-    KURD_t success = default_success;
+    KURD_t fail = default_fail();
+    KURD_t success = default_success();
     fail.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
     success.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
     
@@ -195,8 +184,8 @@ KURD_t kshell_framework_t::command_execute(const line_t* line) {
  * @brief 解析命令行输入
  */
 KURD_t kshell_framework_t::parse_line(const char* input, line_t* line) {
-    KURD_t fail = default_fail;
-    KURD_t success = default_success;
+    KURD_t fail = default_fail();
+    KURD_t success = default_success();
     fail.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_PARSE;
     success.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_PARSE;
     
@@ -259,8 +248,8 @@ KURD_t kshell_framework_t::parse_line(const char* input, line_t* line) {
  * @brief 显示帮助信息
  */
 KURD_t kshell_framework_t::show_help() {
-    KURD_t fail = default_fail;
-    KURD_t success = default_success;
+    KURD_t fail = default_fail();
+    KURD_t success = default_success();
     fail.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_HELP;
     success.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_HELP;
 
@@ -274,10 +263,10 @@ KURD_t kshell_framework_t::show_help() {
     bsp_kout << "-------------------" << kendl;
     
     // 遍历红黑树输出所有命令（按名称排序）
-    if (m_command_tree.empty()) {
+    if (m_command_tree->empty()) {
         bsp_kout << "(No commands registered)" << kendl;
     } else {
-        for (auto it = m_command_tree.begin(); it != m_command_tree.end(); ++it) {
+        for (auto it = m_command_tree->begin(); it != m_command_tree->end(); ++it) {
             const command_entry_t& cmd = *it;
             
             // 输出命令名称和描述
@@ -336,9 +325,8 @@ size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len)
     
     while (pos < max_len - 1) {
         // 阻塞式读取单个字符
-        i8042_blockable_keyboard_listening(buffer + pos);
         
-        char c = buffer[pos];
+        char c = i8042_blockable_keyboard_listening();
         
         // 回车或换行表示输入结束
         if (c == '\r' || c == '\n') {
@@ -363,6 +351,7 @@ size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len)
         
         // 正常字符，显示回显
         bsp_kout << c;
+        buffer[pos] = c;
         pos++;
     }
     

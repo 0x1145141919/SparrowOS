@@ -237,6 +237,81 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         asm volatile("hlt");
     }
     gKernelSpace=new AddressSpace();
+    for(uint64_t i=0;i<transfer->phymem_segment_count;i++){
+        bsp_kout<<"[INFO] phymem_segment["<<i<<"]: start=0x"
+                <<HEX<<transfer->memory_map[i].start
+                <<", size=0x"<<HEX<<(transfer->memory_map[i].size)
+                <<", type=";
+        
+        // 打印内存类型
+        switch(transfer->memory_map[i].type){
+            case EFI_RESERVED_MEMORY_TYPE:
+                bsp_kout<<"EFI_RESERVED"; break;
+            case EFI_LOADER_CODE:
+                bsp_kout<<"EFI_LOADER_CODE"; break;
+            case EFI_LOADER_DATA:
+                bsp_kout<<"EFI_LOADER_DATA"; break;
+            case EFI_BOOT_SERVICES_CODE:
+                bsp_kout<<"EFI_BOOT_SERVICES_CODE"; break;
+            case EFI_BOOT_SERVICES_DATA:
+                bsp_kout<<"EFI_BOOT_SERVICES_DATA"; break;
+            case EFI_RUNTIME_SERVICES_CODE:
+                bsp_kout<<"EFI_RUNTIME_SERVICES_CODE"; break;
+            case EFI_RUNTIME_SERVICES_DATA:
+                bsp_kout<<"EFI_RUNTIME_SERVICES_DATA"; break;
+            case freeSystemRam:
+                bsp_kout<<"freeSystemRam"; break;
+            case EFI_UNUSABLE_MEMORY:
+                bsp_kout<<"EFI_UNUSABLE"; break;
+            case EFI_ACPI_RECLAIM_MEMORY:
+                bsp_kout<<"EFI_ACPI_RECLAIM"; break;
+            case EFI_ACPI_MEMORY_NVS:
+                bsp_kout<<"EFI_ACPI_NVS"; break;
+            case EFI_MEMORY_MAPPED_IO:
+                bsp_kout<<"EFI_MMIO"; break;
+            case EFI_MEMORY_MAPPED_IO_PORT_SPACE:
+                bsp_kout<<"EFI_MMIO_PORT"; break;
+            case EFI_PAL_CODE:
+                bsp_kout<<"EFI_PAL_CODE"; break;
+            case EFI_PERSISTENT_MEMORY:
+                bsp_kout<<"EFI_PERSISTENT"; break;
+            case EFI_UNACCEPTED_MEMORY_TYPE:
+                bsp_kout<<"EFI_UNACCEPTED"; break;
+            case EFI_MAX_MEMORY_TYPE:
+                bsp_kout<<"EFI_MAX_TYPE"; break;
+            case OS_KERNEL_DATA:
+                bsp_kout<<"OS_KERNEL_DATA"; break;
+            case OS_KERNEL_CODE:
+                bsp_kout<<"OS_KERNEL_CODE"; break;
+            case OS_KERNEL_STACK:
+                bsp_kout<<"OS_KERNEL_STACK"; break;
+            case OS_HARDWARE_GRAPHIC_BUFFER:
+                bsp_kout<<"OS_GFX_BUFFER"; break;
+            case ERROR_FAIL_TO_FIND:
+                bsp_kout<<"ERROR_NOT_FOUND"; break;
+            case OS_ALLOCATABLE_MEMORY:
+                bsp_kout<<"OS_ALLOCATABLE"; break;
+            case OS_RESERVED_MEMORY:
+                bsp_kout<<"OS_RESERVED"; break;
+            case OS_PGTB_SEGS:
+                bsp_kout<<"OS_PGTABLE"; break;
+            case OS_MEMSEG_HOLE:
+                bsp_kout<<"OS_HOLE"; break;
+            default:
+                if(transfer->memory_map[i].type >= MEMORY_TYPE_OEM_RESERVED_MIN && 
+                   transfer->memory_map[i].type <= MEMORY_TYPE_OEM_RESERVED_MAX){
+                    bsp_kout<<"OEM_RESERVED(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
+                } else if(transfer->memory_map[i].type >= MEMORY_TYPE_OS_RESERVED_MIN && 
+                          transfer->memory_map[i].type <= MEMORY_TYPE_OS_RESERVED_MAX){
+                    bsp_kout<<"OS_RESERVED_EXT(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
+                } else {
+                    bsp_kout<<"UNKNOWN(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
+                }
+                
+                break;
+        }
+        bsp_kout<<DEC<<kendl;
+    }
     bsp_init_kurd=gKernelSpace->second_stage_init();//传入trasfer,特殊重载，要接手相关内存
     bsp_init_kurd=[&]()->KURD_t{
         KURD_t kurd=KURD_t();
@@ -283,11 +358,10 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
             phymem_segments[i].type==PHY_MEM_TYPE::EFI_ACPI_MEMORY_NVS||
             phymem_segments[i].type==PHY_MEM_TYPE::EFI_RESERVED_MEMORY_TYPE){
                 identity_map_template.access=UC_ACCESS;
-            }else{
+            }else if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_RUNTIME_SERVICES_CODE){
+                identity_map_template.access=WB_RX_ACCESS;
+            }else if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_RUNTIME_SERVICES_DATA){
                 identity_map_template.access=WB_ACCESS;
-                if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_RUNTIME_SERVICES_CODE){
-                    identity_map_template.access=WB_RX_ACCESS;
-                }
             }
             kurd=gKernelSpace->enable_VM_desc(identity_map_template);
             

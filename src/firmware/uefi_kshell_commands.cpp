@@ -11,6 +11,7 @@
 #include "util/lock.h"
 #include "util/OS_utils.h"
 #include "firmware/UefiRunTimeServices.h"
+#include "arch/x86_64/core_hardwares/i8042.h"
 #include <efi.h>
 
 using namespace kio;
@@ -25,7 +26,7 @@ static KURD_t make_ok() {
 
 static bool tok_eq(const token_t& t, const char* s) {
     size_t n = strlen_in_kernel(s);
-    return (t.len == n) && (strncmp(t.str, s, n) == 0);
+    return (t.len == n) && (strcmp_in_kernel(t.str, s, n) == 0);
 }
 
 static int parse_uint(const token_t& t, uint64_t* out) {
@@ -130,8 +131,7 @@ static bool confirm_with_word(const char* prompt, const char* expected) {
     char buf[64];
     size_t pos = 0;
     while (pos < sizeof(buf) - 1) {
-        i8042_blockable_keyboard_listening(buf + pos);
-        char c = buf[pos];
+        char c = i8042_blockable_keyboard_listening();
         if (c == '\r' || c == '\n') break;
         if (c == '\b' || c == 127) {
             if (pos > 0) { pos--; bsp_kout << "\b \b"; }
@@ -271,11 +271,11 @@ KURD_t cmd_uefisettime(const line_t* line) {
     new_time.TimeZone   = EFI_UNSPECIFIED_TIMEZONE;
     new_time.Daylight   = 0;
 
-    EFI_STATUS st = EFI_RT_SVS::rt_time_set(new_time);
-    if (st == EFI_SUCCESS) {
+    EFI_STATUS status = EFI_RT_SVS::rt_time_set(new_time);
+    if (status == EFI_SUCCESS) {
         bsp_kout << "[uefisettime] Time set successfully." << kendl;
     } else {
-        bsp_kout << "[ERROR] rt_time_set failed, status=0x" << HEX << st << DEC << kendl;
+        bsp_kout << "[ERROR] rt_time_set failed, status=0x" << HEX << (uint64_t)status << DEC << kendl;
     }
     return ok;
 }
