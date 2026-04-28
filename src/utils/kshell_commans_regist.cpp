@@ -50,6 +50,8 @@ extern KURD_t cmd_uefireboot(const line_t* line);
 extern KURD_t cmd_ueficreset(const line_t* line);
 extern KURD_t cmd_uefishutdown(const line_t* line);
 extern KURD_t cmd_uefiptrs(const line_t* line);
+extern KURD_t cmd_get_macro_time(const line_t* line);
+extern KURD_t cmd_set_marcro_time(const line_t* line);
 
 // 电源命令内部自行处理确认（特定确认词 REBOOT/SHUTDOWN），
 // 因此 need_confirm=false 避免框架默认的 "yes" 确认。
@@ -66,6 +68,10 @@ static command_entry_t g_uefi_command_table[] = {
         cmd_uefishutdown,   command_risk_level_t::DANGEROUS, false},
     {"uefiptrs",       "UEFI RT function pointer table",
         cmd_uefiptrs,       command_risk_level_t::SAFE, false},
+    {"get_macro_time", "Read OS RTC-anchored calendar time",
+        cmd_get_macro_time, command_risk_level_t::SAFE, false},
+    {"set_marcro_time","Set OS time calibration offset (no RTC write)",
+        cmd_set_marcro_time,command_risk_level_t::WARNING, false},
 };
 
 static constexpr size_t UEFI_CMD_COUNT =
