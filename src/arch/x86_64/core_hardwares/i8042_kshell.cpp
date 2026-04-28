@@ -10,8 +10,8 @@
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "Scheduler/per_processor_scheduler.h"
 #include <sys/io.h>
-#include <cstring>
 #include "util/lock.h"
+#include "util/OS_utils.h"
 
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
@@ -36,7 +36,7 @@ static KURD_t make_fail() {
 }
 
 static bool token_eq(const token_t& tok, const char* s) {
-    size_t n = strlen(s);
+    size_t n = strlen_in_kernel(s);
     if (tok.len != n) return false;
     return strncmp(tok.str, s, n) == 0;
 }
@@ -614,8 +614,6 @@ KURD_t cmd_kbdmonitor(const line_t* line) {
     bsp_kout << kendl;
     bsp_kout << "Seq\tKey/Action/Modifiers/Timestamp" << kendl;
 
-    // 标 0 的行表头
-    (void)strcmp;
     while (true) {
         bool advanced = false;
         // 轮询事件
