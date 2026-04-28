@@ -40,6 +40,26 @@ extern KURD_t cmd_pmap(const line_t* line);
 extern KURD_t cmd_punmap(const line_t* line);
 extern KURD_t cmd_dmap(const line_t* line);
 extern KURD_t cmd_stackalloc(const line_t* line);
+extern KURD_t cmd_kvread(const line_t* line);
+extern KURD_t cmd_kvwrite(const line_t* line);
+extern KURD_t cmd_phymem(const line_t* line);
+extern KURD_t cmd_vminfo(const line_t* line);
+
+// x86 架构诊断命令（src/arch/x86_64/core_hardwares/x86_kshell_commands.cpp）
+extern KURD_t cmd_cpuid(const line_t* line);
+extern KURD_t cmd_cpuinfo(const line_t* line);
+extern KURD_t cmd_rdmsr(const line_t* line);
+extern KURD_t cmd_wrmsr(const line_t* line);
+extern KURD_t cmd_rdtsc(const line_t* line);
+extern KURD_t cmd_hpet(const line_t* line);
+extern KURD_t cmd_inb(const line_t* line);
+extern KURD_t cmd_inw(const line_t* line);
+extern KURD_t cmd_inl(const line_t* line);
+extern KURD_t cmd_outb(const line_t* line);
+extern KURD_t cmd_outw(const line_t* line);
+extern KURD_t cmd_outl(const line_t* line);
+extern KURD_t cmd_apic(const line_t* line);
+extern KURD_t cmd_cr(const line_t* line);
 
 // ═══════════════════════════════════════════════════════════════════
 //  i8042 键盘诊断命令表
@@ -120,6 +140,14 @@ static command_entry_t g_mem_command_table[] = {
         cmd_dmap,        command_risk_level_t::SAFE, false},
     {"stackalloc", "Allocate kernel stack <pages_count>",
         cmd_stackalloc,  command_risk_level_t::SAFE, false},
+    {"kvread",      "Read kernel virtual memory <vaddr> <size> [fmt]",
+        cmd_kvread,      command_risk_level_t::SAFE, false},
+    {"kvwrite",     "Write kernel virtual memory <vaddr> <value> [size]",
+        cmd_kvwrite,     command_risk_level_t::SAFE, false},
+    {"phymem",      "Print physical memory segment table",
+        cmd_phymem,      command_risk_level_t::SAFE, false},
+    {"vminfo",      "Print VM interval mapping table",
+        cmd_vminfo,      command_risk_level_t::SAFE, false},
 };
 
 static constexpr size_t MEM_CMD_COUNT =
@@ -161,5 +189,50 @@ KURD_t kshell_framework_t::initial_commands_regist()
     register_i8042_kshell_commands();
     register_uefi_kshell_commands();
     register_mem_kshell_commands();
+    register_x86_kshell_commands();
     return default_success();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  x86 架构诊断命令表
+// ═══════════════════════════════════════════════════════════════════
+
+static command_entry_t g_x86_command_table[] = {
+    {"cpuid",    "CPUID query <leaf> [subleaf]",
+        cmd_cpuid,    command_risk_level_t::SAFE, false},
+    {"cpuinfo",  "CPU comprehensive info",
+        cmd_cpuinfo,  command_risk_level_t::SAFE, false},
+    {"rdmsr",    "Read MSR <address>",
+        cmd_rdmsr,    command_risk_level_t::SAFE, false},
+    {"wrmsr",    "Write MSR <address> <value>",
+        cmd_wrmsr,    command_risk_level_t::SAFE, false},
+    {"rdtsc",    "Read timestamp counter",
+        cmd_rdtsc,    command_risk_level_t::SAFE, false},
+    {"hpet",     "HPET timer query",
+        cmd_hpet,     command_risk_level_t::SAFE, false},
+    {"inb",      "Read IO port byte <port> [count]",
+        cmd_inb,      command_risk_level_t::SAFE, false},
+    {"inw",      "Read IO port word <port>",
+        cmd_inw,      command_risk_level_t::SAFE, false},
+    {"inl",      "Read IO port dword <port>",
+        cmd_inl,      command_risk_level_t::SAFE, false},
+    {"outb",     "Write IO port byte <port> <value>",
+        cmd_outb,     command_risk_level_t::SAFE, false},
+    {"outw",     "Write IO port word <port> <value>",
+        cmd_outw,     command_risk_level_t::SAFE, false},
+    {"outl",     "Write IO port dword <port> <value>",
+        cmd_outl,     command_risk_level_t::SAFE, false},
+    {"apic",     "APIC status query",
+        cmd_apic,     command_risk_level_t::SAFE, false},
+    {"cr",       "Read control register <0|2|3|4>",
+        cmd_cr,       command_risk_level_t::SAFE, false},
+};
+
+static constexpr size_t X86_CMD_COUNT =
+    sizeof(g_x86_command_table) / sizeof(g_x86_command_table[0]);
+
+void register_x86_kshell_commands() {
+    regist_table(g_x86_command_table, X86_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << X86_CMD_COUNT
+             << " x86 architecture diagnostic commands" << kendl;
 }
