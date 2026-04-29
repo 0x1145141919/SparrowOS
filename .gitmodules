@@ -1,0 +1,3 @@
+[submodule "outsbmodules/gnu-efi"]
+	path = outsbmodules/gnu-efi
+	url = ./outsbmodules/gnu-efi

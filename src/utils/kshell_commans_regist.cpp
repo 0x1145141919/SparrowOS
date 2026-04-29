@@ -152,47 +152,6 @@ static command_entry_t g_mem_command_table[] = {
 
 static constexpr size_t MEM_CMD_COUNT =
     sizeof(g_mem_command_table) / sizeof(g_mem_command_table[0]);
-
-// ═══════════════════════════════════════════════════════════════════
-//  注册函数
-// ═══════════════════════════════════════════════════════════════════
-
-static void regist_table(command_entry_t* table, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        KURD_t r = kshell_framework_t::command_register(&table[i]);
-        if (r.result != 0) {
-            bsp_kout << "[KSHELL] Failed to register: " << table[i].name << kendl;
-        }
-    }
-}
-
-void register_i8042_kshell_commands() {
-    regist_table(g_i8042_command_table, I8042_CMD_COUNT);
-    bsp_kout << "[KSHELL] Registered " << I8042_CMD_COUNT
-             << " i8042 keyboard debug commands" << kendl;
-}
-
-void register_uefi_kshell_commands() {
-    regist_table(g_uefi_command_table, UEFI_CMD_COUNT);
-    bsp_kout << "[KSHELL] Registered " << UEFI_CMD_COUNT
-             << " UEFI runtime service commands" << kendl;
-}
-
-void register_mem_kshell_commands() {
-    regist_table(g_mem_command_table, MEM_CMD_COUNT);
-    bsp_kout << "[KSHELL] Registered " << MEM_CMD_COUNT
-             << " memory operation commands" << kendl;
-}
-
-KURD_t kshell_framework_t::initial_commands_regist()
-{
-    register_i8042_kshell_commands();
-    register_uefi_kshell_commands();
-    register_mem_kshell_commands();
-    register_x86_kshell_commands();
-    return default_success();
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  x86 架构诊断命令表
 // ═══════════════════════════════════════════════════════════════════
@@ -230,9 +189,50 @@ static command_entry_t g_x86_command_table[] = {
 
 static constexpr size_t X86_CMD_COUNT =
     sizeof(g_x86_command_table) / sizeof(g_x86_command_table[0]);
+// ═══════════════════════════════════════════════════════════════════
+//  注册函数
+// ═══════════════════════════════════════════════════════════════════
 
+static void regist_table(command_entry_t* table, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        KURD_t r = kshell_framework_t::command_register(&table[i]);
+        if (r.result != 0) {
+            bsp_kout << "[KSHELL] Failed to register: " << table[i].name << kendl;
+        }
+    }
+}
+
+void register_i8042_kshell_commands() {
+    regist_table(g_i8042_command_table, I8042_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << I8042_CMD_COUNT
+             << " i8042 keyboard debug commands" << kendl;
+}
+
+void register_uefi_kshell_commands() {
+    regist_table(g_uefi_command_table, UEFI_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << UEFI_CMD_COUNT
+             << " UEFI runtime service commands" << kendl;
+}
+
+void register_mem_kshell_commands() {
+    regist_table(g_mem_command_table, MEM_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << MEM_CMD_COUNT
+             << " memory operation commands" << kendl;
+}
 void register_x86_kshell_commands() {
     regist_table(g_x86_command_table, X86_CMD_COUNT);
     bsp_kout << "[KSHELL] Registered " << X86_CMD_COUNT
              << " x86 architecture diagnostic commands" << kendl;
 }
+KURD_t kshell_framework_t::initial_commands_regist()
+{
+    register_i8042_kshell_commands();
+    register_uefi_kshell_commands();
+    register_mem_kshell_commands();
+    register_x86_kshell_commands();
+    return default_success();
+}
+
+
+
+

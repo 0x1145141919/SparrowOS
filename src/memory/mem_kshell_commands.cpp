@@ -27,7 +27,7 @@ static KURD_t make_ok() {
 
 static bool tok_eq(const token_t& t, const char* s) {
     size_t n = strlen_in_kernel(s);
-    return (t.len == n) && (strncmp(t.str, s, n) == 0);
+    return (t.len == n) && (strcmp_in_kernel(t.str, s, n) == 0);
 }
 
 static int parse_uint(const token_t& t, uint64_t* out) {
@@ -71,17 +71,7 @@ static int parse_hex(const token_t& t, uint64_t* out) {
     *out = v;
     return 0;
 }
-    uint64_t v = 0;
-    for (size_t i = 0; i < len; i++) {
-        char c = s[i];
-        if (c >= '0' && c <= '9')       v = (v << 4) | (uint64_t)(c - '0');
-        else if (c >= 'a' && c <= 'f')  v = (v << 4) | (uint64_t)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F')  v = (v << 4) | (uint64_t)(c - 'A' + 10);
-        else return -1;
-    }
-    *out = v;
-    return 0;
-}
+
 
 // 所有内存命令视为只读意义上的安全操作，直接执行无确认。
 // 分配历史记录（256项）仍用于防重复释放等防护。
@@ -174,7 +164,7 @@ KURD_t cmd_palloc(const line_t* line) {
     params.try_lock_always_try = false;
 
     KURD_t kurd;
-    phyaddr_t pa = FreePagesAllocator::alloc(size, params, page_state_t::allocable, kurd);
+    phyaddr_t pa = FreePagesAllocator::alloc(size, params, page_state_t::kernel_pinned, kurd);
     if (pa == FreePagesAllocator::INVALID_ALLOC_BASE) {
         bsp_kout << "[ERROR] palloc failed (result=" << kurd.result
                  << " reason=" << kurd.reason << ")" << kendl;
@@ -248,7 +238,7 @@ KURD_t cmd_valloc(const line_t* line) {
     }
 
     KURD_t kurd;
-    void* va = __wrapped_pgs_valloc(&kurd, pages, page_state_t::allocable, (uint8_t)align);
+    void* va = __wrapped_pgs_valloc(&kurd, pages, page_state_t::kernel_pinned, (uint8_t)align);
     if (error_kurd(kurd) || va == nullptr) {
         bsp_kout << "[ERROR] valloc failed" << kendl;
         return ok;
@@ -449,9 +439,9 @@ KURD_t cmd_pmap(const line_t* line) {
         if (tok_eq(a, "R"))    access = KspacePageTable::PG_R;
         else if (tok_eq(a, "RX")) {
             access = KspacePageTable::PG_RW;
-            access.exec = 1;
-            access.write = 0;
-            access.read = 1;
+            access.is_executable = 1;
+            access.is_writeable = 0;
+            access.is_readable = 1;
         }
         else if (tok_eq(a, "RW"))  access = KspacePageTable::PG_RW;
         else if (tok_eq(a, "RWX")) access = KspacePageTable::PG_RWX;
@@ -577,7 +567,7 @@ KURD_t cmd_stackalloc(const line_t* line) {
 
     int idx = alloc_record_add(alloc_type_t::STACK, stack_bottom, pages);
 
-    bsp_kout << "[stackalloc] top=0x" << HEX << stacbsp_kout << DEC
+    bsp_kout << "[stackalloc] top=0x" << HEX << stack_top << DEC
              << "  bottom=0x" << HEX << stack_bottom << DEC
              << "  guard_page=0x" << HEX << guard_end << DEC
              << "  record_idx=" << idx << kendl;

@@ -16,7 +16,16 @@
 
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
-
+static int parse_uint(const token_t& t, uint64_t* out) {
+    if (t.len == 0 || t.len > 20) return -1;
+    uint64_t v = 0;
+    for (size_t i = 0; i < t.len; i++) {
+        if (t.str[i] < '0' || t.str[i] > '9') return -1;
+        v = v * 10 + (uint64_t)(t.str[i] - '0');
+    }
+    *out = v;
+    return 0;
+}
 static KURD_t make_ok() {
     return {result_code::SUCCESS, 0, module_code::INFRA,
             INFR_LOCATIONS::KSHELL, 0, level_code::INFO, err_domain::CORE_MODULE};
@@ -24,7 +33,7 @@ static KURD_t make_ok() {
 
 static bool tok_eq(const token_t& t, const char* s) {
     size_t n = strlen_in_kernel(s);
-    return (t.len == n) && (strncmp(t.str, s, n) == 0);
+    return (t.len == n) && (strcmp_in_kernel(t.str, s, n) == 0);
 }
 
 // ── cpuid ─────────────────────────────────────────────────────
@@ -183,6 +192,21 @@ KURD_t cmd_cpuinfo(const line_t* line) {
     bsp_kout << "  APIC ID: " << (uint64_t)query_apicid() << kendl;
     return ok;
 }
+static int parse_hex_manual(const token_t& t, uint64_t* out) {
+    *out = 0;
+    size_t start = 0;
+    if (t.len >= 2 && t.str[0] == '0' && (t.str[1] == 'x' || t.str[1] == 'X'))
+        start = 2;
+    for (size_t i = start; i < t.len; i++) {
+        char c = t.str[i];
+        if (c >= '0' && c <= '9')       *out = (*out << 4) | (uint64_t)(c - '0');
+        else if (c >= 'a' && c <= 'f')  *out = (*out << 4) | (uint64_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')  *out = (*out << 4) | (uint64_t)(c - 'A' + 10);
+        else if (c == 'x' || c == 'X')  { if (i != 1) return -1; }
+        else return -1;
+    }
+    return 0;
+}
 
 // ── rdmsr ─────────────────────────────────────────────────────
 
@@ -209,7 +233,7 @@ KURD_t cmd_rdmsr(const line_t* line) {
         bsp_kout << "  BSP=" << ((val >> 8) & 1)
                  << " x2APIC=" << ((val >> 10) & 1)
                  << " xAPIC=" << ((val >> 11) & 1)
-                 << " Base=0x" << HEX << (val & ~0xFFFULL) << DEC << kendl;
+                 << " Base=0x" << HEX << uint64_t(val & ~0xFFFULL) << DEC << kendl;
     }
     if (addr == 0x3A) { // IA32_FEATURE_CONTROL
         bsp_kout << "  Lock=" << (val & 1)
@@ -222,21 +246,6 @@ KURD_t cmd_rdmsr(const line_t* line) {
     return ok;
 }
 
-static int parse_hex_manual(const token_t& t, uint64_t* out) {
-    *out = 0;
-    size_t start = 0;
-    if (t.len >= 2 && t.str[0] == '0' && (t.str[1] == 'x' || t.str[1] == 'X'))
-        start = 2;
-    for (size_t i = start; i < t.len; i++) {
-        char c = t.str[i];
-        if (c >= '0' && c <= '9')       *out = (*out << 4) | (uint64_t)(c - '0');
-        else if (c >= 'a' && c <= 'f')  *out = (*out << 4) | (uint64_t)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F')  *out = (*out << 4) | (uint64_t)(c - 'A' + 10);
-        else if (c == 'x' || c == 'X')  { if (i != 1) return -1; }
-        else return -1;
-    }
-    return 0;
-}
 
 // ── wrmsr ─────────────────────────────────────────────────────
 
@@ -475,7 +484,7 @@ KURD_t cmd_cr(const line_t* line) {
             break;
         case 3: val = read_cr3();
             bsp_kout << "CR3 = 0x" << HEX << val << DEC
-                     << "  PML4 Physical Base = 0x" << HEX << (val & ~0xFFFULL) << DEC << kendl;
+                     << "  PML4 Physical Base = 0x" << HEX << uint64_t(val & ~0xFFFULL) << DEC << kendl;
             break;
         case 4: val = read_cr4();
             bsp_kout << "CR4 = 0x" << HEX << val << DEC << kendl;
