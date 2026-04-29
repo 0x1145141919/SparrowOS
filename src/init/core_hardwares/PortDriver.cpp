@@ -1,14 +1,13 @@
-#include <efi.h>
 #include "../init/include/core_hardwares/PortDriver.h"
 #include "../init/include/util/kout.h"
 #define COM1_PORT 0x3F8
-static inline void outb(UINT16 port, UINT8 value) {
+static inline void outb(uint16_t port, uint8_t value) {
     asm volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
 // 端口输入函数(内联汇编)
-static inline UINT8 inb(UINT16 port) {
-    UINT8 ret;
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
     asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }

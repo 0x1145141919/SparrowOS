@@ -97,11 +97,16 @@ target_include_directories(json_praser PRIVATE
 ExternalProject_Get_Property(gnu-efi SOURCE_DIR)
 set(GNU_EFI_SOURCE_DIR ${SOURCE_DIR})
 add_subdirectory(src/memory)
-add_subdirectory(outsbmodules/tinySTL)
 add_subdirectory(src/fs)
 add_executable(symbols_dumper
     build_utils/ksymbols_dumper.cpp
 )
+
+# 为 symbols_dumper 设置项目根路径编译宏
+target_compile_definitions(symbols_dumper PRIVATE
+    PJ_ROOT_PATH="${CMAKE_SOURCE_DIR}"
+)
+
 # 内核可执行文件
 add_executable(kernel.elf
     src/arch/x86_64/panic.cpp
