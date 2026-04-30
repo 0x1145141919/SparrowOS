@@ -1,4 +1,4 @@
-# Install script for directory: /home/PS/PS_git/OS_pj_uefi/kernel/src/memory
+# Install script for directory: /home/PS/PS_git/OS_pj_uefi/kernel_agent_kshell_branch/src/memory
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -45,6 +45,6 @@ endif()
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
 if(CMAKE_INSTALL_LOCAL_ONLY)
-  file(WRITE "/home/PS/PS_git/OS_pj_uefi/kernel/src/memory/install_local_manifest.txt"
+  file(WRITE "/home/PS/PS_git/OS_pj_uefi/kernel_agent_kshell_branch/src/memory/install_local_manifest.txt"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")
 endif()

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libfsuser.a CMakeFiles/fs_user_test.dir/init_fs.cpp.o CMakeFiles/fs_user_test.dir/initfs_bits_operations.cpp.o CMakeFiles/fs_user_test.dir/initfs_inode_content_read.cpp.o CMakeFiles/fs_user_test.dir/initfs_inode_content_write.cpp.o CMakeFiles/fs_user_test.dir/initfs_inode_operations.cpp.o CMakeFiles/fs_user_test.dir/initfs_inode_resize_about.cpp.o CMakeFiles/fs_user_test.dir/initfs_out_surfaces.cpp.o CMakeFiles/fs_user_test.dir/initfs_pathanalyze_about.cpp.o
+/usr/bin/ranlib libfsuser.a

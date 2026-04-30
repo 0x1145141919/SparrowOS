@@ -5,6 +5,10 @@
  * 遵行 Docs/kshell_x86_architecture_commands_design.md。
  * 所有命令 SAFE 等级，直接执行无确认。
  * 零 libc/libc++ 依赖。
+ *
+ * @note 数值 token 的解析由 parse_line 在分词阶段自动完成，
+ *       结果存储在 token.num_value 中。命令处理器通过
+ *       token_to_uint64() 直接读取，无需手写解析器。
  */
 #include "util/kshell.h"
 #include "util/kout.h"
@@ -16,16 +20,7 @@
 
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
-static int parse_uint(const token_t& t, uint64_t* out) {
-    if (t.len == 0 || t.len > 20) return -1;
-    uint64_t v = 0;
-    for (size_t i = 0; i < t.len; i++) {
-        if (t.str[i] < '0' || t.str[i] > '9') return -1;
-        v = v * 10 + (uint64_t)(t.str[i] - '0');
-    }
-    *out = v;
-    return 0;
-}
+
 static KURD_t make_ok() {
     return {result_code::SUCCESS, 0, module_code::INFRA,
             INFR_LOCATIONS::KSHELL, 0, level_code::INFO, err_domain::CORE_MODULE};
@@ -47,32 +42,19 @@ KURD_t cmd_cpuid(const line_t* line) {
         return ok;
     }
 
-    // Manual hex/decimal parser for the token
-    const token_t& lt = line->tokens[1];
-    uint64_t leaf = 0;
-    for (size_t i = 0; i < lt.len; i++) {
-        char c = lt.str[i];
-        if (c >= '0' && c <= '9')       leaf = leaf * 16 + (c - '0');
-        else if (c >= 'a' && c <= 'f')  leaf = leaf * 16 + (c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F')  leaf = leaf * 16 + (c - 'A' + 10);
-        else if (c == 'x' || c == 'X') {}
-        else { bsp_kout << "[ERROR] invalid leaf" << kendl; return ok; }
+    uint64_t leaf;
+    if (!token_to_uint64(line->tokens[1], &leaf)) {
+        bsp_kout << "[ERROR] invalid leaf" << kendl; return ok;
     }
 
-    uint32_t sub = 0;
+    uint64_t sub = 0;
     if (line->token_count >= 3) {
-        const token_t& st = line->tokens[2];
-        uint64_t sv = 0;
-        for (size_t i = 0; i < st.len; i++) {
-            char c = st.str[i];
-            if (c >= '0' && c <= '9')       sv = sv * 10 + (c - '0');
-            else if (c == 'x' || c == 'X') {}
-            else { bsp_kout << "[ERROR] invalid subleaf" << kendl; return ok; }
+        if (!token_to_uint64(line->tokens[2], &sub)) {
+            bsp_kout << "[ERROR] invalid subleaf" << kendl; return ok;
         }
-        sub = (uint32_t)sv;
     }
 
-    cpuid_tmp cp((uint32_t)leaf, sub);
+    cpuid_tmp cp((uint32_t)leaf, (uint32_t)sub);
 
     bsp_kout << "CPUID leaf=0x" << HEX << leaf << DEC << " subleaf=" << sub << kendl;
     bsp_kout << "  eax=0x" << HEX << cp.eax << DEC
@@ -192,21 +174,6 @@ KURD_t cmd_cpuinfo(const line_t* line) {
     bsp_kout << "  APIC ID: " << (uint64_t)query_apicid() << kendl;
     return ok;
 }
-static int parse_hex_manual(const token_t& t, uint64_t* out) {
-    *out = 0;
-    size_t start = 0;
-    if (t.len >= 2 && t.str[0] == '0' && (t.str[1] == 'x' || t.str[1] == 'X'))
-        start = 2;
-    for (size_t i = start; i < t.len; i++) {
-        char c = t.str[i];
-        if (c >= '0' && c <= '9')       *out = (*out << 4) | (uint64_t)(c - '0');
-        else if (c >= 'a' && c <= 'f')  *out = (*out << 4) | (uint64_t)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F')  *out = (*out << 4) | (uint64_t)(c - 'A' + 10);
-        else if (c == 'x' || c == 'X')  { if (i != 1) return -1; }
-        else return -1;
-    }
-    return 0;
-}
 
 // ── rdmsr ─────────────────────────────────────────────────────
 
@@ -220,7 +187,7 @@ KURD_t cmd_rdmsr(const line_t* line) {
     }
 
     uint64_t addr;
-    if (parse_hex_manual(line->tokens[1], &addr) || addr > 0xFFFFFFFF) {
+    if (!token_to_uint64(line->tokens[1], &addr) || addr > 0xFFFFFFFF) {
         bsp_kout << "[ERROR] Invalid MSR address" << kendl;
         return ok;
     }
@@ -259,8 +226,8 @@ KURD_t cmd_wrmsr(const line_t* line) {
     }
 
     uint64_t addr, value;
-    if (parse_hex_manual(line->tokens[1], &addr) || addr > 0xFFFFFFFF ||
-        parse_hex_manual(line->tokens[2], &value)) {
+    if (!token_to_uint64(line->tokens[1], &addr) || addr > 0xFFFFFFFF ||
+        !token_to_uint64(line->tokens[2], &value)) {
         bsp_kout << "[ERROR] Invalid address or value" << kendl;
         return ok;
     }
@@ -303,8 +270,8 @@ KURD_t cmd_inb(const line_t* line) {
         return ok;
     }
     uint64_t port, count = 1;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
-    if (line->token_count >= 3 && parse_uint(line->tokens[2], &count)) { bsp_kout << "[ERROR] invalid count" << kendl; return ok; }
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
+    if (line->token_count >= 3 && !token_to_uint64(line->tokens[2], &count)) { bsp_kout << "[ERROR] invalid count" << kendl; return ok; }
     if (count > 256) count = 256;
 
     for (uint64_t i = 0; i < count; i++) {
@@ -327,7 +294,7 @@ KURD_t cmd_inw(const line_t* line) {
         return ok;
     }
     uint64_t port;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
     uint16_t v = inw((uint16_t)port);
     bsp_kout << "inw(0x" << HEX << port << DEC << ") = 0x" << HEX << v << DEC << kendl;
     return ok;
@@ -342,7 +309,7 @@ KURD_t cmd_inl(const line_t* line) {
         return ok;
     }
     uint64_t port;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF) { bsp_kout << "[ERROR] invalid port" << kendl; return ok; }
     uint32_t v = inl((uint16_t)port);
     bsp_kout << "inl(0x" << HEX << port << DEC << ") = 0x" << HEX << v << DEC << kendl;
     return ok;
@@ -359,8 +326,8 @@ KURD_t cmd_outb(const line_t* line) {
         return ok;
     }
     uint64_t port, val;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF ||
-        parse_uint(line->tokens[2], &val) || val > 255) {
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF ||
+        !token_to_uint64(line->tokens[2], &val) || val > 255) {
         bsp_kout << "[ERROR] invalid port or value" << kendl; return ok;
     }
     outb((uint8_t)val, (uint16_t)port);
@@ -377,8 +344,8 @@ KURD_t cmd_outw(const line_t* line) {
         return ok;
     }
     uint64_t port, val;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF ||
-        parse_hex_manual(line->tokens[2], &val) || val > 0xFFFF) {
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF ||
+        !token_to_uint64(line->tokens[2], &val) || val > 0xFFFF) {
         bsp_kout << "[ERROR] invalid port or value" << kendl; return ok;
     }
     outw((uint16_t)val, (uint16_t)port);
@@ -395,8 +362,8 @@ KURD_t cmd_outl(const line_t* line) {
         return ok;
     }
     uint64_t port, val;
-    if (parse_hex_manual(line->tokens[1], &port) || port > 0xFFFF ||
-        parse_hex_manual(line->tokens[2], &val) || val > 0xFFFFFFFF) {
+    if (!token_to_uint64(line->tokens[1], &port) || port > 0xFFFF ||
+        !token_to_uint64(line->tokens[2], &val) || val > 0xFFFFFFFF) {
         bsp_kout << "[ERROR] invalid port or value" << kendl; return ok;
     }
     outl((uint32_t)val, (uint16_t)port);
@@ -463,7 +430,7 @@ KURD_t cmd_cr(const line_t* line) {
     }
 
     uint64_t reg;
-    if (parse_uint(line->tokens[1], &reg)) {
+    if (!token_to_uint64(line->tokens[1], &reg)) {
         bsp_kout << "[ERROR] invalid register" << kendl; return ok;
     }
 

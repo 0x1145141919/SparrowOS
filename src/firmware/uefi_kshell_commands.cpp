@@ -30,15 +30,18 @@ static bool tok_eq(const token_t& t, const char* s) {
     return (t.len == n) && (strcmp_in_kernel(t.str, s, n) == 0);
 }
 
-static int parse_uint(const token_t& t, uint64_t* out) {
-    if (t.len == 0 || t.len > 20) return -1;
+// 用于解析日期/时间子串（YYYY-MM-DD HH:MM:SS 格式中通过 str+len 构造的片段）。
+// 这些是 ad-hoc 子串而非 parse_line 分出的 token，无法使用 token_to_uint64。
+// 注意：不使用 token_t 类型，避免与框架 token 解析混淆。
+static bool parse_digits(const char* s, size_t len, uint64_t* out) {
+    if (len == 0 || len > 20) return false;
     uint64_t v = 0;
-    for (size_t i = 0; i < t.len; i++) {
-        if (t.str[i] < '0' || t.str[i] > '9') return -1;
-        v = v * 10 + (uint64_t)(t.str[i] - '0');
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        v = v * 10 + (uint64_t)(s[i] - '0');
     }
     *out = v;
-    return 0;
+    return true;
 }
 
 // ── 日历验证 ────────────────────────────────────────────────────
@@ -213,7 +216,7 @@ KURD_t cmd_uefisettime(const line_t* line) {
         bsp_kout << "[ERROR] Date format: YYYY-MM-DD" << kendl;
         return ok;
     }
-    if (parse_uint(yt, &y) || parse_uint(mot, &mo) || parse_uint(dt, &d)) {
+    if (!parse_digits(yt.str, 4, &y) || !parse_digits(mot.str, 2, &mo) || !parse_digits(dt.str, 2, &d)) {
         bsp_kout << "[ERROR] Invalid date" << kendl;
         return ok;
     }
@@ -232,7 +235,7 @@ KURD_t cmd_uefisettime(const line_t* line) {
         bsp_kout << "[ERROR] Time format: HH:MM:SS" << kendl;
         return ok;
     }
-    if (parse_uint(ht, &h) || parse_uint(mit, &mi) || parse_uint(st, &s)) {
+    if (!parse_digits(ht.str, 2, &h) || !parse_digits(mit.str, 2, &mi) || !parse_digits(st.str, 2, &s)) {
         bsp_kout << "[ERROR] Invalid time" << kendl;
         return ok;
     }
@@ -403,7 +406,7 @@ KURD_t cmd_set_marcro_time(const line_t* line) {
     token_t yt  = {dt.str, 4};
     token_t mot = {dt.str + 5, 2};
     token_t dat = {dt.str + 8, 2};
-    if (parse_uint(yt, &tmp) || parse_uint(mot, &tmp) || parse_uint(dat, &tmp))
+    if (!parse_digits(yt.str, 4, &tmp) || !parse_digits(mot.str, 2, &tmp) || !parse_digits(dat.str, 2, &tmp))
         return ok;
     y = (uint16_t)tmp; mo = (uint8_t)tmp; d = (uint8_t)tmp;
 
@@ -414,7 +417,7 @@ KURD_t cmd_set_marcro_time(const line_t* line) {
             token_t ht  = {tt.str, 2};
             token_t mit = {tt.str + 3, 2};
             token_t st  = {tt.str + 6, 2};
-            if (parse_uint(ht, &tmp) || parse_uint(mit, &tmp) || parse_uint(st, &tmp))
+            if (!parse_digits(ht.str, 2, &tmp) || !parse_digits(mit.str, 2, &tmp) || !parse_digits(st.str, 2, &tmp))
                 return ok;
             h = (uint8_t)tmp; mi = (uint8_t)tmp; s = (uint8_t)tmp;
         }
