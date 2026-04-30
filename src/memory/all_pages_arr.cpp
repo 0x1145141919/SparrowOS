@@ -11,10 +11,6 @@ uint64_t all_pages_arr::mem_map_entry_count;
 page*all_pages_arr::mem_map;
 all_pages_arr::phyinterval_t*all_pages_arr::mem_map_intervals;
 uint64_t all_pages_arr::mem_map_intervals_count;
-void *ptr_dump(page *p)
-{
-    return (void*)(0xFFFF000000000000+(uint64_t(p->head.ptr)<<4));
-}
 
 all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
 {
@@ -38,10 +34,8 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
     };
     
     auto is_free_4kb = [](const page& p) -> bool {
-        return !p.page_flags.bitfield.is_skipped
-            && p.head.order == 0
-            && p.head.type == static_cast<uint64_t>(page_state_t::free)
-            && p.refcount == 0;
+        return 
+            p.state == page_state_t::free;
     };
 
     uint64_t seg_count = 0;
@@ -258,8 +252,7 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
             return fail;
         }
         for (uint64_t j = 0; j < take; ++j) {
-            mem_map[mem_idx_base + j].head.type = static_cast<uint64_t>(TYPE);
-            mem_map[mem_idx_base + j].refcount = 1;
+            mem_map[mem_idx_base + j].state = static_cast<page_state_t>(TYPE);
         }
         remain -= take;
         ++iv_idx;

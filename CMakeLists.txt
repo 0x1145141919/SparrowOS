@@ -17,6 +17,9 @@ endif()
 
     add_definitions(-D_GNU_SOURCE)  # 有时候需要这个
 
+# Initramfs builder target
+add_subdirectory(build_utils/initramfs_builder)
+
 # 设置 NASM 编译选项（例如：-f elf64 或 -f win32）
 set(NASM_FLAGS "-f elf64")
 # 定义汇编文件编译规则
@@ -75,16 +78,23 @@ ExternalProject_Add(
 )
 add_custom_target(kernel_resources
 )
+
 add_custom_target(ksymbols
-    COMMAND ./symbols_dumper
+    COMMAND ${CMAKE_BINARY_DIR}/symbols_dumper
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "运行自定义目标"
+    DEPENDS ${CMAKE_BINARY_DIR}/symbols_dumper
+    COMMENT "Generating kernel symbols table"
+)
+add_custom_target(initramfs 
+    COMMAND ${CMAKE_BINARY_DIR}/build_utils/initramfs_builder/initramfs-builder initramfs_config.json
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS ${CMAKE_BINARY_DIR}/build_utils/initramfs_builder/initramfs-builder
+    COMMENT "Building initramfs image"
 )
 add_dependencies(ksymbols symbols_dumper init.elf kernel.elf)
 
-add_dependencies(kernel_resources 
-    ksymbols
-) 
+add_dependencies(kernel_resources initramfs) 
+add_dependencies(initramfs ksymbols)
 add_library(json_praser 
     user_utils/json_configs_prase.cpp
 )

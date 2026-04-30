@@ -77,6 +77,9 @@ pwrite — 直接物理内存写入
 
     输出：写入成功信息
 
+vread 直接虚拟地址读取
+vwrite直接虚拟地址写入 
+这两个格式与上面的pread/pwrite相同
 pmap — 物理→虚拟映射
 
     参数：<phyaddr> <vaddr> <size_bytes> [access]
@@ -95,19 +98,4 @@ punmap — 解除虚拟映射
 
     输出：解除后的虚拟地址访问提示
 
-5. Phase 2 命令
-dmap — 直接物理映射
 
-    参数：<phyaddr> <size_bytes>
-
-    映射到固定区域，用户空间可见
-
-    输出：映射的虚拟地址
-
-stackalloc — 内核栈分配
-
-    参数：<pages_count>
-
-    栈从高地址向低增长，栈底下方自动分配 1 页缓冲（用于溢出检测）
-
-    输出：栈底（高地址）、栈顶（低地址）、缓冲区域
