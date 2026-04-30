@@ -34,7 +34,11 @@ bool parse_nm_line(const std::string& line, symbol_entry& entry) {
     return true;
 }
 
-constexpr char PJ_ROOT[] = "/home/PS/PS_git/OS_pj_uefi/kernel";
+#ifndef PJ_ROOT_PATH
+#define PJ_ROOT_PATH "/home/PS/PS_git/OS_pj_uefi/kernel"
+#endif
+
+constexpr char PJ_ROOT[] = PJ_ROOT_PATH;
 constexpr char KIMAGE_MAIN_ELF[] = "kernel.elf";
 constexpr char INIT_ELF[] = "init.elf";
 constexpr char SORTED_NM_TEXT_LIST[] = "ksymbols_sorted.txt";

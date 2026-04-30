@@ -584,17 +584,9 @@ KURD_t cmd_kbdmonitor(const line_t* line) {
         else if (token_eq(line->tokens[i], "chars"))  mon = MON_CHARS;
         else if (token_eq(line->tokens[i], "both"))   mon = MON_BOTH;
         else {
-            // try to parse as number (count)
-            // 简单数值解析：手动处理
-            const char* s = line->tokens[i].str;
-            size_t slen = line->tokens[i].len;
-            bool num_ok = true;
-            uint64_t val = 0;
-            for (size_t ci = 0; ci < slen; ci++) {
-                if (s[ci] < '0' || s[ci] > '9') { num_ok = false; break; }
-                val = val * 10 + (s[ci] - '0');
-            }
-            if (num_ok) {
+            // try to parse as number (count) — 使用框架 token_to_uint64
+            uint64_t val;
+            if (token_to_uint64(line->tokens[i], &val)) {
                 max_count = val;
                 if (max_count == 0) infinite = true;
             }
@@ -686,15 +678,8 @@ KURD_t cmd_kbdtest(const line_t* line) {
     uint64_t duration_sec = 10;
     bool infinite = false;
     if (line->token_count >= 2) {
-        const char* s = line->tokens[1].str;
-        size_t slen = line->tokens[1].len;
-        bool ok_parse = true;
-        uint64_t val = 0;
-        for (size_t ci = 0; ci < slen; ci++) {
-            if (s[ci] < '0' || s[ci] > '9') { ok_parse = false; break; }
-            val = val * 10 + (s[ci] - '0');
-        }
-        if (ok_parse) {
+        uint64_t val;
+        if (token_to_uint64(line->tokens[1], &val)) {
             duration_sec = val;
             if (duration_sec == 0) infinite = true;
         }
