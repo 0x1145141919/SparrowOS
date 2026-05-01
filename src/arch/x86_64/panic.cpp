@@ -63,7 +63,7 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     if(first_entry){
         bsp_kout<<"Kernel panic at "<<first_entry->name<<" + "<<context->rip-first_entry->address<<kendl;
     }
-    else_trace(context->rbp);
+    else_trace((void*)context->rbp);
     }
     asm volatile("cli");
     asm volatile("hlt");

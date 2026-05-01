@@ -148,6 +148,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/i8042_kshell.cpp
     src/arch/x86_64/core_hardwares/rtc.cpp
     src/arch/x86_64/core_hardwares/x86_kshell_commands.cpp
+    src/arch/x86_64/core_hardwares/pcie_kshell_commands.cpp
     src/arch/x86_64/core_hardwares/ioapic.cpp
     src/arch/x86_64/core_hardwares/device_interrupt_handlers_bare_enter.asm
     src/firmware/acpimgr.cpp
@@ -387,6 +388,7 @@ function(configure_kernel_like_elf target_name link_opts)
         -fno-lto
         -fpermissive
         -fno-PIC
+        -fno-builtin-ctzll
         -DKERNEL_MODE>
         -DPGLV_4>
     $<$<COMPILE_LANGUAGE:ASM_NASM>:-felf64>

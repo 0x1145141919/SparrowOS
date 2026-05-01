@@ -761,8 +761,8 @@ void kio::kout::Init()
         .running_stage_write=nullptr,
         .running_stage_putchar=nullptr,
         .running_stage_num=nullptr,
-        .panic_write=&DmesgRingBuffer::putsk,
-        .early_write=&DmesgRingBuffer::putsk,
+        .panic_write=(void (*)(const char*, uint64_t))&DmesgRingBuffer::putsk,
+        .early_write=(void (*)(const char*, uint64_t))&DmesgRingBuffer::putsk,
     };
     register_backend(dmesg_buffer_handlers);
     #endif

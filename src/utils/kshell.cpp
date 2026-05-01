@@ -548,7 +548,7 @@ void kshell_framework_t::run_shell_loop() {
         print_prompt();
 
         // 读取输入
-        size_t len = read_line_from_keyboard(input_buf, sizeof(input_buf) - 1);
+        size_t len = read_line_from_keyboard(input_buf, 4095);
         if (len == 0) {
             continue;  // Ctrl+C 或空输入
         }

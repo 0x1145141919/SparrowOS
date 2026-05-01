@@ -45,6 +45,11 @@ extern KURD_t cmd_kvwrite(const line_t* line);
 extern KURD_t cmd_phymem(const line_t* line);
 extern KURD_t cmd_vminfo(const line_t* line);
 
+// PCIe 观察命令（src/arch/x86_64/core_hardwares/pcie_kshell_commands.cpp）
+extern KURD_t cmd_pcie_segs(const line_t* line);
+extern KURD_t cmd_pcie_BDFs(const line_t* line);
+extern KURD_t cmd_pcie_BDF(const line_t* line);
+
 // x86 架构诊断命令（src/arch/x86_64/core_hardwares/x86_kshell_commands.cpp）
 extern KURD_t cmd_cpuid(const line_t* line);
 extern KURD_t cmd_cpuinfo(const line_t* line);
@@ -153,6 +158,22 @@ static command_entry_t g_mem_command_table[] = {
 static constexpr size_t MEM_CMD_COUNT =
     sizeof(g_mem_command_table) / sizeof(g_mem_command_table[0]);
 // ═══════════════════════════════════════════════════════════════════
+//  PCIe 观察命令表
+// ═══════════════════════════════════════════════════════════════════
+
+static command_entry_t g_pcie_command_table[] = {
+    {"pcie_segs",  "List ECAM segments",
+        cmd_pcie_segs,  command_risk_level_t::SAFE, false},
+    {"pcie_BDFs",  "List PCIe devices in segment [--bus=N] [--class=0xCC] [--vendor=0xVVVV] [--bridge-only] [--tree]",
+        cmd_pcie_BDFs,  command_risk_level_t::SAFE, false},
+    {"pcie_BDF",   "Show PCIe device details <BDF> [--bars] [--caps] [--header] [--raw=OFF:LEN]",
+        cmd_pcie_BDF,   command_risk_level_t::SAFE, false},
+};
+
+static constexpr size_t PCIE_CMD_COUNT =
+    sizeof(g_pcie_command_table) / sizeof(g_pcie_command_table[0]);
+
+// ═══════════════════════════════════════════════════════════════════
 //  x86 架构诊断命令表
 // ═══════════════════════════════════════════════════════════════════
 
@@ -219,6 +240,12 @@ void register_mem_kshell_commands() {
     bsp_kout << "[KSHELL] Registered " << MEM_CMD_COUNT
              << " memory operation commands" << kendl;
 }
+void register_pcie_kshell_commands() {
+    regist_table(g_pcie_command_table, PCIE_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << PCIE_CMD_COUNT
+             << " PCIe observe commands" << kendl;
+}
+
 void register_x86_kshell_commands() {
     regist_table(g_x86_command_table, X86_CMD_COUNT);
     bsp_kout << "[KSHELL] Registered " << X86_CMD_COUNT
@@ -229,6 +256,7 @@ KURD_t kshell_framework_t::initial_commands_regist()
     register_i8042_kshell_commands();
     register_uefi_kshell_commands();
     register_mem_kshell_commands();
+    register_pcie_kshell_commands();
     register_x86_kshell_commands();
     return default_success();
 }

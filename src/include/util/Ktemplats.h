@@ -262,7 +262,7 @@ public:
     }
     T pop_front_value()
     {
-        if (!m_head) return;
+        if (!m_head) return T{};
         node* n = m_head;
         m_head = n->next;
         if (m_head)
