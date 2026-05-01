@@ -43,10 +43,6 @@ section .text
     pop rbp
     iretq
 %endmacro
-extern iommu_fault_cpp_enter
-global iommu_fault_deal
-iommu_fault_deal:
-INTERRUPT_ENTRY_WITH_ERRCODE iommu_fault_cpp_enter
 extern i8042_cpp_enter
 global i8042_code_deal
 i8042_code_deal:

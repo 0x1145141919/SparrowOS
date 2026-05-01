@@ -27,7 +27,6 @@
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
-#include "arch/x86_64/core_hardwares/DMAR.h"
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "arch/x86_64/PCIe/prased.h"
@@ -414,7 +413,6 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     asm volatile("sti");   
     //中断接管工作
     new(global_schedulers) per_processor_scheduler;
-    dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
     global_container=new ecams_container_t((MCFG_Table*)gAcpiVaddrSapceMgr.get_acpi_table("MCFG"));

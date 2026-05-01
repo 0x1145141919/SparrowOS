@@ -84,7 +84,13 @@ extern "C" bool i8042_char_read_event_by_seq(uint64_t seq, kbd_char_event* out_e
 extern "C" uint64_t i8042_char_get_publish_seq();
 extern "C" void i8042_char_wait_event(uint64_t last_publish_seq);
 extern "C" void i8042_char_subscriber_init();
-extern "C" char i8042_blockable_keyboard_listening();
+
+typedef struct {
+    char data[1024];
+    uint16_t len;
+} buff_t;
+
+extern "C" void i8042_blockable_keyboard_listening(buff_t* buf);
 #ifdef __cplusplus
 extern void register_i8042_kshell_commands();
 #endif

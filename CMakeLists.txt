@@ -142,7 +142,6 @@ add_executable(kernel.elf
     src/firmware/uefi_kshell_commands.cpp
     src/memory/mem_kshell_commands.cpp
     src/arch/x86_64/core_hardwares/primitive_gop.cpp
-    src/arch/x86_64/core_hardwares/DMAR.cpp
     src/arch/x86_64/core_hardwares/i8042.cpp
     src/arch/x86_64/core_hardwares/i8042_char_subscriber.cpp
     src/arch/x86_64/core_hardwares/i8042_kshell.cpp

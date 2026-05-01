@@ -484,35 +484,39 @@ size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len)
     size_t pos = 0;
 
     while (pos < max_len - 1) {
-        // 阻塞式读取单个字符
+        buff_t buf;
+        i8042_blockable_keyboard_listening(&buf);
 
-        char c = i8042_blockable_keyboard_listening();
+        for(uint16_t i = 0; i < buf.len && pos < max_len - 1; i++) {
+            char c = buf.data[i];
 
-        // 回车或换行表示输入结束
-        if (c == '\r' || c == '\n') {
-            bsp_kout << kendl;  // 输出换行
-            break;
-        }
-
-        // 退格处理
-        if (c == '\b' || c == 127) {  // 127 是 DEL
-            if (pos > 0) {
-                pos--;
-                bsp_kout << "\b \b";  // 回退、空格、再回退
+            // 回车或换行表示输入结束
+            if (c == '\r' || c == '\n') {
+                bsp_kout << kendl;
+                buffer[pos] = '\0';
+                return pos;
             }
-            continue;
-        }
 
-        // Ctrl+C 中断
-        if (c == 3) {  // Ctrl+C
-            bsp_kout << "^C" << kendl;
-            return 0;
-        }
+            // 退格处理
+            if (c == '\b' || c == 127) {
+                if (pos > 0) {
+                    pos--;
+                    bsp_kout << "\b \b";
+                }
+                continue;
+            }
 
-        // 正常字符，显示回显
-        bsp_kout << c;
-        buffer[pos] = c;
-        pos++;
+            // Ctrl+C 中断
+            if (c == 3) {
+                bsp_kout << "^C" << kendl;
+                return 0;
+            }
+
+            // 正常字符，显示回显
+            bsp_kout << c;
+            buffer[pos] = c;
+            pos++;
+        }
     }
 
     buffer[pos] = '\0';
@@ -570,6 +574,14 @@ void kshell_framework_t::run_shell_loop() {
             parsed_line->tokens[0].len == 4) {
             bsp_kout << "[KSHELL] Exiting shell..." << kendl;
             break;
+        }
+
+        // 帮助命令
+        if (strcmp_in_kernel(parsed_line->tokens[0].str, "help") == 0 &&
+            parsed_line->tokens[0].len == 4) {
+            show_help();
+            bsp_kout << kendl;
+            continue;
         }
 
         // 执行命令

@@ -14,8 +14,7 @@ class NVMeNameSpace:public BlockDevice{//除了get_sector_size，get_sector_coun
     uint32_t get_sector_size() const override;
 };
 class NVMe_Controller{
-    vm_interval bars[6];
-    
+    vm_interval reg_properties;
     Ktemplats::list_doubly<NVMeNameSpace*> namespaces;
     NVMe_Controller(vaddr_t ecam);
 };

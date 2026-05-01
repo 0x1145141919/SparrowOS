@@ -1,5 +1,4 @@
 #include "arch/x86_64/core_hardwares/ioapic.h"
-#include "arch/x86_64/core_hardwares/DMAR.h"
 #include "memory/AddresSpace.h"
 #include "panic.h"
 #include "util/kout.h"
@@ -7,6 +6,7 @@
 #define MEMORY_BARRIER() asm volatile("mfence" ::: "memory")
 #define MMIO_BARRIER() asm volatile("sfence" ::: "memory")  // 写屏障
 ioapic_driver *main_router;
+uint32_t legacy_rotate_interrupt_alloc_id;
 ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entry)
 {
     KURD_t kurd;
@@ -98,35 +98,6 @@ void ioapic_driver::set_rte_raw(uint8_t rte, uint64_t value)
     // 写入低32位
     head->select_reg = 0x10 + (rte * 2);
     head->window_reg = low;
-}
-
-KURD_t ioapic_driver::irq_regist(uint8_t rte, uint16_t remmap_idx,bool polarity)
-{   
-    using namespace COREHARDWARES_LOCATIONS::IO_APIC_DRIVERS_EVENTS::RTE_REGIST_RESULTS;
-    KURD_t fail=default_fail;
-    KURD_t success=default_success;
-    fail.event_code=COREHARDWARES_LOCATIONS::IO_APIC_DRIVERS_EVENTS::RTE_REGIST;
-    success.event_code=COREHARDWARES_LOCATIONS::IO_APIC_DRIVERS_EVENTS::RTE_REGIST;
-    if(rte>=max_rte_num||
-    remmap_idx*sizeof(dmar::translation_structs::irte)>=dmar::interrupt_remapp_table_default_size)
-    {
-        fail.reason=FAIL_RESULTS::FAIL_BAD_PARAM;
-        return fail;
-    }
-    dmar::translation_structs::irte copy=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id]->get_interrupt_remmaptable()[remmap_idx];
-    RTE_remmap_union entry={.value=0};
-    entry.filed.vector = copy.vec;
-    entry.filed.delivery_mode = 0;
-    entry.filed.index_15 = !!(remmap_idx & 0x8000);
-    entry.filed.pin_polarity = polarity;
-    entry.filed.trigger_mode = copy.trigger_mode;
-    entry.filed.mask = 0;
-    entry.filed.reserved = 0;
-    entry.filed.interrupt_format = 1;
-    entry.filed.remmap_idx_0_14 = static_cast<uint64_t>(remmap_idx) & 0x7fffULL;
-    // 设置 RTE
-    set_rte_raw(rte, entry.value);
-    return success;
 }
 KURD_t ioapic_driver::irq_unregist(uint8_t rte)
 {

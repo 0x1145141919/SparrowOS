@@ -2,7 +2,6 @@
 #include "stdint.h"
 #include "firmware/ACPI_APIC.h"
 #include "memory/AddresSpace.h"
-#include "DMAR.h"
 namespace COREHARDWARES_LOCATIONS{
     constexpr uint8_t LOCATION_CODE_IO_APIC=0x03;
     namespace IO_APIC_DRIVERS_EVENTS {
@@ -67,7 +66,6 @@ class ioapic_driver {
         }filed;
         static_assert(sizeof(filed)==8,"RTE_remmap_union size error");
     };
-    dmar::driver* belonged_dmar;
     uint64_t get_rte_raw(uint8_t rte);
     void set_rte_raw(uint8_t irq,uint64_t value);
 public:
@@ -78,9 +76,9 @@ public:
         uint8_t trigger_mode:1;
         uint8_t polarity:1;
     };
-    KURD_t irq_regist(uint8_t rte,uint16_t remmap_idx,bool polarity);
     KURD_t irq_regist(uint8_t rte,compact_flag flag);
     KURD_t irq_unregist(uint8_t rte);
 };
+extern uint32_t legacy_rotate_interrupt_alloc_id;
 extern ioapic_driver *main_router;
 extern spinlock_cpp_t interrupt_manage_lock;//中断信息通路相关数据结构进行修改时的锁，由于频率低下故用全局大锁

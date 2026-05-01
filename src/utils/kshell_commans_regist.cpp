@@ -26,6 +26,7 @@ extern KURD_t cmd_uefireboot(const line_t* line);
 extern KURD_t cmd_ueficreset(const line_t* line);
 extern KURD_t cmd_uefishutdown(const line_t* line);
 extern KURD_t cmd_uefiptrs(const line_t* line);
+extern KURD_t cmd_legacy_reboot(const line_t* line);
 extern KURD_t cmd_get_macro_time(const line_t* line);
 extern KURD_t cmd_set_marcro_time(const line_t* line);
 
@@ -109,6 +110,8 @@ static command_entry_t g_uefi_command_table[] = {
         cmd_ueficreset,     command_risk_level_t::DANGEROUS, false},
     {"uefishutdown",   "System shutdown",
         cmd_uefishutdown,   command_risk_level_t::DANGEROUS, false},
+    {"legacy_reboot", "Legacy reset via 0xcf9 port [--cold|--warm]",
+        cmd_legacy_reboot,  command_risk_level_t::DANGEROUS, false},
     {"uefiptrs",       "UEFI RT function pointer table",
         cmd_uefiptrs,       command_risk_level_t::SAFE, false},
     {"get_macro_time", "Read OS RTC-anchored calendar time",

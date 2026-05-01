@@ -14,7 +14,7 @@
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "ktime.h"
 #include <efi.h>
-
+#include <arch/x86_64/core_hardwares/lapic.h>
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
 
@@ -135,16 +135,21 @@ static bool confirm_with_word(const char* prompt, const char* expected) {
     char buf[64];
     size_t pos = 0;
     while (pos < sizeof(buf) - 1) {
-        char c = i8042_blockable_keyboard_listening();
-        if (c == '\r' || c == '\n') break;
-        if (c == '\b' || c == 127) {
-            if (pos > 0) { pos--; bsp_kout << "\b \b"; }
-            continue;
+        buff_t kb;
+        i8042_blockable_keyboard_listening(&kb);
+        for(uint16_t i = 0; i < kb.len; i++) {
+            char c = kb.data[i];
+            if (c == '\r' || c == '\n') goto done;
+            if (c == '\b' || c == 127) {
+                if (pos > 0) { pos--; bsp_kout << "\b \b"; }
+                continue;
+            }
+            if (c == 3) { bsp_kout << "^C" << kendl; return false; }
+            bsp_kout << c;
+            if(pos < sizeof(buf) - 1) buf[pos++] = c;
         }
-        if (c == 3) { bsp_kout << "^C" << kendl; return false; }
-        bsp_kout << c;
-        buf[pos++] = c;
     }
+done:
     buf[pos] = '\0';
     bsp_kout << kendl;
     return (strcmp_in_kernel(buf, expected) == 0);
@@ -317,6 +322,43 @@ KURD_t cmd_ueficreset(const line_t* line) {
 }
 
 
+void halt_foever(){
+    asm volatile("cli;hlt");
+}
+// ── legacy_reboot ─────────────────────────────────────────────
+
+KURD_t cmd_legacy_reboot(const line_t* line) {
+    KURD_t ok = make_ok();
+    ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
+
+    bool cold = false, warm = false;
+    for (uint16_t i = 1; i < line->token_count; i++) {
+        if (tok_eq(line->tokens[i], "--cold")) cold = true;
+        if (tok_eq(line->tokens[i], "--warm")) warm = true;
+    }
+    if (cold && warm) {
+        bsp_kout << "[legacy_reboot] --cold and --warm are mutually exclusive" << kendl;
+        return ok;
+    }
+
+    if (!confirm_with_word("This will RESET the system via 0xcf9 port!", "RESET")) {
+        bsp_kout << "[legacy_reboot] Cancelled." << kendl;
+        return ok;
+    }
+
+    uint8_t val = warm ? 0x06 : 0x0E;
+    // 0x0A = warm reset:  bit1=RST_CPU, bit3=SYS_RST  (cf9 spec)
+    // 0x0E = cold reset:  bit1=RST_CPU, bit2=FULL_RST, bit3=SYS_RST
+    bsp_kout << "[legacy_reboot] Issuing " << (cold ? "cold" : "warm")
+             << " reset via port 0xcf9 (val=0x" << HEX << (uint32_t)val << DEC << ")..." << kendl;
+
+    bsp_kout << "[legacy_reboot] Flushing caches..." << kendl;
+    x2apic::x2apic_driver::broadcast_exself_fixed_ipi(halt_foever);
+    __asm__ volatile("wbinvd");
+    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"((uint16_t)0xcf9));
+    __asm__ volatile("1: hlt; jmp 1b");
+    return ok;
+}
 
 // ── uefishutdown ───────────────────────────────────────────────
 

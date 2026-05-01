@@ -313,38 +313,51 @@ extern "C" void i8042_char_subscriber_init()
     }
 }
 
-extern "C" char i8042_blockable_keyboard_listening()
+extern "C" void i8042_blockable_keyboard_listening(buff_t* buf)
 {
     // 这个接口设计为"只允许在内核线程上下文里阻塞使用"。
-    if(!kptrace_current_stack_has_kthread_entry()){
-        return '\0';
+    if(!kptrace_current_stack_has_kthread_entry() || buf == nullptr){
+        if(buf) buf->len = 0;
+        return;
     }
 
-    uint64_t read_seq = i8042_char_get_publish_seq();
-    
+    // 持久化消费者序列号，确保跨调用连续性
+    static uint64_t read_seq = 0;
+
     while(true){
         uint64_t publish_seq = i8042_char_get_publish_seq();
         
-        // 如果没有新事件,等待
-        if(read_seq == publish_seq){
+        // 首次调用：初始化到当前已发布位置
+        if(read_seq == 0){
+            read_seq = publish_seq;
+        }
+
+        // 等待新数据
+        if(read_seq >= publish_seq){
             i8042_char_wait_event(read_seq);
             continue;
         }
         
-        // 如果差距过大,调整read_seq避免回绕问题
+        // 防止回绕，落后太多则跳过头
         if((publish_seq - read_seq) > i8042_char_buffer_max_size){
             read_seq = publish_seq - i8042_char_buffer_max_size;
         }
 
-        // 读取下一个可用的事件
-        while(read_seq < publish_seq){
+        // 一次性排出所有可用字符到 buf
+        buf->len = 0;
+        while(read_seq < publish_seq && buf->len < 1024){
             kbd_char_event ev{};
             if(i8042_char_read_event_by_seq(read_seq, &ev)){
-                read_seq++;
-                // 返回接收到的字符
-                return ev.ch;
+                buf->data[buf->len++] = ev.ch;
             }
             read_seq++;
         }
+
+        if(buf->len > 0){
+            return;  // 至少有一个字符时返回
+        }
+
+        // 所有事件都是无效的（filtered out），继续等
+        // 理论上不应进入此分支
     }
 }

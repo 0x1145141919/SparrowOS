@@ -209,6 +209,79 @@ KURD_t cmd_pcie_segs(const line_t* line) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+//  tree-mode scan helper  —  recursive bridge traversal
+// ─────────────────────────────────────────────────────────────────
+static void bdfs_tree_scan(ecam_node_t* node, uint16_t bus_num, uint32_t depth,
+                           uint32_t filter_class, uint16_t filter_vendor,
+                           bool bridge_only, int* count)
+{
+    for (uint8_t dev = 0; dev < 32; dev++) {
+        auto* base0 = ecam_addr(node, (uint8_t)bus_num, dev, 0);
+        uint16_t vid0 = cfg_read16(base0, 0);
+        if (vid0 == 0xFFFF || vid0 == 0) continue;  // No device, skip
+
+        bool is_multi = false;
+        uint8_t raw_htype = *(volatile uint8_t*)((uintptr_t)base0 + 0x0E);
+        is_multi = (raw_htype & PCI_HEADER_TYPE_MULTIFUNC) != 0;
+        uint8_t max_func = is_multi ? 8 : 1;
+
+        for (uint8_t func = 0; func < max_func; func++) {
+            auto* base = (func == 0) ? base0 : ecam_addr(node, (uint8_t)bus_num, dev, func);
+            uint16_t vid = cfg_read16(base, 0);
+            if (vid == 0xFFFF || vid == 0) continue;
+
+            uint32_t classreg = cfg_read32(base, 0x08);
+            uint8_t  base_class = (uint8_t)(classreg >> 24);
+            uint8_t  sub_class  = (uint8_t)(classreg >> 16);
+            uint16_t devid      = cfg_read16(base, 2);
+
+            // Filters
+            if (filter_class != 0xFFFFFFFF) {
+                uint32_t cc = ((uint32_t)base_class << 8) | sub_class;
+                if (cc != filter_class) continue;
+            }
+            if (filter_vendor != 0xFFFF && vid != filter_vendor) continue;
+
+            uint8_t htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E) & PCI_HEADER_TYPE_MASK;
+            if (bridge_only && htype != PCI_HEADER_TYPE_PCI_BRIDGE) continue;
+
+            // Print with indentation
+            for (uint32_t i = 0; i < depth; i++) bsp_kout << "  ";
+            bsp_kout << (uint32_t)bus_num << ":" << (uint32_t)dev << "."
+                     << (uint32_t)func
+                     << "  0x" << HEX << vid << ":" << devid << DEC
+                     << "  " << class_name(base_class, sub_class)
+                     << "  (" << HEX << (uint32_t)base_class << ":"
+                     << (uint32_t)sub_class << DEC << ")"
+                     << "  " << ((htype == PCI_HEADER_TYPE_ENDPOINT) ? "EP"
+                                : (htype == PCI_HEADER_TYPE_PCI_BRIDGE) ? "BR" : "?")
+                     << kendl;
+            (*count)++;
+
+            // Recurse into downstream buses if this is a bridge
+            if (htype == PCI_HEADER_TYPE_PCI_BRIDGE) {
+                auto* br = (volatile pci_header_pci_bridge_t*)((uintptr_t)base);
+                uint8_t sec = br->secondary_bus;
+                uint8_t sub = br->subordinate_bus;
+                if (sec != 0 && sec >= node->start_bus_num &&
+                    sec <= (uint8_t)(node->start_bus_num + node->bus_count - 1) &&
+                    sec != (uint8_t)bus_num) {
+                    for (uint32_t i = 0; i < depth + 1; i++) bsp_kout << "  ";
+                    bsp_kout << "-> downstream buses " << (uint32_t)sec
+                             << ".." << (uint32_t)sub << kendl;
+                    for (uint16_t b = sec; b <= (uint16_t)sub &&
+                         b < (uint16_t)(node->start_bus_num + node->bus_count); b++) {
+                        bdfs_tree_scan(node, b, depth + 1,
+                                       filter_class, filter_vendor,
+                                       bridge_only, count);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 //  pcie_BDFs <seg> [--bus=N] [--class=0xXXYY] [--vendor=0xXXXX]
 //            [--bridge-only] [--tree]
 // ─────────────────────────────────────────────────────────────────
@@ -238,10 +311,8 @@ KURD_t cmd_pcie_BDFs(const line_t* line) {
 
     for (size_t i = 2; i < line->token_count; i++) {
         const token_t& t = line->tokens[i];
-        // --bus=N
         if (token_equals(t, "--bridge-only")) { bridge_only = true; continue; }
         if (token_equals(t, "--tree"))        { tree_mode   = true; continue; }
-        // prefix matching for --key=value
         const char* s = t.str;
         size_t sl = t.len;
         if (sl > 6 && strncmp_in_kernel(s, "--bus=", 6) == 0) {
@@ -258,67 +329,76 @@ KURD_t cmd_pcie_BDFs(const line_t* line) {
         }
     }
 
-    bsp_kout << "BDF scan for seg=" << (uint32_t)seg << ":\n";
-
-    uint16_t bus_start = (filter_bus >= 0) ? (uint16_t)filter_bus : node->start_bus_num;
-    uint16_t bus_end   = (filter_bus >= 0) ? (uint16_t)filter_bus
-                                          : (uint16_t)(node->start_bus_num + node->bus_count - 1);
+    bsp_kout << "BDF scan for seg=" << (uint32_t)seg;
+    if (tree_mode) bsp_kout << " (tree mode)";
+    bsp_kout << ":\n";
 
     int count = 0;
-    for (uint16_t bus = bus_start; bus <= bus_end; bus++) {
-        for (uint8_t dev = 0; dev < 32; dev++) {
-            for (uint8_t func = 0; func < 8; func++) {
-                auto* base = ecam_addr(node, bus, dev, func);
-                uint16_t vid = cfg_read16(base, 0);
-                if (vid == 0xFFFF || vid == 0) continue;
 
-                // Only func 0 — check multi-function
-                if (func == 0) {
-                    uint8_t htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E);
-                    if ((htype & PCI_HEADER_TYPE_MULTIFUNC) == 0) {
-                        // single-function, skip remaining funcs on this dev
-                        // (loop increment handles func++)
+    if (tree_mode) {
+        // Tree mode: recursively walk bridge hierarchy
+        uint16_t root_bus = (filter_bus >= 0) ? (uint16_t)filter_bus : node->start_bus_num;
+        bdfs_tree_scan(node, root_bus, 1,
+                       filter_class, filter_vendor,
+                       bridge_only, &count);
+    } else {
+        // Flat mode: scan all buses linearly
+        uint16_t bus_start = (filter_bus >= 0) ? (uint16_t)filter_bus : node->start_bus_num;
+        uint16_t bus_end   = (filter_bus >= 0) ? (uint16_t)filter_bus
+                                              : (uint16_t)(node->start_bus_num + node->bus_count - 1);
+
+        for (uint16_t bus = bus_start; bus <= bus_end; bus++) {
+            for (uint8_t dev = 0; dev < 32; dev++) {
+                for (uint8_t func = 0; func < 8; func++) {
+                    auto* base = ecam_addr(node, (uint8_t)bus, dev, func);
+                    uint16_t vid = cfg_read16(base, 0);
+                    if (vid == 0xFFFF || vid == 0) {
+                        if (func == 0) break;
+                        continue;
                     }
-                }
 
-                uint32_t classreg = cfg_read32(base, 0x08);
-                uint8_t  base_class = (uint8_t)(classreg >> 24);
-                uint8_t  sub_class  = (uint8_t)(classreg >> 16);
-                uint16_t devid      = cfg_read16(base, 2);
+                    uint32_t classreg = cfg_read32(base, 0x08);
+                    uint8_t  base_class = (uint8_t)(classreg >> 24);
+                    uint8_t  sub_class  = (uint8_t)(classreg >> 16);
+                    uint16_t devid      = cfg_read16(base, 2);
 
-                // Filters
-                if (filter_class != 0xFFFFFFFF) {
-                    uint32_t cc = ((uint32_t)base_class << 8) | sub_class;
-                    if (cc != filter_class) continue;
-                }
-                if (filter_vendor != 0xFFFF && vid != filter_vendor) continue;
+                    // Filters
+                    if (filter_class != 0xFFFFFFFF) {
+                        uint32_t cc = ((uint32_t)base_class << 8) | sub_class;
+                        if (cc != filter_class) {
+                            if (func == 0) break; else continue;
+                        }
+                    }
+                    if (filter_vendor != 0xFFFF && vid != filter_vendor) {
+                        if (func == 0) break; else continue;
+                    }
 
-                uint8_t htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E) & PCI_HEADER_TYPE_MASK;
-                if (bridge_only && htype != PCI_HEADER_TYPE_PCI_BRIDGE) continue;
+                    uint8_t htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E) & PCI_HEADER_TYPE_MASK;
+                    if (bridge_only && htype != PCI_HEADER_TYPE_PCI_BRIDGE) {
+                        if (func == 0) break; else continue;
+                    }
 
-                bsp_kout << "  " << (uint32_t)bus << ":" << (uint32_t)dev << "."
-                         << (uint32_t)func
-                         << "  0x" << HEX << vid << ":" << devid << DEC
-                         << "  " << class_name(base_class, sub_class)
-                         << "  (" << HEX << (uint32_t)base_class << ":"
-                         << (uint32_t)sub_class << DEC << ")"
-                         << "  " << ((htype == PCI_HEADER_TYPE_ENDPOINT) ? "EP"
-                                    : (htype == PCI_HEADER_TYPE_PCI_BRIDGE) ? "BR" : "?")
-                         << kendl;
-                count++;
+                    bsp_kout << "  " << (uint32_t)bus << ":" << (uint32_t)dev << "."
+                             << (uint32_t)func
+                             << "  0x" << HEX << vid << ":" << devid << DEC
+                             << "  " << class_name(base_class, sub_class)
+                             << "  (" << HEX << (uint32_t)base_class << ":"
+                             << (uint32_t)sub_class << DEC << ")"
+                             << "  " << ((htype == PCI_HEADER_TYPE_ENDPOINT) ? "EP"
+                                        : (htype == PCI_HEADER_TYPE_PCI_BRIDGE) ? "BR" : "?")
+                             << kendl;
+                    count++;
 
-                // If single-function and not multi-function capable, skip remaining funcs
-                if (func == 0) {
-                    uint8_t raw_htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E);
-                    if ((raw_htype & PCI_HEADER_TYPE_MULTIFUNC) == 0) {
-                        // Jump to next device
-                        goto next_dev;
+                    // If single-function, skip remaining funcs
+                    if (func == 0) {
+                        uint8_t raw_htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E);
+                        if ((raw_htype & PCI_HEADER_TYPE_MULTIFUNC) == 0) break;
                     }
                 }
             }
-            next_dev:;
         }
     }
+
     bsp_kout << "  (" << count << " device(s) found)\n";
     return make_ok();
 }
@@ -418,30 +498,85 @@ KURD_t cmd_pcie_BDF(const line_t* line) {
         bsp_kout << "  BARs:\n";
         uint8_t htype = *(volatile uint8_t*)((uintptr_t)base + 0x0E) & PCI_HEADER_TYPE_MASK;
         int bar_count = (htype == PCI_HEADER_TYPE_PCI_BRIDGE) ? 2 : 6;
+
+        // Disable memory & IO decode before BAR probing (PCIe.cpp reference timing)
+        uint16_t saved_cmd = cfg_read16(base, 4);
+        pci_command_t probe_cmd = {.value = saved_cmd};
+        probe_cmd.fields.memory_space = 0;
+        probe_cmd.fields.io_space = 0;
+        probe_cmd.fields.bus_master = 0;
+        *(volatile uint16_t*)((uintptr_t)base + 4) = probe_cmd.value;
+        __sync_synchronize();
+
         for (int i = 0; i < bar_count; i++) {
             uint32_t bar_raw = cfg_read32(base, 0x10 + i * 4);
             if (bar_raw == 0) continue;
             bool is_io = (bar_raw & 1) != 0;
             if (is_io) {
-                bsp_kout << "    BAR" << i << " = 0x" << HEX
-                         << (bar_raw & ~3) << DEC << "  (I/O)\n";
+                uint32_t masked = bar_raw & ~3;
+                // Probe I/O BAR size
+                *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = (uint32_t)~0;
+                __sync_synchronize();
+                uint32_t probe = *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4);
+                __sync_synchronize();
+                probe &= ~(uint32_t)3;
+                uint64_t bar_size = 1 + (uint64_t)(~probe);
+                // Restore
+                *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = bar_raw;
+                __sync_synchronize();
+                bsp_kout << "    BAR" << i << " = 0x" << HEX << masked << DEC
+                         << "  (I/O)  size=" << bar_size << " B\n";
             } else {
                 uint8_t mem_type = (bar_raw >> 1) & 3;
                 bool prefetch = (bar_raw >> 3) & 1;
                 if (mem_type == PCI_BAR_TYPE_64BIT) {
-                    // 64-bit: consume next BAR
                     uint32_t high = cfg_read32(base, 0x10 + (i + 1) * 4);
-                    uint64_t addr = ((uint64_t)high << 32) | (bar_raw & ~0xF);
+                    uint64_t addr = ((uint64_t)high << 32) | (bar_raw & ~(uint32_t)0xF);
+                    // Probe 64-bit BAR size: write high first, then low
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + (i + 1) * 4) = (uint32_t)~0;
+                    __sync_synchronize();
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = (uint32_t)~0;
+                    __sync_synchronize();
+                    uint32_t probe_low  = *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4);
+                    __sync_synchronize();
+                    uint32_t probe_high = *(volatile uint32_t*)((uintptr_t)base + 0x10 + (i + 1) * 4);
+                    probe_low &= ~(uint32_t)0xF;
+                    uint64_t combined = ((uint64_t)probe_high << 32) | probe_low;
+                    uint64_t bar_size = 1 + ~combined;
+                    // Restore: high first, then low
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + (i + 1) * 4) = high;
+                    __sync_synchronize();
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = bar_raw;
+                    __sync_synchronize();
                     bsp_kout << "    BAR" << i << " = 0x" << HEX << addr << DEC
-                             << "  (64-bit Mem" << (prefetch ? ", Prefetch" : "") << ")\n";
+                             << "  (64-bit Mem" << (prefetch ? ", Pref" : "") << ")"
+                             << "  size=" << bar_size << " B\n";
                     i++; // skip consumed
+                } else if (mem_type == PCI_BAR_TYPE_32BIT) {
+                    uint32_t masked = bar_raw & ~(uint32_t)0xF;
+                    // Probe 32-bit BAR size
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = (uint32_t)~0;
+                    __sync_synchronize();
+                    uint32_t probe = *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4);
+                    __sync_synchronize();
+                    probe &= ~(uint32_t)0xF;
+                    uint64_t bar_size = 1 + (uint64_t)(~probe);
+                    // Restore
+                    *(volatile uint32_t*)((uintptr_t)base + 0x10 + i * 4) = bar_raw;
+                    __sync_synchronize();
+                    bsp_kout << "    BAR" << i << " = 0x" << HEX << masked << DEC
+                             << "  (32-bit Mem" << (prefetch ? ", Pref" : "") << ")"
+                             << "  size=" << bar_size << " B\n";
                 } else {
-                    bsp_kout << "    BAR" << i << " = 0x" << HEX
-                             << (bar_raw & ~0xF) << DEC
-                             << "  (32-bit Mem" << (prefetch ? ", Prefetch" : "") << ")\n";
+                    bsp_kout << "    BAR" << i << " = 0x" << HEX << bar_raw << DEC
+                             << "  (BAD type=" << (uint32_t)mem_type << ")\n";
                 }
             }
         }
+
+        // Restore command
+        *(volatile uint16_t*)((uintptr_t)base + 4) = saved_cmd;
+        __sync_synchronize();
     }
 
     if (show_all || show_caps) {
