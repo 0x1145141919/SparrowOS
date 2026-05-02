@@ -6,6 +6,7 @@
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "memory/memory_base.h"
 #include "memory/kpoolmemmgr.h"
@@ -53,6 +54,7 @@ extern "C" void delay(unsigned int milliseconds) {
 }
 EFI_TIME global_time;
 uint32_t efi_map_ver;
+extern hard_interrupt_func_t*all_processors_interrupt_functions;
 void ipi_test(){
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<kendl;
@@ -201,8 +203,7 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     tsc_regist();
     if (Status!=OS_SUCCESS)
     {
-        bsp_kout<<"InitialKernelShellControler Failed\n";
-        return ;
+        bsp_kout<<"InitialKernelShellControler Failed\n";return ;
     }
     bsp_kout<<"Kernel Shell Initialed Success\n";
     VM_intervals=new loaded_VM_interval[transfer->loaded_VM_interval_count];
@@ -214,26 +215,21 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     GlobalKernelStatus=kernel_state::PANIC_WILL_ANALYZE;
     Panic::will_check();
     if(transfer->kmmu_root_table>=0x100000000){
-        bsp_kout<<"Kernel Mmu Root Table is not in low memory"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"Kernel Mmu Root Table is not in low memory"<<kendl;return;
     }
     asm volatile("sfence");
     assigned_cr3=transfer->kmmu_root_table;
-    
     bsp_init_kurd=all_pages_arr::Init(transfer);
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;return;
     }
     bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,BCBs_bitmap);//传入一个loaded_VM_entry
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;return;
     }
     bsp_init_kurd=KspacePageTable::Init(kspaceUPpdpt);
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"KspaceMapMgr Init Failed"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"KspaceMapMgr Init Failed"<<kendl;return;
     }
     gKernelSpace=new AddressSpace();
     for(uint64_t i=0;i<transfer->phymem_segment_count;i++){
@@ -381,18 +377,13 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
         return kurd;
     }();
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"identity map fail"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"identity map fail"<<kendl;return;
     }
     Status=EFI_RT_SVS::Init((EFI_SYSTEM_TABLE*)transfer->gST_ptr);
     gAcpiVaddrSapceMgr.Init(global_gST);
     gKernelSpace->unsafe_load_pml4_to_cr3(KERNEL_SPACE_PCID);
     GlobalKernelStatus=kernel_state::MM_READY;
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"textconsole_GoP Init Failed"<<kendl;
-        asm volatile("hlt");
-    }
-    x86_smp_processors_container::template_idt_init();
+    bsp_init_kurd=idt_vec_dispatch_mgr::Init(logical_processor_count);
     x86_smp_processors_container::regist_core(0);
     ktime::heart_beat_alarm::processor_regist();
     bsp_kout<<now<<"BSP online"<<kendl;
@@ -407,8 +398,7 @@ extern "C" void kernel_start(init_to_kernel_info* transfer)
     }    
     Status=task_pool::Init();
     if(Status){
-        bsp_kout<<"task_pool::Init Failed"<<kendl;
-        asm volatile("hlt");
+        bsp_kout<<"task_pool::Init Failed"<<kendl;return;
     }
     asm volatile("sti");   
     //中断接管工作

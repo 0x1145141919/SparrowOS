@@ -1,5 +1,6 @@
 #include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
@@ -242,13 +243,13 @@ void Control_Protection_cpp_enter(x64_errcode_exception_frame *frame)
 
 
 
-void ipi_cpp_enter(x64_standard_context *frame)
+void ipi_cpp_enter(x64_standard_context *frame,uint8_t vec)
 {
-    x2apic::x2apic_driver::write_eoi();   
     global_ipi_handler();
+    x2apic::x2apic_driver::write_eoi();   
 }
 
-void asm_panic_cpp_enter(x64_standard_context *frame)
+void asm_panic_cpp_enter(x64_standard_context *frame,uint8_t vec)
 {
     panic_info_inshort inshort={
             .is_bug=0,
@@ -260,6 +261,10 @@ void asm_panic_cpp_enter(x64_standard_context *frame)
     panic_context::x64_context panic_context;
     panic_frame(frame,&panic_context);
     Panic::panic(default_panic_behaviors_flags,"[ASM PANIC]",&panic_context,&inshort,raw_analyze(frame->rax));
+}
+void suprious_interrupt_cpp_enter(x64_standard_context *frame,uint8_t vec)
+{
+    bsp_kout<<"[suprious_interrupt_cpp_enter] fake interrupt detected on processor "<<fast_get_processor_id()<<kendl;
 }
 extern "C" void fred_user_cpp_enter(x64_fred_context*context){
 
@@ -386,3 +391,4 @@ void panic_frame(x64_standard_context*frame, panic_context::x64_context*panic_fr
     panic_frame->gs_base = gs_base_val;
     panic_frame->gs_kernel_base=rdmsr(msr::syscall::IA32_KERNEL_GS_BASE);
 }
+

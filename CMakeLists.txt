@@ -132,6 +132,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/lapic.cpp
     src/arch/x86_64/core_hardwares/tsc.cpp
     src/arch/x86_64/Interrupts/exceptions_handler.cpp
+    src/arch/x86_64/Interrupts/x86_vecs_deliver_mgr.cpp
     src/arch/x86_64/Processor/local_processor_manage.cpp
     src/firmware/APIC_convert_functions.cpp
     src/firmware/APIC_table_analyzer.cpp
@@ -380,7 +381,6 @@ function(configure_kernel_like_elf target_name link_opts)
         -mno-red-zone
         -fno-stack-protector
         -fno-exceptions
-        -fno-builtin
         -fno-rtti
         -static
         -mgeneral-regs-only
@@ -395,7 +395,6 @@ function(configure_kernel_like_elf target_name link_opts)
 
     target_link_options(${target_name} PRIVATE ${link_opts}
         -fno-exceptions
-        -fno-builtin
         -fno-rtti
         -static
         -mgeneral-regs-only

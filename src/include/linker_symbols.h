@@ -43,6 +43,7 @@ extern uint8_t _rodata_end;
 // BSS 段符号
 extern uint8_t _bss_begin;
 extern uint8_t _bss_end;
+extern uint8_t base_kernel_address;
 // 获取地址的宏定义，方便使用
 #define GET_SYMBOL_ADDR(symbol) ((void*)&symbol)
 

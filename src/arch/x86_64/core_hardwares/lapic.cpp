@@ -1,5 +1,6 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "arch/x86_64/core_hardwares/tsc.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "util/OS_utils.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
@@ -10,6 +11,8 @@
 #include "memory/AddresSpace.h"
 #include "util/kout.h"
 #include "ktime.h"
+#include "panic.h"
+extern void timer_cpp_enter(x64_standard_context *frame, uint8_t vec, uint32_t processor_id);
 void x2apic::x2apic_driver::raw_config_timer(timer_lvt_entry entry)
 {
     wrmsr_func(msr::apic::IA32_X2APIC_LVT_TIMER,entry.raw);
@@ -80,9 +83,14 @@ void x2apic::x2apic_driver::write_eoi()
 }
 void x2apic::lapic_timer_one_shot::processor_regist()
 {
+    KURD_t kurd;
+    uint8_t vec = out_interrupt_vec_alloc(timer_cpp_enter, fast_get_processor_id(), &kurd);
+    if (vec == 0xff||error_kurd(kurd)) {
+        //panic
+    }
     timer_lvt_entry timer_config={
         .param{
-            .vector =ivec::LAPIC_TIMER,// 此处暂不写具体动作
+        .vector =vec,// 此处暂不写具体动作
         .reserved1 = 0,
         .deliver_status = LAPIC_PARAMS_ENUM::DELIVERY_STATUS_T::IDLE,
         .reserved2 = 0,
@@ -108,14 +116,70 @@ void x2apic::lapic_timer_one_shot::processor_regist()
     ktime::microsecond_polling_delay_by_hpet(10000);//这里是刻意假设不会把~0跑光
     uint64_t current=x2apic_driver::get_timer_current_count();
     time_complex*complex=(time_complex*)read_gs_u64(TIME_COMPLEX_GS_INDEX);
+    if(complex==nullptr){
+        complex=new time_complex;
+        gs_u64_write(TIME_COMPLEX_GS_INDEX,(uint64_t)complex);
+    }
     complex->lapic_fs_per_cycle=(__uint128_t)(10000*(__uint128_t)FS_per_mius)/(0xFFFFFFFF-current);
     x2apic_driver::raw_config_timer_init_count(0);
     gs_u64_write(TIME_COMPLEX_GS_INDEX,(uint64_t)complex);
 }
 void x2apic::lapic_timer_tsc_ddline::processor_regist()
 {
-    x2apic_driver::raw_config_timer(ddline_timer);
+    KURD_t kurd;
+    uint8_t vec = out_interrupt_vec_alloc(timer_cpp_enter, fast_get_processor_id(), &kurd);
+    if (vec == 0xff||error_kurd(kurd)) {
+        panic_context::x64_context ctx = {};
+        panic_info_inshort info = { .is_bug = 1, .is_policy = 0, .is_hw_fault = 0,
+                                    .is_mem_corruption = 0, .is_escalated = 0 };
+        Panic::panic(default_panic_behaviors_flags,
+            (char*)"lapic_timer_tsc_ddline::processor_regist: vec alloc failed",
+            &ctx, &info, kurd);
+    }
+    timer_lvt_entry ddl=ddline_timer;
+    ddl.param.vector=vec;
+    x2apic_driver::raw_config_timer(ddl);
 }
+
+void x2apic::lapic_error_handler::handler(x64_standard_context*frame,uint8_t vec,uint32_t processor_id)
+{
+    (void)frame; (void)vec;
+    /* dummy read to latch ESR, then real read */
+    rdmsr(msr::apic::IA32_X2APIC_ESR);
+    uint32_t esr = (uint32_t)rdmsr(msr::apic::IA32_X2APIC_ESR);
+    bsp_kout << now << "[LAPIC_ERR] processor " << processor_id
+             << " ESR=0x" << (uint32_t)esr;
+    if (esr & ESR_MASKS::SEND_CHECKSUM_ERROR)   bsp_kout << " SEND_CHECKSUM";
+    if (esr & ESR_MASKS::RECEIVE_CHECKSUM_ERROR) bsp_kout << " RECEIVE_CHECKSUM";
+    if (esr & ESR_MASKS::SEND_ACCEPT_ERROR)      bsp_kout << " SEND_ACCEPT";
+    if (esr & ESR_MASKS::RECEIVE_ACCEPT_ERROR)   bsp_kout << " RECEIVE_ACCEPT";
+    if (esr & ESR_MASKS::REDIRECTABLE_IPI)       bsp_kout << " REDIRECTABLE_IPI";
+    if (esr & ESR_MASKS::SEND_ILLEGAL_VECTOR)    bsp_kout << " SEND_ILLEGAL_VEC";
+    if (esr & ESR_MASKS::RECEIVE_ILLEGAL_VECTOR) bsp_kout << " RECEIVE_ILLEGAL_VEC";
+    if (esr & ESR_MASKS::ILLEGAL_REGISTER_ADDR)  bsp_kout << " ILLEGAL_REG_ADDR";
+    bsp_kout << kendl;
+}
+
+void x2apic::lapic_error_handler::processor_regist()
+{
+    KURD_t kurd;
+    uint8_t vec = out_interrupt_vec_alloc(lapic_error_handler::handler,
+                                          fast_get_processor_id(), &kurd);
+    if (vec == 0xff||error_kurd(kurd)) {
+        panic_context::x64_context ctx = {};
+        panic_info_inshort info = { .is_bug = 1, .is_policy = 0, .is_hw_fault = 0,
+                                    .is_mem_corruption = 0, .is_escalated = 0 };
+        Panic::panic(default_panic_behaviors_flags,
+            (char*)"lapic_error_handler::processor_regist: vec alloc failed",
+            &ctx, &info, kurd);
+    }
+    lvt_error_entry entry;
+    entry.raw = 0;
+    entry.param.vector = vec;
+    entry.param.masked = LAPIC_PARAMS_ENUM::MASK_T::NO;
+    x2apic_driver::raw_error_lvt_config(entry);
+}
+
 void x2apic::lapic_timer_one_shot::set_clock_by_stamp(uint64_t stamp_mius)
 {
     miusecond_time_stamp_t current=ktime::get_microsecond_stamp();

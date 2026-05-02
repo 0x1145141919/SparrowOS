@@ -1,10 +1,11 @@
 #include <arch/x86_64/core_hardwares/i8042.h>
 #include <arch/x86_64/core_hardwares/ioapic.h>
 #include <arch/x86_64/core_hardwares/lapic.h>
-#include <arch/x86_64/Interrupt_system/loacl_processor.h>
+#include <arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h>
 #include <memory/AddresSpace.h>
 #include <ktime.h>
 #include <util/kout.h>
+#include <util/arch/x86-64/cpuid_intel.h>
 #include <panic.h>
 #include <global_controls.h>
 extern "C" char i8042_code_deal;
@@ -253,11 +254,10 @@ void led_set(){
         return;
     }
 }
-extern "C" void i8042_cpp_enter(x64_standard_context* frame){
+extern "C" void i8042_cpp_enter(x64_standard_context* frame,uint8_t vec,uint32_t processor_id){
     (void)frame;
     uint8_t scancode= inb(0x60);
     feed_scancode_byte(scancode);
-    x2apic::x2apic_driver::write_eoi();
 }
 
 extern "C" bool i8042_read_event_by_seq(uint64_t seq, ps_2_keyboard_event* out_event)
@@ -334,10 +334,8 @@ void i8042_interrupt_enable(){
     if(i8042_event_ring_readonly_view == nullptr){
         i8042_event_ring_readonly_view = i8042_event_ring;
     }
-    x64_local_processor* manage=x86_smp_processors_container::get_processor_mgr_by_processor_id(++legacy_rotate_interrupt_alloc_id);
-    uint32_t target_apicid=manage->get_apic_id();
-    uint8_t vec= manage->handler_alloc((void*)&i8042_code_deal);
-    if(vec==0xff){
+    uint8_t vec= out_interrupt_vec_alloc(i8042_cpp_enter, fast_get_processor_id(), &ring_phy_kurd);
+    if(vec==0xff||error_kurd(ring_phy_kurd)){
         //panic
     }
     KURD_t kurd;
@@ -346,7 +344,7 @@ void i8042_interrupt_enable(){
             .trigger_mode=0,
             .polarity=0  
     };
-    flag.target_apicid=target_apicid;
+    flag.target_apicid=query_x2apicid();
     kurd=main_router->irq_regist(1,flag);
     key_board_led.raw=0;
     led_set();

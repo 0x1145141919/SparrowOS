@@ -174,7 +174,7 @@ void kthread_yield_true_enter(x64_standard_context*context)
     fatals:
     panic_with_kurd(context, running_task_kurd);
 }
-void timer_cpp_enter(x64_standard_context *frame)
+void timer_cpp_enter(x64_standard_context *frame, uint8_t vec, uint32_t processor_id)
 {
     KURD_t kurd=KURD_t();
     per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
@@ -463,7 +463,7 @@ uint64_t release_kthread(uint64_t tid)
     delete task_ptr;
     return kurd_get_raw(task_pool::release_tid(tid));
 }
-void kthread_call_cpp_enter(x64_standard_context *frame)
+void kthread_call_cpp_enter(x64_standard_context *frame,uint8_t vec)
 {
     switch(frame->rax){
         case kthread_call_num::exit:

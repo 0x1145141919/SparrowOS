@@ -63,6 +63,7 @@ struct load_resources_struct{
         uint64_t TSS_selector;
     };
 extern logical_idt template_idt[256];
+extern hard_interrupt_func_t*all_processors_interrupt_functions;
 extern "C" void runtime_processor_regist(load_resources_struct* resources);
 x64_local_processor::x64_local_processor(uint32_t alloced_id)
 {
@@ -97,17 +98,10 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
         result.segment_selector=K_cs_idx<<3;
         return result;
     };
-    for(uint16_t i=0;i<256;i++){
-        idt[i]=tran_to_phy_IDT_ENTRY(template_idt[i]);
-    }
-    IDTR idtr={
-        .limit=256*sizeof(IDTEntry)-1,
-        .base=(uint64_t)idt
-    };
     uint16_t tss_selector = gdt_headcount << 3;
     load_resources_struct resources={
         .gdtr=&gdtr,
-        .idtr=&idtr,
+        .idtr=0,
         .K_CS_selector=K_cs_idx<<3,
         .K_DS_selector=K_ds_ss_idx<<3,
         .TSS_selector=tss_selector
@@ -117,9 +111,9 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
     ksystemramcpy((uint64_t*)old_gs,gs_slot,sizeof(uint64_t)*GS_SLOT_MAX_ENTRY_COUNT);
     runtime_processor_regist(&resources);
     fs_slot[STACK_PROTECTOR_CANARY_IDX]=0xDEADBEEF;
-    
     gs_slot[PROCESSOR_SELF_RESOURCES_COMPELX_GS_INDEX]=(uint64_t)this;
     gs_slot[PROCESSOR_ID_GS_INDEX]=static_cast<uint64_t>(this->processor_id);
+    gs_slot[PROCESSOR_INTERRUPT_FUNCS_TABLE_GS_INDEX]=(uint64_t)&all_processors_interrupt_functions[256*this->processor_id];
     wrmsr_func(msr::syscall::IA32_GS_BASE,(uint64_t)&gs_slot);
     wrmsr_func(msr::syscall::IA32_KERNEL_GS_BASE,(uint64_t)&gs_slot);
     tss.rsp0=stack_alloc(&kurd,7);
@@ -208,60 +202,6 @@ KURD_t x86_smp_processors_container::default_fatal()
     KURD_t result=default_kurd();
     result=set_fatal_result_level(result);
     return result;
-}
-void x64_local_processor::unsafe_handler_register_without_vecnum_check(uint8_t vector, void *handler)
-{
-    idt[vector].offset_low = static_cast<uint16_t>(reinterpret_cast<uint64_t>(handler) & 0xFFFF);
-    idt[vector].offset_mid = static_cast<uint16_t>((reinterpret_cast<uint64_t>(handler) >> 16) & 0xFFFF);
-    idt[vector].offset_high = static_cast<uint32_t>((reinterpret_cast<uint64_t>(handler) >> 32) & 0xFFFFFFFF);
-    idt[vector].present = 1;
-    idt[vector].reserved3 = 0;
-    idt[vector].reserved2 = 0;
-    idt[vector].reserved1 = 0;
-}
-
-void x64_local_processor::unsafe_handler_unregister_without_vecnum_check(uint8_t vector)
-{
-    x64_local_processor::unsafe_handler_register_without_vecnum_check(vector,template_idt[vector].handler);
-}
-bool x64_local_processor::handler_unregister(uint8_t vector){
-    spinlock_interrupt_about_guard g(lock);
-    if(vector < 32 || vector >= ivec::BOTTOM_FOR_SYSTEM_RESERVED_VECS){
-        return false;
-    }
-    unsafe_handler_unregister_without_vecnum_check(vector);
-    handler_register_bitmap->bit_set(vector-allocatable_handler_base,0);
-    return true;
-}
-bool x64_local_processor::handler_register(uint8_t vector,void*handler){
-    if(vector < 32 || vector >= ivec::BOTTOM_FOR_SYSTEM_RESERVED_VECS){
-        return false;
-    }
-    if(handler_register_bitmap->bit_get(vector-allocatable_handler_base)){
-            return false;
-        }
-    handler_register_bitmap->bit_set(vector-allocatable_handler_base,1);
-    
-    unsafe_handler_register_without_vecnum_check(vector,handler);
-    return true;
-}
-uint8_t x64_local_processor::handler_alloc(void *handler)
-{
-    spinlock_interrupt_about_guard g(lock);
-    uint8_t i = 0;
-    for(; i < allocatable_handler_count; i++){
-        if(handler_register_bitmap->bit_get(i)){
-            continue;
-        }else{
-            break;
-        }
-    }
-    if(i == allocatable_handler_count){
-        return 0xff;//代表分配失败，无多余
-    }
-    unsafe_handler_register_without_vecnum_check(allocatable_handler_base+i,handler);
-    handler_register_bitmap->bit_set(i,1);
-    return allocatable_handler_base+i;
 }
 void x64_local_processor::GS_slot_write(uint32_t idx, uint64_t content)
 {

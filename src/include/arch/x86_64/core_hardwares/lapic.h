@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "memory/memory_base.h"
 #include "arch/x86_64/Interrupt_system/fixed_interrupt_vectors.h"
+struct x64_standard_context;
 namespace LAPIC_PARAMS_ENUM{
     enum TIMER_MODE_T:uint8_t
     {
@@ -116,7 +117,7 @@ namespace ESR_MASKS {
     }__attribute__((packed));
 constexpr timer_lvt_entry ddline_timer{
     .param{
-        .vector =ivec::LAPIC_TIMER,// 此处暂不写具体动作
+        .vector =0,// 此处暂不写具体动作
         .reserved1 = 0,
         .deliver_status = LAPIC_PARAMS_ENUM::DELIVERY_STATUS_T::IDLE,
         .reserved2 = 0,
@@ -279,6 +280,11 @@ static_assert(sizeof(lvt_general_entry) == 4, "LVT General must be 4 bytes");
         static uint32_t get_current_clock();//获得硬件计时器的值，在这里就是current_count 
         static void cancel_clock();
         static bool is_alarm_valid();  //传递硬件级别的是否关闭判据
+    };
+    class lapic_error_handler{
+        public:
+        static void handler(x64_standard_context*frame,uint8_t vec,uint32_t processor_id);
+        static void processor_regist();
     };
     class lapic_timer_tsc_ddline{
         public:

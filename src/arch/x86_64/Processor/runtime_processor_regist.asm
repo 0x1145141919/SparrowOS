@@ -27,8 +27,4 @@ runtime_processor_regist:
     mov ax, [rdi + 0x20]
     ltr ax
 
-    ; ---- load IDT ----
-    mov rax, [rdi + 0x08]       ; idtr*
-    lidt [rax]
-
     ret

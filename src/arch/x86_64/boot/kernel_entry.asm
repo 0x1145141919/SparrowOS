@@ -45,6 +45,7 @@ extern ap_init_patch_idt_lm
 extern idt_table_rm
 extern idt_descriptor_rm
 extern idt_descriptor_pe
+extern global_idtr
 global realmode_enter_checkpoint
 
 global pemode_enter_checkpoint
@@ -142,6 +143,8 @@ bits 64
     mov rdi, 0x277
     mov rsi, 0x0407050600070106
     call rax
+    mov rax, global_idtr
+    lidt [rax]
     mov rdi, [assigned_processor_id]
     mov [gs:8], rdi
     mov rax, ap_init
@@ -199,14 +202,18 @@ global secure_hlt
 global ap_final_work
 extern get_current_processor_rsp0
 extern wrmsr_func
+extern exceptions_init
+
 _kernel_Init:
     mov r15, rdi
     mov rax, wrmsr_func
     mov rdi, 0x277
     mov rsi, 0x0407050600070106
     call rax
-    jmp .patch_bsp_idt
-.paging_done:
+    mov rax, exceptions_init
+    call rax
+    mov rax, global_idtr
+    lidt [rax]
     mov ecx, 0xC0000080
     rdmsr
     or eax, (1<<11)|(1<<8)|1
@@ -214,7 +221,6 @@ _kernel_Init:
     mov rax, cr0
     or rax, (1<<16)
     mov cr0, rax
-    
     mov rax, bsp_init_gdt_descriptor
     lgdt [rax]
     mov rax, 0x8
@@ -223,8 +229,6 @@ _kernel_Init:
     push rax
     retfq
 .jump_kernel:
-    mov rax, bsp_init_idtr
-    lidt [rax]
     mov rax, ap_init_patch_idt_rm
     call rax
     mov rax, ap_init_patch_idt_pe
@@ -239,136 +243,6 @@ _kernel_Init:
     mov rdi, r15
     call  rax
     hlt
-
-.patch_bsp_idt:
-extern  div_by_zero_bare_enter;
-extern  breakpoint_bare_enter;
-extern  nmi_bare_enter;
-extern  overflow_bare_enter;
-extern  invalid_opcode_bare_enter;
-extern  general_protection_bare_enter;
-extern  double_fault_bare_enter;
-extern  page_fault_bare_enter;
-extern  machine_check_bare_enter;
-extern  invalid_tss_bare_enter;
-extern  simd_floating_point_bare_enter;
-extern  virtualization_bare_enter;
-extern  timer_bare_enter;
-extern  ipi_bare_enter;
-extern  asm_panic_bare_enter;
-extern  bsp_init_idt_entries;这个IDT表
-
-    ; 先将bsp_init_idt_entries的地址加载到寄存器
-    mov rbx, qword bsp_init_idt_entries
-    
-    ; 设置除零异常 (中断号 0)
-    mov rax, qword div_by_zero_bare_enter
-    mov word  [rbx + 0*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 0*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 0*16 + 8], eax     ; offset_high
-    mov dword [rbx + 0*16 + 12], 0      ; reserved
-
-    ; 设置断点异常 (中断号 3)
-    mov rax, qword breakpoint_bare_enter
-    mov word  [rbx + 3*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 3*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 3*16 + 8], eax     ; offset_high
-    mov dword [rbx + 3*16 + 12], 0      ; reserved
-
-    ; 设置NMI (中断号 2)
-    mov rax, qword nmi_bare_enter
-    mov word  [rbx + 2*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 2*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 2*16 + 8], eax     ; offset_high
-    mov dword [rbx + 2*16 + 12], 0      ; reserved
-
-    ; 设置溢出异常 (中断号 4)
-    mov rax, qword overflow_bare_enter
-    mov word  [rbx + 4*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 4*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 4*16 + 8], eax     ; offset_high
-    mov dword [rbx + 4*16 + 12], 0      ; reserved
-
-    ; 设置无效操作码异常 (中断号 6)
-    mov rax, qword invalid_opcode_bare_enter
-    mov word  [rbx + 6*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 6*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 6*16 + 8], eax     ; offset_high
-    mov dword [rbx + 6*16 + 12], 0      ; reserved
-
-    ; 设置一般保护异常 (中断号 13)
-    mov rax, qword general_protection_bare_enter
-    mov word  [rbx + 13*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 13*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 13*16 + 8], eax    ; offset_high
-    mov dword [rbx + 13*16 + 12], 0     ; reserved
-
-    ; 设置双故障异常 (中断号 8)
-    mov rax, qword double_fault_bare_enter
-    mov word  [rbx + 8*16 + 0], ax      ; offset_low
-    shr rax, 16
-    mov word  [rbx + 8*16 + 6], ax      ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 8*16 + 8], eax     ; offset_high
-    mov dword [rbx + 8*16 + 12], 0      ; reserved
-
-    ; 设置页面故障异常 (中断号 14)
-    mov rax, qword page_fault_bare_enter
-    mov word  [rbx + 14*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 14*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 14*16 + 8], eax    ; offset_high
-    mov dword [rbx + 14*16 + 12], 0     ; reserved
-
-    ; 设置机器检查异常 (中断号 18)
-    mov rax, qword machine_check_bare_enter
-    mov word  [rbx + 18*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 18*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 18*16 + 8], eax    ; offset_high
-    mov dword [rbx + 18*16 + 12], 0     ; reserved
-
-    ; 设置无效TSS异常 (中断号 10)
-    mov rax, qword invalid_tss_bare_enter
-    mov word  [rbx + 10*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 10*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 10*16 + 8], eax    ; offset_high
-    mov dword [rbx + 10*16 + 12], 0     ; reserved
-
-    ; 设置SIMD浮点异常 (中断号 19)
-    mov rax, qword simd_floating_point_bare_enter
-    mov word  [rbx + 19*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 19*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 19*16 + 8], eax    ; offset_high
-    mov dword [rbx + 19*16 + 12], 0     ; reserved
-
-    ; 设置虚拟化异常 (中断号 20)
-    mov rax, qword virtualization_bare_enter
-    mov word  [rbx + 20*16 + 0], ax     ; offset_low
-    shr rax, 16
-    mov word  [rbx + 20*16 + 6], ax     ; offset_mid
-    shr rax, 16
-    mov dword [rbx + 20*16 + 8], eax    ; offset_high
-    mov dword [rbx + 20*16 + 12], 0     ; reserved
-    jmp .paging_done
 secure_hlt:
     sti 
     hlt

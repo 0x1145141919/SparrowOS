@@ -7,6 +7,7 @@
 #include "arch/x86_64/core_hardwares/tsc.h"
 #include "arch/x86_64/core_hardwares/rtc.h"
 #include "util/kout.h"
+#include "arch/x86_64/Interrupt_system/loacl_processor.h"
 // ── RTC 锚定状态 ─────────────────────────────────────────────
 // 第一次调用 GetTime_in_os() 时锚定 RTC + TSC/HPET 时间戳，
 // 后续调用根据自由运行时钟推算，不再读取 RTC。
@@ -100,8 +101,6 @@ void ktime::microsecond_polling_delay_by_hpet(uint64_t microseconds)
 }
 void ktime::heart_beat_alarm::processor_regist()
 {
-    time_complex* complex=new time_complex;
-    gs_u64_write(TIME_COMPLEX_GS_INDEX,(uint64_t)complex);
     if(is_tsc_ddline_avaliabe){
         x2apic::lapic_timer_tsc_ddline::processor_regist();
     }else{

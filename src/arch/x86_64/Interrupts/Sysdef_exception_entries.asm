@@ -22,6 +22,12 @@ section .text
     push rcx
     push rbx
     push rax
+    ; swapgs if from user mode
+    mov rax, [rsp + GP_GPR_BYTES]   ; CS at GP_GPR_BYTES (no errcode)
+    test al, 3
+    jz %%skip_gs_ee
+    swapgs
+%%skip_gs_ee:
     mov rax, rsp
     mov rdi, rsp
     mov rax, rsp            ; 保存原 rsp
@@ -31,6 +37,12 @@ section .text
     mov rax, %2
     call rax
     pop rsp ;栈自动回落
+    ; reverse swapgs if needed (rax = C return value, not a saved reg)
+    mov rax, [rsp + GP_GPR_BYTES]   ; CS (no errcode)
+    test al, 3
+    jz %%skip_gs_back_ee
+    swapgs
+%%skip_gs_back_ee:
     pop rax
     pop rbx
     pop rcx
@@ -64,6 +76,12 @@ section .text
     push rcx
     push rbx
     push rax
+    ; swapgs if from user mode
+    mov rax, [rsp + GP_GPR_BYTES + 8]   ; CS at GP_GPR_BYTES+8 (errcode)
+    test al, 3
+    jz %%skip_gs_errcode
+    swapgs
+%%skip_gs_errcode:
     mov rax, rsp
     mov rdi, rsp
     and rsp, -16            ; 对齐到 16
@@ -72,6 +90,12 @@ section .text
     mov rax, %2
     call rax
     pop rsp ;栈自动回落
+    ; reverse swapgs if needed (rax = C return value, not a saved reg)
+    mov rax, [rsp + GP_GPR_BYTES + 8]   ; CS (errcode)
+    test al, 3
+    jz %%skip_gs_back_errcode
+    swapgs
+%%skip_gs_back_errcode:
     pop rax
     pop rbx
     pop rcx
@@ -190,33 +214,6 @@ extern virtualization_cpp_enter
 virtualization_bare_enter:
 EXCEPTION_ENTRY_WITH_ERRCODE 20, virtualization_cpp_enter
 
-
-; 定时器中断处理入口
-global timer_bare_enter
-extern timer_cpp_enter
-
-timer_bare_enter:
-EXCEPTION_ENTRY 224, timer_cpp_enter
-
-
-; IPI中断处理入口（无错误码）
-global ipi_bare_enter
-extern ipi_cpp_enter
-
-ipi_bare_enter:
-EXCEPTION_ENTRY 240, ipi_cpp_enter
-global kthread_call_bare_enter
-extern kthread_call_cpp_enter
-kthread_call_bare_enter:
-
-EXCEPTION_ENTRY 226, kthread_call_cpp_enter
-    ; asm_panic中断处理入口（带错误码）
-global asm_panic_bare_enter
-extern asm_panic_cpp_enter
-
-asm_panic_bare_enter:
-EXCEPTION_ENTRY_WITH_ERRCODE 225, asm_panic_cpp_enter
-
 global fred_user_enter
 extern fred_user_cpp_enter
 align 4096
@@ -306,4 +303,71 @@ fred_supervisor_entry:
     pop r15
     pop rbp
     erets
+    ud2
+extern all_vec_delivery
+%macro VEC_DELIVERY_ENTRY 1
+;%1是向量号
+    push rbp
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    ; swapgs if from user mode
+    mov rax, [rsp + GP_GPR_BYTES]   ; CS at GP_GPR_BYTES (no errcode)
+    test al, 3
+    jz %%skip_gs_vec
+    swapgs
+%%skip_gs_vec:
+    mov rdi, rsp
+    mov rax, rsp            ; 保存原 rsp
+    and rsp, -16            ; 对齐到 16
+    sub rsp, 8              ; 为 call 的返回地址预留
+    push rax                ; 保存原 rsp（现在 rsp % 16 == 0）
+    mov rsi, %1
+    mov rax, all_vec_delivery
+    call rax
 
+    pop rsp ;栈自动回落
+    ; reverse swapgs if needed (rax = C return value, not a saved reg)
+    mov rax, [rsp + GP_GPR_BYTES]   ; CS (no errcode)
+    test al, 3
+    jz %%skip_gs_back_vec
+    swapgs
+%%skip_gs_back_vec:
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    pop rbp
+    iretq
+%endmacro
+; 批量生成向量32~255的向量递送入口
+; 符号通过 kptrace 符号表名字匹配注册，无需 extern
+%assign __vec 32
+%rep 224
+global vec_delivery_%+__vec
+global vec_delivery_%+__vec%+_bare_enter
+vec_delivery_%+__vec%+_bare_enter:
+    VEC_DELIVERY_ENTRY __vec
+%assign __vec __vec + 1
+%endrep

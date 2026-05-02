@@ -170,7 +170,6 @@ typedef uint64_t FS_struct[6];
 constexpr uint8_t  STACK_PROTECTOR_CANARY_IDX = 0x5;
 class x64_local_processor {//承担部分当前核心状态机切换维护的语义
     private:
-    IDTEntry idt[256];
     x64GDT gdt;
     TSSentry tss;
     uint32_t apic_id;
@@ -205,11 +204,6 @@ class x64_local_processor {//承担部分当前核心状态机切换维护的语
     static constexpr uint32_t  L_PROCESSOR_GS_IDX= 0;
     static int template_init();
     x64_local_processor(uint32_t alloced_id);
-    void unsafe_handler_register_without_vecnum_check(uint8_t vector,void*handler);
-    void unsafe_handler_unregister_without_vecnum_check(uint8_t vector);
-    bool handler_register(uint8_t vector,void*handler);
-    uint8_t handler_alloc(void*handler);
-    bool handler_unregister(uint8_t vector);
     void GS_slot_write(uint32_t idx,uint64_t content);//0号是被占用了，静默失败，超过索引（GS_SLOT_MAX_ENTRY_COUNT）则静默失败其它情况正常写
     uint64_t GS_slot_get(uint32_t idx);//超过索引（GS_SLOT_MAX_ENTRY_COUNT）则返回~0其它情况正常读
     uint32_t get_apic_id();
@@ -237,7 +231,7 @@ class  x86_smp_processors_container {
     static x64_local_processor*get_currunt_mgr();//使用内部gs的结构体对应的
     static x64_local_processor*get_processor_mgr_by_processor_id(prcessor_id_t id);
     static x64_local_processor*get_processor_mgr_by_apic_id(x2apicid_t apic_id);
-    static void template_idt_init();
+    static void exceptions_idt_init();
     /**
      * 初始化函数，必须由bsp调用，大体思路有：
      * 解析madt表,一个核心一个核心地初始化

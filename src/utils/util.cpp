@@ -1,5 +1,6 @@
 #include "util/OS_utils.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "linker_symbols.h"
 #include "stdint.h"
 #include "memory/memory_base.h"
 #include "abi/os_error_definitions.h"
@@ -189,14 +190,18 @@ bool is_aligned(uint64_t value, uint8_t align_log2)
 }
 /**
  * @brief 通用函数：将虚拟 - 物理地址区间按照页面大小拆分为多个条目
- * 
+ *
  * 根据虚拟地址和物理地址的同余关系（congruence），智能地将区间拆分为 1GB/2MB/4KB 的页面组合。
  * 拆分策略优先使用大页面以减少 TLB 条目数，边界不对齐部分使用小页面填充。
- * 
+ *
  * @param result 输出参数，存储拆分后的页面信息包
  * @param vmentry VM 描述符，包含虚拟地址和物理地址信息
  * @return int OS_SUCCESS 成功，其他错误码见 abi/os_error_definitions.h
  */
+bool is_addr_kernel_address(void *addr)
+{
+    return (uint64_t)addr >= (uint64_t)&base_kernel_address;
+}
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, VM_DESC vmentry)
 {
     constexpr uint32_t _4KB_SIZE=0x1000;
