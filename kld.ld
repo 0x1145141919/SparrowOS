@@ -11,6 +11,7 @@ PROVIDE(KImgphybase = 0x2000000);
 
 KImgvbase = PAGE_LEVEL_4;
 Koffset = KImgvbase - KImgphybase;
+base_kernel_address = KImgvbase;
 
 MEMORY {
     /* 虚拟内存内核主体区域 */
