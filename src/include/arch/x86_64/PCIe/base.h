@@ -280,7 +280,7 @@ typedef union {
         uint16_t reserved:3;         // bits11-13: 保留
         uint16_t function_mask:1;    // bit14: 功能掩码
         uint16_t enable:1;           // bit15: MSI-X使能
-    };
+    }fields;
 } __attribute__((packed)) pci_msix_ctrl_t;
 
 // MSI-X Table entry (每个16字节)
@@ -348,3 +348,9 @@ typedef struct {
     uint16_t slot_ctrl2;             // 插槽控制2
     uint16_t slot_sta2;              // 插槽状态2
 } __attribute__((packed)) pci_express_cap_t;
+struct MSIX_entry_t{
+    uint32_t message_addr;
+    uint32_t message_upper_addr;
+    uint32_t message_data;
+    uint32_t vector_control;
+};

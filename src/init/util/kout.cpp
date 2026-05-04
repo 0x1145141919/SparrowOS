@@ -73,7 +73,7 @@ void kout::__print_module_code(KURD_t value)
         case module_code::VFS: *this << "[module_code:VFS]"; break;
         case module_code::VMM: *this << "[module_code:VMM]"; break;
         case module_code::INFRA: *this << "[module_code:INFRA]"; break;
-        case module_code::DEVICES: *this << "[module_code:DEVICES]"; break;
+        case module_code::DEVICE: *this << "[module_code:DEVICES]"; break;
         case module_code::DEVICES_CORE: *this << "[module_code:DEVICES_CORE]"; break;
         case module_code::HARDWARE_DEBUG: *this << "[module_code:HARDWARE_DEBUG]"; break;
         case module_code::USER_KERNEL_ABI: *this << "[module_code:USER_KERNEL_ABI]"; break;

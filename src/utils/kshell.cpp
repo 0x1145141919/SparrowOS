@@ -7,6 +7,156 @@
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
 
+// ============================================================
+// 行编辑器状态与辅助函数
+// ============================================================
+namespace {
+
+struct line_editor_t {
+    char*   line;
+    size_t  cap;
+    size_t  len;
+    size_t  cursor;
+};
+
+static void redraw_line(line_editor_t* ed) {
+    bsp_kout << "\rkshell> ";
+    for (size_t i = 0; i < ed->len; i++)
+        bsp_kout << ed->line[i];
+
+    constexpr size_t LINE_CLEAR = 256;
+    size_t total = 8 + ed->len;
+    for (size_t i = total; i < LINE_CLEAR; i++)
+        bsp_kout << ' ';
+
+    bsp_kout << "\rkshell> ";
+    for (size_t i = 0; i < ed->len; i++)
+        bsp_kout << ed->line[i];
+    for (size_t i = ed->cursor; i < ed->len; i++)
+        bsp_kout << '\b';
+}
+
+static void sync_cursor(line_editor_t* ed) {
+    size_t cur = ed->len;
+    size_t target = ed->cursor;
+    if (target < cur) {
+        for (size_t i = target; i < cur; i++)
+            bsp_kout << '\b';
+    }
+}
+
+// ---- 历史管理 ----
+static constexpr size_t HISTORY_MAX   = 64;
+static constexpr size_t HISTORY_LEN   = 256;
+static char history_pool[HISTORY_MAX][HISTORY_LEN];
+static size_t history_count   = 0;
+static size_t history_write   = 0;
+static size_t history_browse  = 0;
+static bool   browsing        = false;
+
+static void add_to_history(const char* line, size_t len) {
+    if (len == 0 || len >= HISTORY_LEN) return;
+    size_t last = (history_write == 0) ? HISTORY_MAX - 1 : history_write - 1;
+    if (history_count > 0 && strcmp_in_kernel(history_pool[last], line) == 0)
+        return;
+    ksystemramcpy((void*)line, history_pool[history_write], len);
+    history_pool[history_write][len] = '\0';
+    history_write = (history_write + 1) % HISTORY_MAX;
+    if (history_count < HISTORY_MAX) history_count++;
+    browsing = false;
+}
+
+static void history_navigate(line_editor_t* ed, int direction) {
+    if (history_count == 0) return;
+
+    if (!browsing) {
+        browsing = true;
+        history_browse = history_write;
+    }
+
+    if (direction < 0) {
+        if (history_browse == 0)
+            history_browse = HISTORY_MAX - 1;
+        else
+            history_browse--;
+    } else {
+        history_browse++;
+        if (history_browse >= HISTORY_MAX)
+            history_browse = 0;
+    }
+
+    const char* src = history_pool[history_browse];
+    size_t slen = strlen_in_kernel(src);
+    if (slen >= ed->cap) slen = ed->cap - 1;
+    ksystemramcpy((void*)src, ed->line, slen);
+    ed->len = slen;
+    ed->cursor = slen;
+    ed->line[slen] = '\0';
+    redraw_line(ed);
+}
+
+// ---- Tab 补全 ----
+static void try_autocomplete(line_editor_t* ed) {
+    if (ed->len == 0) return;
+
+    char prefix[256];
+    size_t prefix_len = ed->len;
+    if (prefix_len > 255) prefix_len = 255;
+    ksystemramcpy((void*)ed->line, prefix, prefix_len);
+    prefix[prefix_len] = '\0';
+
+    command_entry_t* matches[64];
+    int count = kshell_framework_t::command_find_prefix(prefix, matches, 64);
+    if (count <= 0) {
+        bsp_kout << '\a';
+        return;
+    }
+
+    if (count == 1) {
+        const char* cmd_name = matches[0]->name;
+        size_t name_len = strlen_in_kernel(cmd_name);
+        if (name_len >= ed->cap) name_len = ed->cap - 1;
+        ksystemramcpy((void*)cmd_name, ed->line, name_len);
+        ed->len = name_len;
+        ed->cursor = name_len;
+        ed->line[name_len] = '\0';
+        redraw_line(ed);
+        return;
+    }
+
+    char common[256];
+    const char* first = matches[0]->name;
+    size_t common_len = strlen_in_kernel(first);
+    if (common_len > 255) common_len = 255;
+    ksystemramcpy((void*)first, common, common_len);
+    for (int i = 1; i < count; i++) {
+        const char* m = matches[i]->name;
+        size_t j = 0;
+        while (j < common_len && common[j] == m[j]) j++;
+        common_len = j;
+        if (common_len == 0) break;
+    }
+
+    if (common_len > prefix_len) {
+        ksystemramcpy((void*)common, ed->line, common_len);
+        ed->len = common_len;
+        ed->cursor = common_len;
+        ed->line[common_len] = '\0';
+        redraw_line(ed);
+        return;
+    }
+
+    bsp_kout << kendl;
+    for (int i = 0; i < count; i++) {
+        if (i > 0) bsp_kout << "  ";
+        bsp_kout << matches[i]->name;
+    }
+    bsp_kout << kendl;
+    redraw_line(ed);
+}
+
+} // anonymous namespace
+
 /**
  * @brief 判断字符是否为数字
  */
@@ -459,6 +609,38 @@ KURD_t kshell_framework_t::show_help() {
 }
 
 /**
+ * @brief 查找所有以 prefix 开头的命令
+ */
+int kshell_framework_t::command_find_prefix(
+    const char* prefix,
+    command_entry_t** out_matches,
+    int max_matches)
+{
+    if (!prefix || !out_matches || max_matches <= 0 || !m_command_tree)
+        return -1;
+
+    int count = 0;
+    size_t prefix_len = strlen_in_kernel(prefix);
+    if (prefix_len == 0) return 0;
+
+    auto it = m_command_tree->begin();
+    auto end = m_command_tree->end();
+
+    for (; it != end; ++it) {
+        int cmp = strcmp_in_kernel(it->name, prefix);
+        if (cmp >= 0) break;
+    }
+
+    for (; it != end; ++it) {
+        if (strncmp_in_kernel(it->name, prefix, prefix_len) != 0)
+            break;
+        if (count < max_matches)
+            out_matches[count++] = &(*it);
+    }
+    return count;
+}
+
+/**
  * @brief 危险命令确认流程
  */
 bool kshell_framework_t::confirm_dangerous_command(const command_entry_t* cmd_entry) {
@@ -476,28 +658,31 @@ bool kshell_framework_t::confirm_dangerous_command(const command_entry_t* cmd_en
 }
 
 /**
- * @brief 从键盘读取一行输入
+ * @brief 检测 text_input 管线是否可用
  */
-size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len) {
+bool kshell_framework_t::is_text_input_available() {
+    return text_input_ring_readonly_view != nullptr
+        || text_input_get_publish_seq() > 0;
+}
+
+/**
+ * @brief 降级路径：保留原来的 i8042_blockable_keyboard_listening 方式
+ */
+size_t kshell_framework_t::read_line_fallback(char* buffer, size_t max_len) {
     if (!buffer || max_len == 0) return 0;
 
     size_t pos = 0;
-
     while (pos < max_len - 1) {
         buff_t buf;
         i8042_blockable_keyboard_listening(&buf);
 
         for(uint16_t i = 0; i < buf.len && pos < max_len - 1; i++) {
             char c = buf.data[i];
-
-            // 回车或换行表示输入结束
             if (c == '\r' || c == '\n') {
                 bsp_kout << kendl;
                 buffer[pos] = '\0';
                 return pos;
             }
-
-            // 退格处理
             if (c == '\b' || c == 127) {
                 if (pos > 0) {
                     pos--;
@@ -505,22 +690,159 @@ size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len)
                 }
                 continue;
             }
-
-            // Ctrl+C 中断
             if (c == 3) {
                 bsp_kout << "^C" << kendl;
                 return 0;
             }
-
-            // 正常字符，显示回显
             bsp_kout << c;
             buffer[pos] = c;
             pos++;
         }
     }
-
     buffer[pos] = '\0';
     return pos;
+}
+
+/**
+ * @brief 从键盘读取一行输入（基于 text_input_event）
+ */
+size_t kshell_framework_t::read_line_from_keyboard(char* buffer, size_t max_len) {
+    if (!buffer || max_len == 0) return 0;
+
+    if (!is_text_input_available())
+        return read_line_fallback(buffer, max_len);
+
+    line_editor_t ed;
+    ed.line   = buffer;
+    ed.cap    = max_len;
+    ed.len    = 0;
+    ed.cursor = 0;
+    buffer[0] = '\0';
+
+    static uint64_t read_seq = 0;
+    if (read_seq == 0)
+        read_seq = text_input_get_publish_seq();
+
+    while (true) {
+        text_input_event batch[16];
+        uint32_t n = text_input_batch_read(read_seq, batch, 16);
+        if (n == 0) {
+            text_input_wait_event(read_seq);
+            continue;
+        }
+        read_seq += n;
+
+        for (uint32_t i = 0; i < n; i++) {
+            const text_input_event& ev = batch[i];
+            bool finished = false;
+
+            switch (ev.event_type) {
+            case 0: {
+                char ch = static_cast<char>(ev.data & 0xFF);
+                switch (ch) {
+                case '\n':
+                    ed.line[ed.len] = '\0';
+                    finished = true;
+                    break;
+                case '\b':
+                    if (ed.cursor > 0) {
+                        size_t move = ed.len - ed.cursor;
+                        ksystemramcpy((void*)(ed.line + ed.cursor),
+                                      ed.line + ed.cursor - 1,
+                                      move);
+                        ed.cursor--;
+                        ed.len--;
+                        redraw_line(&ed);
+                    }
+                    break;
+                default:
+                    if (ed.len < ed.cap - 1) {
+                        size_t move = ed.len - ed.cursor;
+                        if (move > 0) {
+                            // 光标处及后续字符右移，腾出插入位置
+                            ksystemramcpy((void*)(ed.line + ed.cursor),
+                                          (void*)(ed.line + ed.cursor + 1),
+                                          move);
+                        }
+                        ed.line[ed.cursor] = ch;
+                        ed.cursor++;
+                        ed.len++;
+                        redraw_line(&ed);
+                    }
+                    break;
+                }
+                break;
+            }
+            case 1:
+                switch (ev.data) {
+                case TEXT_CTRL_ENTER:
+                    ed.line[ed.len] = '\0';
+                    bsp_kout << kendl;
+                    finished = true;
+                    break;
+                case TEXT_CTRL_LEFT:
+                    if (ed.cursor > 0) { ed.cursor--; sync_cursor(&ed); }
+                    break;
+                case TEXT_CTRL_RIGHT:
+                    if (ed.cursor < ed.len) { ed.cursor++; sync_cursor(&ed); }
+                    break;
+                case TEXT_CTRL_HOME:
+                    ed.cursor = 0;
+                    sync_cursor(&ed);
+                    break;
+                case TEXT_CTRL_END:
+                    ed.cursor = ed.len;
+                    sync_cursor(&ed);
+                    break;
+                case TEXT_CTRL_DELETE:
+                    if (ed.cursor < ed.len) {
+                        size_t move = ed.len - ed.cursor - 1;
+                        // 光标后字符左移，覆盖光标处
+                        ksystemramcpy((void*)(ed.line + ed.cursor + 1),
+                                      (void*)(ed.line + ed.cursor),
+                                      move);
+                        ed.len--;
+                        redraw_line(&ed);
+                    }
+                    break;
+                case TEXT_CTRL_BACKSPACE:
+                    if (ed.cursor > 0) {
+                        size_t move = ed.len - ed.cursor;
+                        // 光标处及后续字符左移，覆盖光标前一格
+                        ksystemramcpy((void*)(ed.line + ed.cursor),
+                                      (void*)(ed.line + ed.cursor - 1),
+                                      move);
+                        ed.cursor--;
+                        ed.len--;
+                        redraw_line(&ed);
+                    }
+                    break;
+                case TEXT_CTRL_UP:
+                    history_navigate(&ed, -1);
+                    break;
+                case TEXT_CTRL_DOWN:
+                    history_navigate(&ed, +1);
+                    break;
+                case TEXT_CTRL_ESCAPE:
+                    ed.len = 0;
+                    ed.cursor = 0;
+                    redraw_line(&ed);
+                    break;
+                case TEXT_CTRL_TAB:
+                    try_autocomplete(&ed);
+                    break;
+                default:
+                    break;
+                }
+                break;
+            }
+
+            if (finished) {
+                add_to_history(ed.line, ed.len);
+                return ed.len;
+            }
+        }
+    }
 }
 
 /**

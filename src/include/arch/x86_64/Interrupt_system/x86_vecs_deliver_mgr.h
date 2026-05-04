@@ -47,7 +47,7 @@ class idt_vec_dispatch_mgr{
 class fred_based_mgr{
 
 };
-
+constexpr uint8_t INVALID_INTERRUPT_VEC=0xFF;
 extern "C" uint8_t out_interrupt_vec_alloc(hard_interrupt_func_t func,uint32_t processor_id,KURD_t*kurd);
 extern "C" KURD_t out_interrupt_vec_free(uint8_t vec,uint32_t processor_id);
 extern "C" hard_interrupt_func_t* out_interrupt_vec_get(uint8_t vec,uint32_t processor_id,KURD_t* kurd);

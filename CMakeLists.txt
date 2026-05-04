@@ -107,6 +107,7 @@ target_include_directories(json_praser PRIVATE
 ExternalProject_Get_Property(gnu-efi SOURCE_DIR)
 set(GNU_EFI_SOURCE_DIR ${SOURCE_DIR})
 add_subdirectory(src/memory)
+add_subdirectory(src/arch/x86_64/core_hardwares/NVMe)
 add_subdirectory(src/fs)
 add_executable(symbols_dumper
     build_utils/ksymbols_dumper.cpp
@@ -133,6 +134,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/tsc.cpp
     src/arch/x86_64/Interrupts/exceptions_handler.cpp
     src/arch/x86_64/Interrupts/x86_vecs_deliver_mgr.cpp
+    src/arch/x86_64/Interrupts/interrupt_kshell_commands.cpp
     src/arch/x86_64/Processor/local_processor_manage.cpp
     src/firmware/APIC_convert_functions.cpp
     src/firmware/APIC_table_analyzer.cpp
@@ -146,6 +148,7 @@ add_executable(kernel.elf
     src/arch/x86_64/core_hardwares/i8042.cpp
     src/arch/x86_64/core_hardwares/i8042_char_subscriber.cpp
     src/arch/x86_64/core_hardwares/i8042_kshell.cpp
+    src/arch/x86_64/core_hardwares/i8042_text_input_subscriber.cpp
     src/arch/x86_64/core_hardwares/rtc.cpp
     src/arch/x86_64/core_hardwares/x86_kshell_commands.cpp
     src/arch/x86_64/core_hardwares/pcie_kshell_commands.cpp
@@ -164,6 +167,7 @@ add_executable(kernel.elf
     $<TARGET_OBJECTS:Mem_module>
     ${SRC_COMMON}
     src/tests/kthreads/key_board_listen.cpp
+    $<TARGET_OBJECTS:NVMe_module>
 )
 add_executable(init.elf
     src/init/init_init.cpp

@@ -192,6 +192,15 @@ uint8_t idt_vec_dispatch_mgr::alloc_vec(hard_interrupt_func_t func,
         kurd.reason = fail_reason_code::BAD_FUNC_PTR;
         return 0;
     }
+
+    /* verify func is a known kernel symbol (must match exactly) */
+    {   const symbol_entry* se = ksymmanager::get_entry_near_addr((vaddr_t)func);
+        if (!se || se->address != (uint64_t)func) {
+            kurd = fail_k;
+            kurd.reason = fail_reason_code::SYM_NOT_FOUND;
+            return 0;
+        }
+    }
     if (processor_id >= logical_processor_count) {
         kurd = fail_k;
         kurd.reason = INVALID_PROCESSOR_ID;

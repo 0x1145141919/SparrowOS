@@ -415,7 +415,7 @@ void kio::kout::__print_module_code(KURD_t value)
         case module_code::INFRA:
             raw_puts_and_count("[module_code:INFRA]", sizeof("[module_code:INFRA]") - 1);
             break;
-        case module_code::DEVICES:
+        case module_code::DEVICE:
             raw_puts_and_count("[module_code:DEVICES]", sizeof("[module_code:DEVICES]") - 1);
             break;
         case module_code::DEVICES_CORE:

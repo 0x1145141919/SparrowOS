@@ -1,6 +1,7 @@
 #include "util/kshell.h"
 #include "util/kshell_commands.h"
 #include "util/kout.h"
+#include "arch/x86_64/core_hardwares/NVMe.h"
 
 using namespace kio;
 
@@ -66,6 +67,10 @@ extern KURD_t cmd_outw(const line_t* line);
 extern KURD_t cmd_outl(const line_t* line);
 extern KURD_t cmd_apic(const line_t* line);
 extern KURD_t cmd_cr(const line_t* line);
+
+// 中断递送框架命令（src/arch/x86_64/Interrupts/interrupt_kshell_commands.cpp）
+extern KURD_t cmd_s_int_spec(const line_t* line);
+extern KURD_t cmd_out_int_spec(const line_t* line);
 
 // ═══════════════════════════════════════════════════════════════════
 //  i8042 键盘诊断命令表
@@ -213,6 +218,21 @@ static command_entry_t g_x86_command_table[] = {
 
 static constexpr size_t X86_CMD_COUNT =
     sizeof(g_x86_command_table) / sizeof(g_x86_command_table[0]);
+
+// ═══════════════════════════════════════════════════════════════════
+//  中断递送框架命令表
+// ═══════════════════════════════════════════════════════════════════
+
+static command_entry_t g_intr_command_table[] = {
+    {"s_int_spec",   "Soft-interrupt function table [vec]",
+        cmd_s_int_spec,   command_risk_level_t::SAFE, false},
+    {"out_int_spec", "Hard-interrupt function table [proc_id] [vec]",
+        cmd_out_int_spec, command_risk_level_t::SAFE, false},
+};
+
+static constexpr size_t INTR_CMD_COUNT =
+    sizeof(g_intr_command_table) / sizeof(g_intr_command_table[0]);
+
 // ═══════════════════════════════════════════════════════════════════
 //  注册函数
 // ═══════════════════════════════════════════════════════════════════
@@ -254,6 +274,12 @@ void register_x86_kshell_commands() {
     bsp_kout << "[KSHELL] Registered " << X86_CMD_COUNT
              << " x86 architecture diagnostic commands" << kendl;
 }
+void register_intr_kshell_commands() {
+    regist_table(g_intr_command_table, INTR_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << INTR_CMD_COUNT
+             << " interrupt delivery framework commands" << kendl;
+}
+
 KURD_t kshell_framework_t::initial_commands_regist()
 {
     register_i8042_kshell_commands();
@@ -261,6 +287,8 @@ KURD_t kshell_framework_t::initial_commands_regist()
     register_mem_kshell_commands();
     register_pcie_kshell_commands();
     register_x86_kshell_commands();
+    register_intr_kshell_commands();
+    register_nvme_kshell_commands();
     return default_success();
 }
 

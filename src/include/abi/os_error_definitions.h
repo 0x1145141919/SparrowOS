@@ -98,7 +98,7 @@ namespace module_code {
     constexpr uint8_t VFS = 5;
     constexpr uint8_t VMM = 6;
     constexpr uint8_t INFRA = 7;  //基础设施，比如内核特供strlen,strcmp这种
-    constexpr uint8_t DEVICES = 8;//允许生死/插拔的硬件
+    constexpr uint8_t DEVICE = 8;//允许生死/插拔的硬件
     constexpr uint8_t DEVICES_CORE = 9;//系统设计上启动时必须找到/加载的硬件，不允许也不会设计卸载，panic路径中仍可使用的硬件，现行包括lapic,ioapic,重映射硬件pcie根复合体以及根端口，hpet,uart,i8042.
     constexpr uint8_t HARDWARE_DEBUG = 10;
     constexpr uint8_t USER_KERNEL_ABI = 11;

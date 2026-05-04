@@ -60,7 +60,14 @@ struct kbd_char_event {
     uint32_t source_key;
     uint64_t decisive_event_seq;
 };
+struct text_input_event{
+    uint8_t event_type;//0:普通字符事件；1：文本控制事件（上下左右del,PgUP,PgDn,esc)
+    uint8_t reserved0;
+    uint16_t data;
+    uint64_t decisive_event_seq;
+};
 static_assert(sizeof(kbd_char_event)==16,"kbd_char_event should be 16 bytes");
+static_assert(sizeof(text_input_event)==16,"text_input_event should be 16 bytes");
 
 extern u16ka i8042_event_tail_idx;
 extern u64ka i8042_event_publish_seq;
@@ -91,6 +98,44 @@ typedef struct {
 } buff_t;
 
 extern "C" void i8042_blockable_keyboard_listening(buff_t* buf);
+
+// ============================================================
+// text_input_event 控制事件码
+// ============================================================
+constexpr uint16_t TEXT_CTRL_UP       = 0x0001;
+constexpr uint16_t TEXT_CTRL_DOWN     = 0x0002;
+constexpr uint16_t TEXT_CTRL_LEFT     = 0x0003;
+constexpr uint16_t TEXT_CTRL_RIGHT    = 0x0004;
+constexpr uint16_t TEXT_CTRL_HOME     = 0x0005;
+constexpr uint16_t TEXT_CTRL_END      = 0x0006;
+constexpr uint16_t TEXT_CTRL_PGUP     = 0x0007;
+constexpr uint16_t TEXT_CTRL_PGDN     = 0x0008;
+constexpr uint16_t TEXT_CTRL_INSERT   = 0x0009;
+constexpr uint16_t TEXT_CTRL_DELETE   = 0x000A;
+constexpr uint16_t TEXT_CTRL_ESCAPE   = 0x000B;
+constexpr uint16_t TEXT_CTRL_TAB      = 0x000C;
+constexpr uint16_t TEXT_CTRL_ENTER    = 0x000D;
+constexpr uint16_t TEXT_CTRL_BACKSPACE= 0x000E;
+
+// text_input_event ring 全局变量
+extern u16ka text_input_event_tail_idx;
+extern u64ka text_input_publish_seq;
+extern u64ka text_input_drop_count;
+extern const text_input_event* text_input_ring_readonly_view;
+extern tid_wait_queue* text_input_subscribers_queue;
+
+// text_input_event Level 1：单事件
+extern "C" bool   text_input_read_event_by_seq(uint64_t seq, text_input_event* out);
+extern "C" uint64_t text_input_get_publish_seq();
+extern "C" void   text_input_wait_event(uint64_t last_publish_seq);
+extern "C" void   text_input_subscriber_init();
+
+// text_input_event Level 2：批量读取
+extern "C" uint32_t text_input_batch_read(
+    uint64_t start_seq,
+    text_input_event* out_events,
+    uint32_t max_count);
+
 #ifdef __cplusplus
 extern void register_i8042_kshell_commands();
 #endif

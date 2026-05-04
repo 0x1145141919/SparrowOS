@@ -59,6 +59,7 @@ void ipi_test(){
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<kendl;
     KURD_t kurd=KURD_t();
+    x2apic::x2apic_driver::write_eoi();
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
     global_schedulers[self_processor_id].sched();
     asm volatile("hlt");
@@ -90,7 +91,8 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
     KURD_t kurd = KURD_t();
     
     i8042_char_subscriber_init();
-    
+    pcie_text_praser();
+    //text_input_subscriber_init();
     // 初始化 kshell 框架
     kurd=kshell_framework_t::Init();
     if (error_kurd(kurd)) {
@@ -99,7 +101,7 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
         bsp_kout << "[KSHELL] Framework initialized, ready for commands" << kendl;
     }
     
-    //pcie_text_praser();
+    
     while (true)
     {
         kthread_sleep(1000000);

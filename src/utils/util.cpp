@@ -14,6 +14,43 @@ typedef uint64_t size_t;
 
 
 uint64_t align_down(uint64_t x, uint64_t a){ return x & ~(a-1); }
+
+// min/max 函数实现
+uint64_t min(uint64_t a, uint64_t b) {
+    return (a < b) ? a : b;
+}
+
+uint64_t max(uint64_t a, uint64_t b) {
+    return (a > b) ? a : b;
+}
+
+// log2 函数实现：计算以2为底的对数（向上取整）
+uint8_t log2(uint64_t value) {
+    if (value == 0) return 0;
+    if (value == 1) return 0;
+    
+    uint8_t result = 0;
+    uint64_t temp = value - 1; // 减1后向下取整，等效于原值向上取整
+    
+    while (temp > 0) {
+        temp >>= 1;
+        result++;
+    }
+    
+    return result;
+}
+
+// log2_up 函数实现：计算以2为底的对数（向下取整）
+uint8_t log2_up(uint64_t value) {
+    if (value == 0) return 0;
+    uint8_t result = 0;
+    while (value > 1) {
+        value >>= 1;
+        result++;
+    }
+    return result;
+}
+
 uint64_t format_num_to_buffer(char* out, uint64_t raw, num_format_t format, numer_system_select radix)
 {
     if (!out) return 0;

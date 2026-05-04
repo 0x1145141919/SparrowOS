@@ -1,5 +1,9 @@
 #include "arch/x86_64/PCIe/prased.h"
 #include "util/kout.h"
+
+// NVMe 设备注册回调（由 NVMe 模块实现）
+// 在 PCIe 枚举过程中对每个 NVMe 设备调用一次
+void pcie_nvme_on_device(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t func, vaddr_t ecam_va);
 ecams_container_t*global_container;
 void pcie_bus_scan(ecam_node_t*node,uint8_t bus_num, uint32_t depth);
 void pcie_an_ecam_print(vaddr_t vbase, uint32_t depth){//vbase为直接的底
@@ -476,6 +480,13 @@ void pcie_bus_scan(ecam_node_t* node, uint8_t bus_num, uint32_t depth)
                      << " DEVICE: " << static_cast<uint32_t>(device) 
                      << " FUNC: " << static_cast<uint32_t>(func) << "\n";
             pcie_an_ecam_print(header, depth + 1);
+
+            // 检测 NVMe 设备 (Mass Storage: 01h, NVM Subsystem: 08h)
+            uint8_t base_cls = *(volatile uint8_t*)(header + 0x0B);
+            uint8_t sub_cls  = *(volatile uint8_t*)(header + 0x0A);
+            if (base_cls == 0x01 && sub_cls == 0x08) {
+                pcie_nvme_on_device(0, bus_num, device, func, header);
+            }
             
             // 读取 Header Type
             uint8_t header_type = *(uint8_t*)(header + 0x0e);
@@ -566,6 +577,10 @@ void pcie_text_praser()
     }
     
     bsp_kout << "[PCIe] PCIe enumeration completed\n";
+    
+    // 通知 NVMe 模块扫描完成，可以分配 node_array
+    extern void pcie_nvme_scan_complete();
+    pcie_nvme_scan_complete();
 }
 ecams_container_t::ecams_container_t(MCFG_Table* mcfg){
     if (mcfg == nullptr) return;

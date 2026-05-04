@@ -190,6 +190,9 @@ uint64_t align_down(uint64_t value, uint64_t alignment);
 bool is_aligned(uint64_t value, uint8_t align_log2);
 bool is_addr_kernel_address(void* addr);
 uint64_t format_num_to_buffer(char* out, uint64_t raw, num_format_t format, numer_system_select radix);
+uint64_t min(uint64_t a, uint64_t b);
+uint64_t max(uint64_t a, uint64_t b);
+uint8_t log2_up(uint64_t value);
 #ifdef USER_MODE
 // 将内存描述符表从文本格式转换为gBaseMemMgr.Init函数所需的格式
 void print_memory_descriptor_for_gbasememmgr(const char* input_file_path);

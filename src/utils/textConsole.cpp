@@ -273,7 +273,7 @@ void textconsole_GoP::PutChar(char ch)
             cursor.m = 0;
             cursor.n += 1;
             break;
-        case '\r':
+        case '\r'://整行绘制为空
             cursor.m = 0;
             break;
         case '\t': {
@@ -282,19 +282,13 @@ void textconsole_GoP::PutChar(char ch)
             break;
         }
         case '\b': {
+            // 标准终端行为：\b 仅移动光标，不擦除字符
             if (cursor.m > 0) {
                 cursor.m -= 1;
             } else if (cursor.n > 0) {
                 cursor.n -= 1;
                 cursor.m = view.cols - 1;
-            } else {
-                break;
             }
-            Vec2i pos = {
-                view.pos.x + cursor.m * view.cell.x,
-                view.pos.y + cursor.n * view.cell.y
-            };
-            GfxPrim::FillRect(pos, view.cell, background_color);
             break;
         }
         default: {

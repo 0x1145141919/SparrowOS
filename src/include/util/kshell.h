@@ -105,6 +105,19 @@ public:
      */
     static KURD_t show_help();
 
+    /**
+     * @brief 查找所有以 prefix 开头的命令
+     *
+     * @param prefix       前缀字符串
+     * @param out_matches  输出缓冲区（command_entry_t* 数组）
+     * @param max_matches  缓冲区容量
+     * @return int         实际匹配数（-1 内部错误，0 无匹配）
+     */
+    static int command_find_prefix(
+        const char* prefix,
+        command_entry_t** out_matches,
+        int max_matches);
+
 private:
     static KURD_t default_kurd();
     static KURD_t default_success();
@@ -137,6 +150,8 @@ private:
 
 private:
     static KURD_t initial_commands_regist();
+    static bool is_text_input_available();
+    static size_t read_line_fallback(char* buffer, size_t max_len);
     static Ktemplats::RBTree<command_entry_t, command_compare>*m_command_tree;  // 命令红黑树
     static bool m_initialized;                // 是否已初始化
 };
