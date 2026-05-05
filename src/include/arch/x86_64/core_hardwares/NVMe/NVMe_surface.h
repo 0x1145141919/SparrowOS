@@ -137,6 +137,10 @@ public:
     static node* node_array;
     static uint32_t controllers_count;
 
+    // 外部获取 namespace 列表
+    BlockDevice* get_namespaces()       { return NSs; }
+    uint32_t     get_ns_count()  const  { return NS_count; }
+
     NVMe_Controller(vaddr_t ecam);
     static KURD_t device_init(NVMe_Controller* dev);
     KURD_t offline(uint64_t flags);
