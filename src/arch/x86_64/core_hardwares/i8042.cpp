@@ -1,5 +1,6 @@
 #include <arch/x86_64/core_hardwares/i8042.h>
 #include <arch/x86_64/core_hardwares/ioapic.h>
+#include <arch/x86_64/core_hardwares/DMAR.h>
 #include <arch/x86_64/core_hardwares/lapic.h>
 #include <arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h>
 #include <memory/AddresSpace.h>
@@ -339,13 +340,38 @@ void i8042_interrupt_enable(){
         //panic
     }
     KURD_t kurd;
-    ioapic_driver::compact_flag flag={
+    uint32_t target_apicid = query_x2apicid();
+    /*if(is_iremap_try)
+    {
+        pcie_location ioapic_ioapic_location=dmar::special_locations[dmar::ioapic_idx].location;
+        dmar::regist_remmap_struct arg={
+            .location=ioapic_ioapic_location,
+            .vec=vec,
+            .delivery_mode=dmar::interrupt_mode_type_t::fixed,
+            .destination=target_apicid,
+            .destination_mode=0,
+            .trigger_mode=0,
+            .redirection_hint=0
+        };
+        uint16_t remap_table_idx;
+        uint32_t dmar_id;
+        kurd=dmar::regist_interrupt_simp(arg,remap_table_idx,dmar_id);
+        if(error_kurd(kurd)){
+            
+        }
+        kurd=main_router->irq_regist(1,remap_table_idx,false);
+        if(error_kurd(kurd)){
+            
+        }
+    }else{*/
+        ioapic_driver::compact_flag flag={
             .vec=vec,
             .trigger_mode=0,
             .polarity=0  
-    };
-    flag.target_apicid=query_x2apicid();
-    kurd=main_router->irq_regist(1,flag);
+        };
+        flag.target_apicid=query_x2apicid();
+        kurd=main_router->irq_regist(1,flag);
+    //}
     key_board_led.raw=0;
     led_set();
     while(inb(0x64)&0x3);

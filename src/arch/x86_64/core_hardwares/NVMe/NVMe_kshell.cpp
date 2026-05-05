@@ -1,4 +1,4 @@
-#include "arch/x86_64/core_hardwares/NVMe.h"
+#include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/PCIe/base.h"
 #include "arch/x86_64/PCIe/prased.h"
 #include "util/kshell.h"

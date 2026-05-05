@@ -169,11 +169,9 @@ KURD_t cmd_pread(const line_t* line) {
         return KURD_t{};
     }
 
-    enum { HEX, DEC, ASCII } fmt = HEX;
-    if (line->token_count >= 4) {
+    numer_system_select fmt = HEX;
         if (tok_eq(line->tokens[3], "dec"))   fmt = DEC;
-        else if (tok_eq(line->tokens[3], "ascii")) fmt = ASCII;
-    }
+
 
     // 通过临时只读映射读取物理地址
     vm_interval iv;

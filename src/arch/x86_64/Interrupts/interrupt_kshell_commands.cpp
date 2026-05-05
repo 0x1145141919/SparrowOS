@@ -114,7 +114,7 @@ KURD_t cmd_out_int_spec(const line_t* line) {
             for (uint16_t v = 32; v <= 255; v++) {
                 if (slice[v]) {
                     bsp_kout << "  [" << (uint32_t)v << "] 0x"
-                             << (uint64_t)slice[v] << "  ";
+                             << HEX<<(uint64_t)slice[v] <<DEC<< "  ";
                     print_sym_name((uint64_t)slice[v]);
                     bsp_kout << kendl;
                     any = true;

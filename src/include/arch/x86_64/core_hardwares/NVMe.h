@@ -382,7 +382,8 @@ class NVMe_Controller{
         uint8_t pcie_bus;
         uint8_t pcie_dev:5;
         uint8_t pcie_func:3;
-        NVMe_Controller* controller;//用指针是否为空控制控制器是否初始化
+        vaddr_t ecam_va;
+        NVMe_Controller* controller;
     };
     private:
     NVMe::ctrl_state_t state;

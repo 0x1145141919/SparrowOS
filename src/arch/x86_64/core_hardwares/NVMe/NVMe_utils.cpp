@@ -1,4 +1,4 @@
-#include "arch/x86_64/core_hardwares/NVMe.h"
+#include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 
@@ -172,6 +172,7 @@ void pcie_nvme_scan_complete()
         NVMe_Controller::node_array[i].pcie_bus  = nvme_discovered[i].bus;
         NVMe_Controller::node_array[i].pcie_dev  = nvme_discovered[i].dev;
         NVMe_Controller::node_array[i].pcie_func = nvme_discovered[i].func;
+        NVMe_Controller::node_array[i].ecam_va  = nvme_discovered[i].ecam_va;
         NVMe_Controller::node_array[i].controller = nullptr;
     }
 }

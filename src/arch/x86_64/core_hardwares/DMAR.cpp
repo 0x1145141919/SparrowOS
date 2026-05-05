@@ -2,8 +2,8 @@
 #include "memory/all_pages_arr.h"
 #include "ktime.h"
 #include "panic.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
-#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/pt_regs.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
@@ -26,7 +26,9 @@ void flush_cache_serial(vaddr_t addr){
 void flush_cache_serial_no(vaddr_t addr){
     asm volatile("clflushopt %0": :"m"(addr));
 }
-extern "C" void iommu_fault_cpp_enter(x64_standard_context*regs){
+extern "C" void iommu_fault_cpp_enter(x64_standard_context*regs,uint8_t vec,uint32_t processor_id){
+    (void)vec;
+    (void)processor_id;
     for(uint32_t i=0;i<dmar::dmars_count;i++){
         dmar::dmar_table[i]->err_handle();
     }
@@ -100,10 +102,9 @@ int dmar::Init(acpi::DMAR_head *head)
     if (end < cur) {
         return OS_BAD_FUNCTION;
     }
-    x64_local_processor*self=(x64_local_processor*)read_gs_u64(PROCESSOR_SELF_RESOURCES_COMPELX_GS_INDEX);
-    dmar::iommu_fault_alloced_vector=self->handler_alloc(&iommu_fault_deal);
-    if(dmar::iommu_fault_alloced_vector==0xff){
-
+    KURD_t iommu_vec_kurd;
+    dmar::iommu_fault_alloced_vector=out_interrupt_vec_alloc(iommu_fault_cpp_enter,fast_get_processor_id(),&iommu_vec_kurd);
+    if(dmar::iommu_fault_alloced_vector==0xff||error_kurd(iommu_vec_kurd)){
         Panic::panic(default_panic_behaviors_flags,"DMAR:iommu vec regist fault",
             nullptr,
             nullptr,
@@ -456,7 +457,6 @@ KURD_t dmar::driver::err_handle()
     }
     return KURD_t();
 }
-uint32_t legacy_rotate_interrupt_alloc_id;
 void dmar::driver::set_command_enable_iremap()
 {
     uint32_t global_command_draft=regs->global_status;

@@ -2,6 +2,7 @@
 #include "stdint.h"
 #include "firmware/ACPI_APIC.h"
 #include "memory/AddresSpace.h"
+#include "DMAR.h"
 namespace COREHARDWARES_LOCATIONS{
     constexpr uint8_t LOCATION_CODE_IO_APIC=0x03;
     namespace IO_APIC_DRIVERS_EVENTS {
@@ -50,7 +51,9 @@ class ioapic_driver {
             uint64_t remmap_idx_0_14:15;
         }filed;
         static_assert(sizeof(filed)==8,"RTE_remmap_union size error");
-    };union RTE_compact_union {
+    };
+    dmar::driver* belonged_dmar;
+    union RTE_compact_union {
         uint64_t value;
         struct {
             uint64_t vector:8;
@@ -76,6 +79,7 @@ public:
         uint8_t trigger_mode:1;
         uint8_t polarity:1;
     };
+    KURD_t irq_regist(uint8_t rte,uint16_t remmap_idx,bool polarity);
     KURD_t irq_regist(uint8_t rte,compact_flag flag);
     KURD_t irq_unregist(uint8_t rte);
 };

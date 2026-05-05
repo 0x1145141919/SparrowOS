@@ -1,10 +1,14 @@
-# NVMe 驱动子模块
+# NVMe 驱动模块
 # 包含 NVMe 控制器初始化、命令提交、中断处理、关机下线
 set(NVMe_SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/NVMe_init_and_shutdown.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/NVMe_interrupts.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/NVMe_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/NVMe_kshell.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Identify_cmd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/get_set_features.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/io_queue_cmd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PRPs.cpp
 )
 
 add_library(NVMe_module OBJECT ${NVMe_SOURCE})
