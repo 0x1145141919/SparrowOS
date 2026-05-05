@@ -158,8 +158,7 @@ public:
                          uint32_t proc_id,
                          bool soon_ring_bell);
 
-    static KURD_t read(BlockDevice* dev, uint64_t sector, uint32_t count,
-                        void* buf, uint64_t flags);
+    static KURD_t read(BlockDevice* dev, uint64_t sector, uint32_t count,void* buf, uint64_t flags);
     static KURD_t write(BlockDevice* dev, uint64_t sector, uint32_t count,
                          void* buf, uint64_t flags);
     static KURD_t flush(BlockDevice* dev, uint64_t flags);
