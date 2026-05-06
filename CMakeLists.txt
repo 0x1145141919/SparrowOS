@@ -8,11 +8,14 @@ project(Kernel LANGUAGES C CXX)
 include(cmake/toolchain.cmake)       # 工具链：NASM 发现、汇编器配置
 include(cmake/compile-options.cmake) # 全局编译选项：标准、debug/release 模式
 include(cmake/link-options.cmake)    # 链接选项：链接脚本、通用链接标志
+include(cmake/interface-flags.cmake) # INTERFACE 库：可复用编译选项分组
 # =====================================================
+
+# 全局头文件路径（根 cmake 所有目标共享）
+include_directories("${CMAKE_SOURCE_DIR}/src/include")
 
 # Initramfs builder target
 add_subdirectory(build_utils/initramfs_builder)
-
 # 添加gnu-efi作为外部项目
 include(ExternalProject)
 ExternalProject_Add(
@@ -49,12 +52,22 @@ add_library(json_praser
 )
 target_include_directories(json_praser PRIVATE
      "/usr/include"
-     "${CMAKE_SOURCE_DIR}/src/include"
 )
 
 # 获取gnu-efi构建目录路径
 ExternalProject_Get_Property(gnu-efi SOURCE_DIR)
 set(GNU_EFI_SOURCE_DIR ${SOURCE_DIR})
+
+# gnu-efi 链接库 + 头文件接口
+add_library(gnu_efi_iface INTERFACE)
+target_link_libraries(gnu_efi_iface INTERFACE
+    ${GNU_EFI_SOURCE_DIR}/x86_64/lib/libefi.a
+    ${GNU_EFI_SOURCE_DIR}/x86_64/gnuefi/libgnuefi.a
+)
+target_include_directories(gnu_efi_iface INTERFACE
+    "${GNU_EFI_SOURCE_DIR}/inc"
+    "${GNU_EFI_SOURCE_DIR}/inc/x86_64"
+)
 
 add_subdirectory(src/memory)
 add_subdirectory(src/arch/x86_64/core_hardwares)
@@ -142,58 +155,19 @@ add_executable(init.elf
 )
 
 # =====================================================
-# 内核/init 编译链接配置函数
+# kernel.elf
 # =====================================================
-function(configure_kernel_like_elf target_name link_opts)
-    target_link_libraries(${target_name} PRIVATE
-        ${GNU_EFI_SOURCE_DIR}/x86_64/lib/libefi.a
-        ${GNU_EFI_SOURCE_DIR}/x86_64/gnuefi/libgnuefi.a
-    )
-
-    target_compile_options(${target_name} PRIVATE
-        $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra
-        -mgeneral-regs-only
-        -ffreestanding
-        -mno-red-zone
-        -fno-stack-protector
-        -fno-exceptions
-        -fno-rtti
-        -static
-        -mgeneral-regs-only
-        -fno-lto
-        -fpermissive
-        -fno-PIC
-        -fno-builtin-ctzll
-        -DKERNEL_MODE>
-        -DPGLV_4>
-    $<$<COMPILE_LANGUAGE:ASM_NASM>:-felf64>
-    )
-
-    target_link_options(${target_name} PRIVATE ${link_opts}
-        -fno-exceptions
-        -fno-rtti
-        -static
-        -mgeneral-regs-only
-        -fno-lto
-        -fpermissive
-        -fno-PIC
-        -DKERNEL_MODE>
-        -DPGLV_4>
-    $<$<COMPILE_LANGUAGE:ASM_NASM>:-felf64>
-    )
-endfunction()
-
-configure_kernel_like_elf(kernel.elf "${KERNEL_LINK_OPTS}")
-configure_kernel_like_elf(init.elf "${INIT_LINK_OPTS}")
-
-target_include_directories(kernel.elf PRIVATE
-    "${CMAKE_SOURCE_DIR}/src/include"
-    "${GNU_EFI_SOURCE_DIR}/inc"
-    "${GNU_EFI_SOURCE_DIR}/inc/x86_64"
+target_link_libraries(kernel.elf PRIVATE
+    gnu_efi_iface
+    kspace_base_flags x86_kflags cpp_macro nasm_flags
 )
+target_link_options(kernel.elf PRIVATE ${KERNEL_LINK_OPTS})
 
-target_include_directories(init.elf PRIVATE
-    "${CMAKE_SOURCE_DIR}/src/include"
-    "${GNU_EFI_SOURCE_DIR}/inc"
-    "${GNU_EFI_SOURCE_DIR}/inc/x86_64"
+# =====================================================
+# init.elf
+# =====================================================
+target_link_libraries(init.elf PRIVATE
+    gnu_efi_iface
+    kspace_base_flags x86_kflags cpp_macro nasm_flags
 )
+target_link_options(init.elf PRIVATE ${INIT_LINK_OPTS})
