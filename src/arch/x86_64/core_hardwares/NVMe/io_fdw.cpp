@@ -169,9 +169,7 @@ KURD_t NVMe_Controller::flush(BlockDevice* dev, uint64_t flags)
 //   interval — LBA 区间（起始 + 数量）
 //   flags    — 控制标志（当前未使用）
 // ============================================================
-KURD_t NVMe_Controller::write_zero(BlockDevice* dev,
-                                    LBA_interval_t interval,
-                                    uint64_t flags)
+KURD_t NVMe_Controller::write_zero(BlockDevice* dev,LBA_interval_t interval,uint64_t flags)
 {
     (void)flags;
 
@@ -238,9 +236,7 @@ KURD_t NVMe_Controller::write_zero(BlockDevice* dev,
 //   4. 发送 DSM 命令 (AD=1, NR=0)
 //   5. 等待完成 → 清理 PRP + 释放 Range 页
 // ============================================================
-KURD_t NVMe_Controller::discard(BlockDevice* dev,
-                                 LBA_interval_t interval,
-                                 uint64_t flags)
+KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_t flags)
 {
     (void)flags;
 

@@ -2,7 +2,6 @@
 #include "arch/x86_64/core_hardwares/NVMe/Identify_structues.h"
 #include "arch/x86_64/core_hardwares/NVMe/io_queue_cmd.h"
 #include "arch/x86_64/core_hardwares/NVMe/get_set_features.h"
-#include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
@@ -85,8 +84,7 @@ static KURD_t read_param_error(uint16_t reason)
 //   interval — LBA 区间（起始 + 数量）
 //   flags    — 控制标志（当前未使用）
 // ============================================================
-KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,
-                              LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 
@@ -230,8 +228,7 @@ static KURD_t read_advance_param_error(uint16_t reason)
 //   interval — LBA 区间
 //   flags    — 控制标志（当前未使用）
 // ============================================================
-KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,
-                                      LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 
@@ -370,8 +367,7 @@ static KURD_t cmp_param_error(uint16_t reason)
 //
 // BlockDevice 回调—物理连续缓冲区写入。
 // ============================================================
-KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,
-                               LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 
@@ -461,8 +457,7 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,
 //
 // BlockDevice 回调—散列物理段写入。
 // ============================================================
-KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,
-                                       LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 
@@ -559,8 +554,7 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,
 // BlockDevice 回调—物理连续比较缓冲区。
 // Compare 约束：PRINFO.PRACT=0
 // ============================================================
-KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,
-                                 LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 
@@ -639,8 +633,7 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,
 //
 // BlockDevice 回调—散列物理段比较缓冲区。
 // ============================================================
-KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,
-                                         LBA_interval_t interval, uint64_t flags)
+KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags)
 {
     (void)flags;
 

@@ -11,6 +11,14 @@ struct BlockDevice {
     BlockDeviceOps* ops;
     void *private_data;//各ID的私有数据
 };
+struct pbuf_t{
+    uint64_t pbase;
+    uint64_t size;
+};
+struct LBA_interval_t{
+    uint64_t start;
+    uint64_t LBA_count;
+};
 struct BlockDeviceOps{
     KURD_t (*read)(BlockDevice*dev,uint64_t sector, uint32_t count, void *buf,uint64_t flags);
     KURD_t (*write)(BlockDevice*dev,uint64_t sector, uint32_t count, void *buf,uint64_t flags);

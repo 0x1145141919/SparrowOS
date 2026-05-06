@@ -233,6 +233,7 @@ public:
 
     public:
         bool is_bcb_avaliable();
+        bool dirty;//这个位是在init.elf中移植的时候受多BCB框架下
         uint8_t get_max_order();
         friend all_pages_arr;
         void print_basic_info();

@@ -83,7 +83,6 @@ cli
 
     ; 加载GDT
     lgdt [gdt_descriptor]
-    lidt [idt_descriptor_rm]
     ; 设置CR0寄存器，启用保护模式
     mov eax, cr0
     or eax, 1                           ; Set PE (Protection Enable) bit
@@ -229,11 +228,7 @@ _kernel_Init:
     push rax
     retfq
 .jump_kernel:
-    mov rax, ap_init_patch_idt_rm
-    call rax
     mov rax, ap_init_patch_idt_pe
-    call rax
-    mov rax, ap_init_patch_idt_lm
     call rax
     mov rax, wrmsr_func
     mov rdi, 0xC0000101

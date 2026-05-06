@@ -5,7 +5,7 @@
 #include <arch/x86_64/PCIe/base.h>
 #include <memory/AddresSpace.h>
 #include <Scheduler/per_processor_scheduler.h>
-
+#include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 struct NVMe_device_private {
     uint32_t controller_id;
     uint32_t nsid;
@@ -162,17 +162,15 @@ public:
                          uint32_t proc_id,
                          bool soon_ring_bell);
 
-    static KURD_t read(BlockDevice* dev, uint64_t sector, uint32_t count,void* buf, uint64_t flags);
-    static KURD_t write(BlockDevice* dev, uint64_t sector, uint32_t count,
-                         void* buf, uint64_t flags);
+    static KURD_t read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
+    static KURD_t read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
+    static KURD_t write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
+    static KURD_t write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
     static KURD_t flush(BlockDevice* dev, uint64_t flags);
-    static KURD_t discard(BlockDevice* dev, uint64_t sector, uint32_t count,
-                           uint64_t flags);
-    static KURD_t write_zero(BlockDevice* dev, uint64_t sector, uint32_t count,
-                              void* buf, uint64_t flags);
-    static KURD_t compare(BlockDevice* dev, uint64_t sector, uint32_t count,
-                           void* buf, uint64_t flags);
-
+    static KURD_t discard(BlockDevice* dev,LBA_interval_t interval,uint64_t flags);
+    static KURD_t write_zero(BlockDevice* dev,LBA_interval_t interval,uint64_t flags);
+    static KURD_t compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
+    static KURD_t compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
     // Identify wrappers
     KURD_t identify_ctrl(phyaddr_t buf_pa, KURD_t& kurd);
     KURD_t identify_ns(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
