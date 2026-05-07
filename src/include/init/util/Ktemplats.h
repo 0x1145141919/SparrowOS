@@ -6,7 +6,7 @@
 #include "../include/util/bitmap.h"
 #include "util/OS_utils.h"
 #ifdef KERNEL_MODE
-#include "../init/include/heap_alloc.h"
+#include "init/heap_alloc.h"
 #endif
 #ifdef USER_MODE
 #include <new>

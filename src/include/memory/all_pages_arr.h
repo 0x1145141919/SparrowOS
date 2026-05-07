@@ -1,7 +1,6 @@
 #pragma once
 #include "stdint.h"
 #include "memory/memory_base.h"
-#include "memory/page_struct.h"
 #include <util/lock.h>
 #include <util/Ktemplats.h>
 #include "memory/memmodule_err_definitions.h"

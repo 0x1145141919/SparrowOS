@@ -1,5 +1,5 @@
-#include "../init/include/core_hardwares/PortDriver.h"
-#include "../init/include/util/kout.h"
+#include "init/core_hardwares/PortDriver.h"
+#include "init/util/kout.h"
 #define COM1_PORT 0x3F8
 static inline void outb(uint16_t port, uint8_t value) {
     asm volatile ("outb %0, %1" : : "a"(value), "Nd"(port));

@@ -1,10 +1,10 @@
 #include "abi/boot.h"
-#include "../init/include/heap_alloc.h"
-#include "../init/include/load_kernel.h"
-#include "../init/include/pages_alloc.h"
-#include "../init/include/util/kout.h"
-#include "../init/include/panic.h"
-#include "memory/page_struct.h"
+#include "init/heap_alloc.h"
+#include "init/load_kernel.h"
+#include "init/pages_alloc.h"
+#include "init/util/kout.h"
+#include "init/panic.h"
+#include "memory/memory_base.h"
 #include <elf.h>
 
 

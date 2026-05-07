@@ -1,6 +1,7 @@
 #pragma once
 #include "stdint.h"
 #include "memory/memory_base.h"
+#define INIT_INCLUDE_PATH "../init/include/"
 #define LOADED_FILE_ENTRY_TYPE_ELF_REAL_LOAD 0x01
 #define LOADED_FILE_ENTRY_TYPE_BINARY 0x02
 #define LOADED_FILE_ENTRY_TYPE_ELF_NO_LOAD 0x03//不加载的elf文件，内核主体
@@ -103,5 +104,14 @@ struct init_to_kernel_info {
     uint64_t pass_through_device_info_count;
     pass_through_device_info* pass_through_devices;
     uint32_t logical_processor_count;
+    vm_interval kIMG_self_window;
+    vm_interval pages_arr;
+    vm_interval FPA_bitmaps;
+    vm_interval log_buffer;
+    vm_interval bsp_init_stack;
+    vm_interval kBSS_interval;
+    vm_interval symtable_file;
+    vm_interval initramfs_file;
+    void*arch_specify;
 };
 

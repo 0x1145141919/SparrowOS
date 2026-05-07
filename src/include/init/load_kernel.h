@@ -1,5 +1,5 @@
 #include "abi/boot.h"
-#include "../init/include/kernel_mmu.h"
+#include "init/kernel_mmu.h"
 struct load_kernel_info_pack{
     kernel_mmu*kmmu;
     loaded_file_entry kernel_file_entry;

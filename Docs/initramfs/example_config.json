@@ -1,0 +1,31 @@
+{
+  "variables": {
+    "PROJECT_ROOT": "."
+  },
+  "files": [
+    {
+      "dest_path": "/init.elf",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "init.elf"
+    },
+    {
+      "dest_path": "/kernel.elf",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "kernel.elf"
+    },
+    {
+      "dest_path": "/ksymbols.bin",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "ksymbols.bin"
+    },
+    {
+      "dest_path": "/HZK24",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "HZK24"
+    }
+  ],
+  "out_put_path": {
+    "src_base": "${PROJECT_ROOT}",
+    "src_relative_path": "initramfs.img"
+  }
+}

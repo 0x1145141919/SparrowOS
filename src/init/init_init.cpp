@@ -1,11 +1,12 @@
 #include "abi/boot.h"
-#include "../init/include/load_kernel.h"
-#include "../init/include/pages_alloc.h"
-#include "../init/include/util/textConsole.h"
-#include "../init/include/util/kout.h"
-#include "../init/include/core_hardwares/PortDriver.h"
-#include "../init/include/panic.h"
-#include "../init/include/init_linker_symbols.h"
+#include "init/load_kernel.h"
+#include "init/pages_alloc.h"
+#include "init/page_allocator.h"
+#include "init/util/textConsole.h"
+#include "init/util/kout.h"
+#include "init/core_hardwares/PortDriver.h"
+#include "init/panic.h"
+#include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "abi/boot.h"
@@ -84,6 +85,12 @@ extern "C" void init(BootInfoHeader* header)
             asm volatile("hlt");
         }
     }
+    result=page_allocator::init();
+    if(result!=OS_SUCCESS){
+        bsp_kout<< "[ERROR] page_allocator::init failed with error code: " << result << kendl;
+        asm volatile("hlt");
+    }
+    bsp_kout<< "[INIT] page_allocator initialized, free pages: " << page_allocator::free_page_count() << kendl;
     kernel_mmu*kmmu=new kernel_mmu(arch_enums::x86_64_PGLV4);
     int low_identity_maps = setup_low_identity_maps(kmmu, header);
     if(low_identity_maps!=OS_SUCCESS){

@@ -1,4 +1,4 @@
-#include "../init/include/util/textConsole.h"
+#include "init/util/textConsole.h"
 #include "util/OS_utils.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 

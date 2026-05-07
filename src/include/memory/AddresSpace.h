@@ -188,12 +188,6 @@ namespace MEMMODULE_LOCAIONS{
     }
     constexpr uint8_t LOCATION_CODE_KSPACE_MAP_MGR_PGS_PAGE_TABLE=18;
 };
-struct vm_interval{
-    vaddr_t vbase;
-    phyaddr_t pbase;
-    uint64_t size;
-    pgaccess access;
-};
 /**
  * 此类的职责就是创建虚拟地址空间，管理虚拟地址空间，
  * 此类的职责有且仅一个功能，就是管理相应的低一般虚拟地址空间，

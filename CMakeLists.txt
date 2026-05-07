@@ -142,6 +142,7 @@ add_executable(init.elf
     src/init/core_hardwares/PortDriver.cpp
     src/init/util/textConsole.cpp
     src/init/pages_alloc.cpp
+    src/init/page_allocator.cpp
     src/init/panic.cpp
     src/init/util/kout.cpp
     src/utils/util.cpp

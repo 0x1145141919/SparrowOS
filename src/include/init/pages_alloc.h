@@ -1,5 +1,5 @@
 #pragma once
-#include "../init/include/util/Ktemplats.h"
+#include "init/util/Ktemplats.h"
 #include "abi/boot.h"
 #include <stdint.h>
 

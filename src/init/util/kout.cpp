@@ -1,6 +1,6 @@
-#include "../init/include/util/kout.h"
-#include "../init/include/util/textConsole.h"
-#include "../init/include/core_hardwares/PortDriver.h"
+#include "init/util/kout.h"
+#include "init/util/textConsole.h"
+#include "init/core_hardwares/PortDriver.h"
 #include "util/OS_utils.h"
 
 // 全局 hex_chars 表，避免 protected 访问问题

@@ -1,7 +1,7 @@
-#include "../init/include/heap_alloc.h"
+#include "init/heap_alloc.h"
 #include "util/OS_utils.h"
-#include "../init/include/init_linker_symbols.h"
-#include "../init/include/panic.h"
+#include "init/init_linker_symbols.h"
+#include "init/panic.h"
 
 // C++ 运行时桩实现 - 用于 freestanding 环境
 namespace {
