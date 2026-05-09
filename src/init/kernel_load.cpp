@@ -48,16 +48,16 @@ struct phdr_kernel_specify_param{
  * 用于后续匿名内存映射时的虚拟地址分配，从高地址开始向下单调分配
  * 注意：kernel_load 函数中内核段的加载不使用此机制，严格按照 ELF 声明的 VA 加载
  */
-constexpr uint64_t g_va_alloc_top = 0xFFFFFFFFFFFFF000ULL;  // 初始 VA 分配起点（高半空间顶部）
-uint64_t current_top = g_va_alloc_top;
+uint64_t g_va_alloc_base=0;
 uint64_t va_alloc(uint64_t size,uint8_t align_log2){
     if (align_log2 < 12) {
         align_log2 = 12;
     }
+    if(g_va_alloc_base==0)return 0;
     uint64_t alignment = 1ULL << align_log2;
-    size = align_up(size, alignment);
-    current_top = align_down(current_top - size, alignment);
-    return current_top;
+    uint64_t res=align_down(g_va_alloc_base, alignment);
+    g_va_alloc_base += size;
+    return res;
 }
 /**
  * @brief VM_interval_specifyid 分配系数

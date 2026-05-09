@@ -34,7 +34,7 @@ KURD_t test_basic_init() {
         .size=mem_max_phyaddr*sizeof(page)/4096,
         .VM_interval_specifyid=VM_ID_MEM_MAP
     };
-    init_to_kernel_info init_info{
+    init_to_kernel_header init_info{
         .phymem_segment_count = entry_count,
         .memory_map = memory_map_ptr,
         .loaded_VM_interval_count=1,

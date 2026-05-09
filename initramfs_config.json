@@ -1,0 +1,26 @@
+{
+  "variables": {
+    "PROJECT_ROOT": "/home/PS/PS_git/OS_pj_uefi/kernel"
+  },
+  "files": [
+    {
+      "dest_path": "/kernel.elf",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "kernel.elf"
+    },
+    {
+      "dest_path": "/ksymbols.bin",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "ksymbols.bin"
+    },
+    {
+      "dest_path": "/HZK24",
+      "src_base": "${PROJECT_ROOT}",
+      "src_relative_path": "HZK24"
+    }
+  ],
+  "out_put_path": {
+    "src_base": "${PROJECT_ROOT}",
+    "src_relative_path": "initramfs.img"
+  }
+}

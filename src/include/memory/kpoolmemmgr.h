@@ -187,7 +187,7 @@ public:
             uint64_t call_bits_seg_set_count;
             };
             hcbbitmap_statistics statistics;
-            int Init(loaded_VM_interval*first_static_heap_bitmap);//只有第一个堆的初始化会调用此函数，所以不用KURD
+            int Init();//只有第一个堆的初始化会调用此函数，所以不用KURD
             KURD_t second_stage_Init(
                 uint32_t entries_count
             );
@@ -220,7 +220,7 @@ public:
             uint64_t magic;
         };
         static_assert(sizeof(data_meta)==16,"data_meta size must be 16 bytes");
-        int first_linekd_heap_Init(loaded_VM_interval *first_static_heap, loaded_VM_interval *first_static_heap_bitmap);//只能由first_linekd_heap调用的初始化
+        int first_linekd_heap_Init();//只能由first_linekd_heap调用的初始化
         //用指针检验是不是那个特殊堆
         HCB_v2(uint32_t size,vaddr_t vbase);//给某个逻辑处理器初始化一个HCB
         HCB_v2();
@@ -293,7 +293,7 @@ public:
     // 实在不行就创建一个新对象
     static void clear(void *ptr); // 主要用于结构体清理内存，new一个结构体后用这个函数根据传入的起始地址查找堆的元信息表项，并把该元信息项对应的内存空间全部写0
     // 别用这个清理new之后的对象
-    static KURD_t Init(loaded_VM_interval *first_static_heap,loaded_VM_interval*first_static_heap_bitmap); // 真正的初始化，全局对象手动初始化函数，但是是全局单例，设计上都是依赖静态资源，理论上这个模块初始化不可能失败，不引入KURD
+    static KURD_t Init(); // 真正的初始化，全局对象手动初始化函数，但是是全局单例，设计上都是依赖静态资源，理论上这个模块初始化不可能失败，不引入KURD
     static KURD_t multi_heap_enable();
     static void kfree(void *ptr);
     static phyaddr_t get_phy(vaddr_t addr);

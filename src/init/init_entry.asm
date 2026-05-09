@@ -74,8 +74,10 @@ section .text
 %endmacro
 
 shift_kernel:
-    mov rax, [rdi+0x20]
-    mov cr3, rax
+    ; rdi = info_pbase (恒等映射内，可直接解引用)
+    ; rsi = stack_bottom (kernel.elf 的 BSP 栈底)
+    ; rdx = entry_vaddr (kernel.elf 入口高半虚拟地址)
+    ; CR3 已由 Phase 4.5 C 代码切换到 KMMU 页表
     mov rsp, rsi
     call rdx
 

@@ -54,9 +54,9 @@ KURD_t kpoolmemmgr_t::default_fatal()
     kurd=set_fatal_result_level(kurd);
     return  kurd;
 }
-KURD_t kpoolmemmgr_t::Init(loaded_VM_interval *first_static_heap, loaded_VM_interval *first_static_heap_bitmap)
+KURD_t kpoolmemmgr_t::Init()
 {
-    first_linekd_heap.first_linekd_heap_Init(first_static_heap,first_static_heap_bitmap);
+    first_linekd_heap.first_linekd_heap_Init();
     KURD_t success=default_success();
     return success;
 }

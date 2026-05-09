@@ -1,5 +1,5 @@
 #include "init/kernel_mmu.h"
-#include "init/pages_alloc.h"
+#include "init/page_allocator.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 // 类型别名，简化嵌套类型名的使用
 using pages_info_t = seg_to_pages_info_pakage_t::pages_info_t;
@@ -63,21 +63,23 @@ static inline uint64_t vinterval_end(const vinterval& inter)
 kernel_mmu::mmu_specify_allocator::mmu_specify_allocator()
 {
     // 向 basic_allocator 申请内存
-    phyaddr_t phys_addr = basic_allocator::pages_alloc(default_mgr_size, 12);
+    // default_mgr_size 是字节数, 需转为 4KB 页框数
+    phyaddr_t phys_addr = page_allocator::available_meminterval_probe(default_mgr_size >> 12, 12);
     
-    if (phys_addr == ~0ull) {
+    if (phys_addr == 0) {
         // 分配失败，初始化为无效值
         base = 0;
         size = 0;
         top = 0;
     } else {
+        phys_addr -= default_mgr_size;  // top → base
         base = phys_addr;
         size = default_mgr_size;
         top = base;
         
         // 标记这片内存为已使用
         mem_interval interval = {base, size};
-        basic_allocator::pages_set(interval, OS_KERNEL_DATA);
+        page_allocator::pages_set(interval, page_state_t::kernel_persisit);
     }
 }
 

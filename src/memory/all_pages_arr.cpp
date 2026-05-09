@@ -97,16 +97,17 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
     return result;
 }
 all_pages_arr dram_map;
-KURD_t all_pages_arr::Init(init_to_kernel_info *info)
+KURD_t all_pages_arr::Init(init_to_kernel_header *info)
 {
     KURD_t result;
-    phymem_segment*segs=info->memory_map;
+    phymem_segment*segs=(phymem_segment*)((uint64_t)info+info->memory_map_offset);
     uint64_t physegs_count=info->phymem_segment_count;
     loaded_VM_interval*mem_map_interval=nullptr;
     for(int i=0;i<info->loaded_VM_interval_count;i++)
     { 
-        if(info->loaded_VM_intervals[i].VM_interval_specifyid==VM_ID_MEM_MAP){
-            mem_map_interval=&info->loaded_VM_intervals[i];
+        loaded_VM_interval*lvi=(loaded_VM_interval*)((uint64_t)info+info->loaded_VM_intervals_offset);
+        if(lvi[i].VM_interval_specifyid==VM_ID_MEM_MAP){
+            mem_map_interval=&lvi[i];
         }
     }
     if(!mem_map_interval){
@@ -134,7 +135,7 @@ KURD_t all_pages_arr::Init(init_to_kernel_info *info)
             interval_idx++;
         }
     }
-    loaded_VM_interval*kintervals_base=info->loaded_VM_intervals;
+    loaded_VM_interval*kintervals_base=(loaded_VM_interval*)((uint64_t)info+info->loaded_VM_intervals_offset);
     for(int i=0;i<info->loaded_VM_interval_count;i++){
 
         const loaded_VM_interval& interval = kintervals_base[i];

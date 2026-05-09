@@ -148,7 +148,6 @@ int map_and_init_hpet(kernel_mmu* kmmu, load_kernel_info_pack& pak, EFI_SYSTEM_T
 
         RSDP_struct* rsdp = nullptr;
         EFI_GUID acpi20_guid = ACPI_20_TABLE_GUID;
-        EFI_GUID acpi10_guid = ACPI_TABLE_GUID;
         for (uint64_t i = 0; i < gST->NumberOfTableEntries; ++i) {
             EFI_CONFIGURATION_TABLE& t = gST->ConfigurationTable[i];
             if (is_guid_equal(t.VendorGuid, acpi20_guid)) {

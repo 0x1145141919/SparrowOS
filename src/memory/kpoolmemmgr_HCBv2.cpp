@@ -29,7 +29,10 @@ kpoolmemmgr_t::HCB_v2::HCB_v2(uint32_t size, vaddr_t vbase)
     this->vbase=vbase;
     ksetmem_8(&statistics,0,sizeof(HCB_statistics_t));
 }
-
+constexpr uint32_t default_first_heap_size=1<<22;
+constexpr uint32_t default_first_heap_bitmap_size=default_first_heap_size/128;
+uint8_t first_heap[1<<22];
+uint8_t first_heap_bitmap[default_first_heap_bitmap_size];
 namespace {
 static inline uint32_t size_bucket_index(uint32_t size)
 {
@@ -64,11 +67,11 @@ kpoolmemmgr_t::HCB_v2::HCB_bitmap_error_code_t kpoolmemmgr_t::HCB_v2::HCB_bitmap
     }
     return kpoolmemmgr_t::HCB_v2::HCB_bitmap_error_code_t::SUCCESS;
 }
-int kpoolmemmgr_t::HCB_v2::HCB_bitmap::Init(loaded_VM_interval *first_static_heap_bitmap)
+int kpoolmemmgr_t::HCB_v2::HCB_bitmap::Init()
 {
-    bitmap=(uint64_t*)first_static_heap_bitmap->vbase;
+    bitmap=(uint64_t*)first_heap_bitmap;
     bitmap_used_bit=0;
-    bitmap_size_in_64bit_units=first_static_heap_bitmap->size/sizeof(uint64_t);
+    bitmap_size_in_64bit_units=default_first_heap_bitmap_size/sizeof(uint64_t);
     byte_bitmap_base=(uint8_t*)bitmap;
     scan_cache.hint_u64_idx = invalid_cache;
     scan_cache.last_success_idx = invalid_cache;
@@ -920,12 +923,12 @@ kpoolmemmgr_t::HCB_v2::HCB_bitmap_error_code_t
     return SUCCESS;
 }
 
-int kpoolmemmgr_t::HCB_v2::first_linekd_heap_Init(loaded_VM_interval *first_static_heap, loaded_VM_interval *first_static_heap_bitmap)
+int kpoolmemmgr_t::HCB_v2::first_linekd_heap_Init()
 {
     bitmap_controller.Init(first_static_heap_bitmap);
-    vbase=first_static_heap->vbase;
+    vbase=(uint64_t)first_heap;
     phybase=first_static_heap->pbase;
-    total_size_in_bytes=first_static_heap->size;
+    total_size_in_bytes=default_first_heap_size;
     return OS_SUCCESS;
 }
 

@@ -114,6 +114,8 @@ void basic_allocator::reclaim_loader_and_boot_services()
             case EFI_LOADER_DATA:
             case EFI_BOOT_SERVICES_CODE:
             case EFI_BOOT_SERVICES_DATA:
+            case EFI_RUNTIME_SERVICES_CODE:
+            case EFI_RUNTIME_SERVICES_DATA:
                 desc.Type = freeSystemRam;
                 break;
             default:
@@ -463,11 +465,13 @@ int basic_allocator::Init(EFI_MEMORY_DESCRIPTORX64* memory_map_ptr, uint16_t ent
         pure_mem_view[idx].type = static_cast<PHY_MEM_TYPE>(desc.Type);
         ++idx;
     }
-    for(idx=pure_view_entry_count-1;idx>=0;idx--)
-    {
-        if(pure_mem_view[idx].start==0x100000000&&pure_mem_view[idx].type==freeSystemRam)break;
-    }    
-    pure_view_entry_count=idx+1;
+    for(int64_t trim = (int64_t)pure_view_entry_count - 1; trim >= 0; trim--) {
+        if(pure_mem_view[trim].start == 0x100000000ULL &&
+           pure_mem_view[trim].type == freeSystemRam) {
+            pure_view_entry_count = (uint64_t)(trim + 1);
+            break;
+        }
+    }
     privious_alloc_end=0x100000;
     return 0;
 }

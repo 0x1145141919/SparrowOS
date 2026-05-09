@@ -33,6 +33,7 @@
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "arch/x86_64/PCIe/prased.h"
+#include "KImage_Introspection.h"
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
 // 定义C++运行时需要的符号
@@ -135,9 +136,10 @@ uint64_t VM_intervals_count;
 phymem_segment *phymem_segments;
 uint64_t phymem_segments_count; 
 uint32_t logical_processor_count;
-extern "C" void kernel_start(init_to_kernel_info* transfer) 
+extern "C" void kernel_start(init_to_kernel_header* transfer) 
 {   
     GlobalKernelStatus=kernel_state::EARLY_BOOT;
+    self_introspection_init(transfer->kIMG_self_window,transfer->kBSS_interval);
     logical_processor_count=transfer->logical_processor_count;
     int  Status=0;
     KURD_t bsp_init_kurd=KURD_t();

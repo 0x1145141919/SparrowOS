@@ -27,8 +27,33 @@ ExternalProject_Add(
     BUILD_IN_SOURCE TRUE   # 在源目录构建
 )
 
+# =====================================================
+# PlayOS UEFI Bootloader (EDK2)
+# =====================================================
+set(PLAYOSLOADER_DIR    ${CMAKE_SOURCE_DIR}/../edk2/PlayOSLoaderPkg)
+set(PLAYOSLOADER_OUT
+    ${PLAYOSLOADER_DIR}/BUILD/DEBUG_GCC5/X64/PlayOSLoaderPkg.efi)
+
+# 计算 edk2 根目录相对 cmake 源目录的路径（用于 source edksetup.sh）
+get_filename_component(EDK2_DIR ${CMAKE_SOURCE_DIR}/../edk2 ABSOLUTE)
+
+# 用 add_custom_command 将 bootloader 的输出与源文件绑定
+add_custom_command(
+    OUTPUT  ${PLAYOSLOADER_OUT}
+    COMMAND ${CMAKE_SOURCE_DIR}/build_bootloader.sh ${EDK2_DIR}
+
+    COMMENT "Building PlayOS UEFI bootloader"
+    WORKING_DIRECTORY ${EDK2_DIR}
+)
+
+add_custom_target(playos_loader
+    DEPENDS ${PLAYOSLOADER_OUT}
+)
+
 add_custom_target(kernel_resources
 )
+
+add_dependencies(kernel_resources playos_loader)
 
 add_custom_target(ksymbols
     COMMAND ${CMAKE_BINARY_DIR}/symbols_dumper
@@ -104,6 +129,7 @@ set(SRC_COMMON
 
 # 内核可执行文件
 add_executable(kernel.elf
+    src/KImage_Introspection.cpp
     src/utils/kshell_commands_regist.cpp
     src/arch/x86_64/panic.cpp
     src/arch/x86_64/boot/kinit.cpp
@@ -143,6 +169,7 @@ add_executable(init.elf
     src/init/util/textConsole.cpp
     src/init/pages_alloc.cpp
     src/init/page_allocator.cpp
+    src/init/initramfs_lookup.cpp
     src/init/panic.cpp
     src/init/util/kout.cpp
     src/utils/util.cpp

@@ -90,28 +90,33 @@ constexpr uint8_t UP_KSPACE_PDPT_ALIGN_LOG2 = 12;             // 4KB 对齐
 constexpr uint32_t VM_ID_HPET_MMIO = 0x2003;
 
 
-struct init_to_kernel_info {
+struct init_to_kernel_header {//这个信息包的头也应该是使用available_meminterval_probe分配的
     uint64_t magic;
     uint64_t self_pages_count;
-    void* gST_ptr;
-    uint64_t ksymbols_file_size;
-    phyaddr_t kmmu_root_table;
     phymem_segment kmmu_interval;
     uint64_t phymem_segment_count;
-    phymem_segment* memory_map;
+    uint64_t memory_map_offset;//相较于头的偏移量
     uint64_t loaded_VM_interval_count;
-    loaded_VM_interval* loaded_VM_intervals;
+    uint64_t loaded_VM_intervals_offset;//相较于头的偏移量
     uint64_t pass_through_device_info_count;
-    pass_through_device_info* pass_through_devices;
+    uint64_t pass_through_devices_offset;//相较于头的偏移量
     uint32_t logical_processor_count;
-    vm_interval kIMG_self_window;
-    vm_interval pages_arr;
-    vm_interval FPA_bitmaps;
-    vm_interval log_buffer;
-    vm_interval bsp_init_stack;
-    vm_interval kBSS_interval;
-    vm_interval symtable_file;
-    vm_interval initramfs_file;
-    void*arch_specify;
+    vm_interval kIMG_self_window;//内核自身连续物理地址需要被映射，使用available_meminterval_probe_keep
+    vm_interval kBSS_interval;//内核唯一的bss区连续，使用available_meminterval_probe_keep
+    vm_interval pages_arr;//直接用pages_allocator里面的页框数组但是清0,复用不转生
+    vm_interval FPA_bitmaps;//从phymem_segment* memory_map;解析可分配内存数目上限，一个页框2bit数据，使用available_meminterval_probe_keep
+    vm_interval log_buffer;//日志缓冲区，使用available_meminterval_probe
+    vm_interval kernel_entry_stack;//BSP初始化栈，使用available_meminterval_probe
+    vm_interval symtable_file;//符号表文件，使用available_meminterval_probe
+    vm_interval initramfs_file;//initramfs文件，使用available_meminterval_probe
+    vm_interval identity_map_window;//不但要[0,dram_top)进行va_alloc进行映射，而且要对于[16k,dram_top)进行WB+RWX的恒等映射
+    uint64_t arch_specify_offset;//相较于头的偏移量
 };
+/**
+ *  init_to_kernel_info信息包规范：init.elf传递给kernel.elf的信息包唯一一个物理地址
+ * 其指向的是一个连续的物理地址区间，规定这个物理地址区间的头部必然是init_to_kernel_header结构体。
+ * 设物理基址为p,显然（init_to_kernel_header*）head=p；获得信息包基址。
+ * 其中的_offset变量是相对于p的偏移量，比如loaded_VM_interval*physegs_arr=(loaded_VM_interval*)(p+head->loaded_VM_intervals_offset)
+ * 由是，若将相应的物理地址区间映射到一个虚拟地址区间，且虚拟地址区间基址为v时，则可以更换基址却照样可以映射
+ */
 
