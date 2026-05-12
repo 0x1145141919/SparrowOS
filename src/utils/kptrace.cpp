@@ -11,7 +11,7 @@ phyaddr_t ksymmanager::phybase;
  symbol_entry* ksymmanager::symbol_table;//虚拟地址
 uint32_t ksymmanager::entry_count;
 uint32_t ksymmanager::entry_size;
-int ksymmanager::Init(loaded_VM_interval* entry,uint64_t file_size)
+int ksymmanager::Init(vm_interval* entry,uint64_t file_size)
 {
     phybase = entry->pbase;
     virtbase = entry->vbase;

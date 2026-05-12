@@ -155,6 +155,7 @@ add_executable(kernel.elf
     ${SRC_COMMON}
     src/tests/kthreads/key_board_listen.cpp
     $<TARGET_OBJECTS:NVMe_module>
+    src/arch/x86_64/boot/mem_init.cpp
 )
 add_executable(init.elf
     src/init/init_init.cpp

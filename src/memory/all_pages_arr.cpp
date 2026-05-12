@@ -96,25 +96,17 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
 
     return result;
 }
-all_pages_arr dram_map;
-KURD_t all_pages_arr::Init(init_to_kernel_header *info)
+extern phymem_segment*phymem_segments;
+extern uint64_t phymem_segments_count; 
+KURD_t all_pages_arr::Init(vm_interval* pages_arr_interval)
 {
-    KURD_t result;
-    phymem_segment*segs=(phymem_segment*)((uint64_t)info+info->memory_map_offset);
-    uint64_t physegs_count=info->phymem_segment_count;
-    loaded_VM_interval*mem_map_interval=nullptr;
-    for(int i=0;i<info->loaded_VM_interval_count;i++)
-    { 
-        loaded_VM_interval*lvi=(loaded_VM_interval*)((uint64_t)info+info->loaded_VM_intervals_offset);
-        if(lvi[i].VM_interval_specifyid==VM_ID_MEM_MAP){
-            mem_map_interval=&lvi[i];
-        }
-    }
-    if(!mem_map_interval){
+    phymem_segment*segs=phymem_segments;
+    uint64_t physegs_count=phymem_segments_count;
+    if(!pages_arr_interval){
         return set_fatal_result_level(KURD_t());
     }
-    mem_map=(page*)mem_map_interval->vbase;
-    mem_map_entry_count=mem_map_interval->size/sizeof(page);
+    mem_map=(page*)pages_arr_interval->vbase;
+    mem_map_entry_count=pages_arr_interval->size/sizeof(page);
     for(int i=0;i<physegs_count;i++)
     {
         if(segs[i].type==PHY_MEM_TYPE::freeSystemRam){
@@ -135,20 +127,6 @@ KURD_t all_pages_arr::Init(init_to_kernel_header *info)
             interval_idx++;
         }
     }
-    loaded_VM_interval*kintervals_base=(loaded_VM_interval*)((uint64_t)info+info->loaded_VM_intervals_offset);
-    for(int i=0;i<info->loaded_VM_interval_count;i++){
-
-        const loaded_VM_interval& interval = kintervals_base[i];
-        page_state_t type = page_state_t::kernel_persisit;
-        bool allocatable = false;
-        if (interval.VM_interval_specifyid == VM_ID_GRAPHIC_BUFFER) {
-            continue;
-        }
-        result=simp_pages_set(interval.pbase, interval.size >> 12, type);
-    }
-    simp_pages_set(info->kmmu_interval.start, info->kmmu_interval.size >> 12, page_state_t::kernel_persisit);
-    simp_pages_set((phyaddr_t)info,info->self_pages_count, page_state_t::kernel_persisit);
-    PhyAddrAccessor::BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG=mem_map_entry_count<<12;
     return KURD_t();
 }
 KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, page_state_t TYPE)

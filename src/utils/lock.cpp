@@ -261,3 +261,29 @@ interrupt_guard::~interrupt_guard()
         disable_interrupts();
     }
 }
+spintrylock_spin_guard::spintrylock_spin_guard(spintrylock_cpp_t &lock)
+    : lock_ref(lock)
+{
+    lock_ref.lock();
+}
+spintrylock_spin_guard::~spintrylock_spin_guard()
+{
+    lock_ref.unlock();
+}
+spintrylock_try_guard::spintrylock_try_guard(spintrylock_cpp_t *lock)
+    : lock_ref(nullptr)
+{
+    if (lock && lock->try_lock()) {
+        lock_ref = lock;
+    }
+}
+bool spintrylock_try_guard::is_locked() const
+{
+    return lock_ref;
+}
+spintrylock_try_guard::~spintrylock_try_guard()
+{
+    if(lock_ref){
+        lock_ref->unlock();
+    }
+}

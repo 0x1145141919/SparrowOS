@@ -203,11 +203,29 @@ vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
     interrupt_guard g;
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
-    vaddr_t vbase=kspace_vm_table->alloc_available_space(interval->size,interval->pbase%0x40000000);
-    if(vbase==0){
-        fail.reason=FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
-        *kurd_out=fail;
-        return 0;
+    vaddr_t vbase;
+    bool was_vaddr_zero = (interval->vbase == 0);
+    if (!was_vaddr_zero) {
+        // 固定 VA 模式：调用方指定了虚拟地址
+        vbase = interval->vbase;
+        if (vbase < 0xFFFF800000000000ULL) {
+            fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+            *kurd_out = fail;
+            return 0;
+        }
+        if (vbase & 0xFFF) {
+            fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+            *kurd_out = fail;
+            return 0;
+        }
+    } else {
+        // 动态分配模式：从内核 VM 表分配 VA
+        vbase = kspace_vm_table->alloc_available_space(interval->size, interval->pbase % 0x40000000);
+        if (vbase == 0) {
+            fail.reason = FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
+            *kurd_out = fail;
+            return 0;
+        }
     }
     interval->vbase=vbase;
     VM_DESC new_desc={
@@ -217,7 +235,7 @@ vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
         .phys_start=interval->pbase,
         .access=interval->access,
         .committed_full=true,
-        .is_vaddr_alloced=true,
+        .is_vaddr_alloced=was_vaddr_zero,
     };
     int res=kspace_vm_table->insert(new_desc);
     if(res!=OS_SUCCESS){

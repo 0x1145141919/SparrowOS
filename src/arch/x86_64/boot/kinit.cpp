@@ -3,6 +3,7 @@
 #include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/core_hardwares/tsc.h"
+#include "arch/x86_64/mem_init.h"
 #include "kcirclebufflogMgr.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
@@ -16,6 +17,7 @@
 #include "memory/init_memory_info.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/AddresSpace.h"
+#include "memory/phyaddr_accessor.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 #include "ktime.h"
@@ -33,6 +35,7 @@
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "arch/x86_64/PCIe/prased.h"
+#include "arch/x86_64/boot.h"
 #include "KImage_Introspection.h"
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
@@ -123,83 +126,56 @@ void create_first_kthread(){
     x2apic::x2apic_driver::broadcast_exself_fixed_ipi(ipi_test);
     KURD_t kurd=KURD_t();
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
-    
     per_processor_scheduler&sc=global_schedulers[0];
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
-    asm volatile("cli");
     sc.sched();
 }
 
 extern "C" uint32_t assigned_cr3;
 loaded_VM_interval* VM_intervals;
-uint64_t VM_intervals_count;
-phymem_segment *phymem_segments;
-uint64_t phymem_segments_count; 
-uint32_t logical_processor_count;
-extern "C" void kernel_start(init_to_kernel_header* transfer) 
-{   
+GlobalBasicGraphicInfoType gop_info;
+XSDT_Table *XSDT;
+void very_early_init(init_to_kernel_header* transfer){
     GlobalKernelStatus=kernel_state::EARLY_BOOT;
     self_introspection_init(transfer->kIMG_self_window,transfer->kBSS_interval);
+    kpoolmemmgr_t::Init();
+    kIMG_self_window=transfer->kIMG_self_window;
+    kBSS_interval=transfer->kBSS_interval;
+    pages_arr=transfer->pages_arr;
+    FPA_bitmaps=transfer->FPA_bitmaps;
+    log_buffer=transfer->log_buffer;
+    kernel_entry_stack=transfer->kernel_entry_stack;
+    symtable_file=transfer->symtable_file;
+    initramfs_file=transfer->initramfs_file;
+    identity_map_window=transfer->identity_map_window;
+    x86_specify_init_to_kernel_info* arch=(x86_specify_init_to_kernel_info*)(uint64_t(transfer)+transfer->arch_specify_offset);
+    hpet_mmio=arch->hpet_mmio;
+    gop_info=arch->gop_info;
+    gop_buffer.vbase=arch->Gop_vbase;
+    gop_buffer.pbase=arch->gop_info.FrameBufferBase;
+    gop_buffer.size=arch->gop_info.FrameBufferSize;
+    gop_buffer.access={1,1,1,0,1,WC};
     logical_processor_count=transfer->logical_processor_count;
+    VM_intervals=new loaded_VM_interval[transfer->loaded_VM_interval_count];
+    ksystemramcpy((void*)(uint64_t(transfer)+transfer->loaded_VM_intervals_offset),VM_intervals,transfer->loaded_VM_interval_count*sizeof(loaded_VM_interval));
+    phymem_segments=new phymem_segment[transfer->phymem_segment_count];
+    ksystemramcpy((void*)(uint64_t(transfer)+transfer->memory_map_offset),phymem_segments,transfer->phymem_segment_count*sizeof(phymem_segment));
+    VM_intervals_count=transfer->loaded_VM_interval_count;
+    phymem_segments_count=transfer->phymem_segment_count;
+}
+extern "C" void kernel_start(init_to_kernel_header* transfer) 
+{   
+    very_early_init(transfer);
+    transfer=nullptr;//此信息包是属于阅后即焚
     int  Status=0;
     KURD_t bsp_init_kurd=KURD_t();
-    pass_through_device_info*tfg=nullptr;
-    loaded_VM_interval*hpet_mmio_interval,*graphic_buffer,*logbuffer,*first_heap,*first_heap_bitmap,*BCBs_bitmap,*kspaceUPpdpt,*ksymbols;
-    for(uint64_t i=0;i<transfer->pass_through_device_info_count;i++){
-        if(transfer->pass_through_devices[i].device_info==PASS_THROUGH_DEVICE_GRAPHICS_INFO){
-            tfg=(pass_through_device_info*)&transfer->pass_through_devices[i];
-        }
-    }
-    for(uint64_t i=0;i<transfer->loaded_VM_interval_count;i++){
-        switch (transfer->loaded_VM_intervals[i].VM_interval_specifyid)
-        {
-        case VM_ID_BSP_INIT_STACK:
-            
-            break;
-        
-        case VM_ID_FIRST_HEAP_BITMAP:
-            first_heap_bitmap = &transfer->loaded_VM_intervals[i];
-            break;
-        
-        case VM_ID_FIRST_HEAP:
-            first_heap = &transfer->loaded_VM_intervals[i];
-            break;
-        
-        case VM_ID_LOGBUFFER:
-            logbuffer = &transfer->loaded_VM_intervals[i];
-            break;
-        
-        case VM_ID_KSYMBOLS:
-            ksymbols = &transfer->loaded_VM_intervals[i];
-            break;
-        
-        case VM_ID_UP_KSPACE_PDPT:
-            kspaceUPpdpt = &transfer->loaded_VM_intervals[i];
-            break;
-        
-        case VM_ID_GRAPHIC_BUFFER:
-            graphic_buffer = &transfer->loaded_VM_intervals[i];
-            break;
-        case VM_ID_BCBS_BITMAPS:
-            BCBs_bitmap = &transfer->loaded_VM_intervals[i];
-            break;
-        case VM_ID_HPET_MMIO:
-            hpet_mmio_interval=&transfer->loaded_VM_intervals[i];
-            break;
-        default:
-            // 未知的 VM interval，可以选择忽略或记录日志
-            break;
-        }
-    }
-    bsp_init_kurd=GfxPrim::Init((GlobalBasicGraphicInfoType*)tfg->specify_data,*graphic_buffer);//要开发直接写图形缓冲区的接口
+    bsp_init_kurd=GfxPrim::Init(&gop_info,gop_buffer);//要开发直接写图形缓冲区的接口
     if(error_kurd(bsp_init_kurd)){
         asm volatile("hlt");
     }
-    ksymmanager::Init(ksymbols,transfer->ksymbols_file_size);  
-    kpoolmemmgr_t::Init(first_heap,first_heap_bitmap);  
-    readonly_timer=new HPET_driver_only_read_time_stamp(hpet_mmio_interval);
-    global_gST=(EFI_SYSTEM_TABLE*)transfer->gST_ptr;
-    DmesgRingBuffer::Init(logbuffer);
+    ksymmanager::Init(&symtable_file,symtable_file.size);  
+    readonly_timer=new HPET_driver_only_read_time_stamp(&hpet_mmio);
+    DmesgRingBuffer::Init(&log_buffer);
     Vec2i font_vec={.x=16, .y=32};
     bsp_init_kurd=textconsole_GoP::Init(&ter16x32_data[0][0][0],font_vec,0x00ffffffff,0);
     textconsole_GoP::Clear();
@@ -212,192 +188,20 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
         bsp_kout<<"InitialKernelShellControler Failed\n";return ;
     }
     bsp_kout<<"Kernel Shell Initialed Success\n";
-    VM_intervals=new loaded_VM_interval[transfer->loaded_VM_interval_count];
-    ksystemramcpy(transfer->loaded_VM_intervals,VM_intervals,transfer->loaded_VM_interval_count*sizeof(loaded_VM_interval));
-    phymem_segments=new phymem_segment[transfer->phymem_segment_count];
-    ksystemramcpy(transfer->memory_map,phymem_segments,transfer->phymem_segment_count*sizeof(phymem_segment));
-    VM_intervals_count=transfer->loaded_VM_interval_count;
-    phymem_segments_count=transfer->phymem_segment_count;
     GlobalKernelStatus=kernel_state::PANIC_WILL_ANALYZE;
     Panic::will_check();
-    if(transfer->kmmu_root_table>=0x100000000){
-        bsp_kout<<"Kernel Mmu Root Table is not in low memory"<<kendl;return;
-    }
-    asm volatile("sfence");
-    assigned_cr3=transfer->kmmu_root_table;
-    bsp_init_kurd=all_pages_arr::Init(transfer);
+    bsp_init_kurd=mem_init();
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;return;
+        bsp_kout<<"mem_init Failed"<<kendl;
+        return;
     }
-    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,BCBs_bitmap);//传入一个loaded_VM_entry
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;return;
-    }
-    bsp_init_kurd=KspacePageTable::Init(kspaceUPpdpt);
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"KspaceMapMgr Init Failed"<<kendl;return;
-    }
-    gKernelSpace=new AddressSpace();
-    for(uint64_t i=0;i<transfer->phymem_segment_count;i++){
-        bsp_kout<<"[INFO] phymem_segment["<<i<<"]: start=0x"
-                <<HEX<<transfer->memory_map[i].start
-                <<", size=0x"<<HEX<<(transfer->memory_map[i].size)
-                <<", type=";
-        
-        // 打印内存类型
-        switch(transfer->memory_map[i].type){
-            case EFI_RESERVED_MEMORY_TYPE:
-                bsp_kout<<"EFI_RESERVED"; break;
-            case EFI_LOADER_CODE:
-                bsp_kout<<"EFI_LOADER_CODE"; break;
-            case EFI_LOADER_DATA:
-                bsp_kout<<"EFI_LOADER_DATA"; break;
-            case EFI_BOOT_SERVICES_CODE:
-                bsp_kout<<"EFI_BOOT_SERVICES_CODE"; break;
-            case EFI_BOOT_SERVICES_DATA:
-                bsp_kout<<"EFI_BOOT_SERVICES_DATA"; break;
-            case EFI_RUNTIME_SERVICES_CODE:
-                bsp_kout<<"EFI_RUNTIME_SERVICES_CODE"; break;
-            case EFI_RUNTIME_SERVICES_DATA:
-                bsp_kout<<"EFI_RUNTIME_SERVICES_DATA"; break;
-            case freeSystemRam:
-                bsp_kout<<"freeSystemRam"; break;
-            case EFI_UNUSABLE_MEMORY:
-                bsp_kout<<"EFI_UNUSABLE"; break;
-            case EFI_ACPI_RECLAIM_MEMORY:
-                bsp_kout<<"EFI_ACPI_RECLAIM"; break;
-            case EFI_ACPI_MEMORY_NVS:
-                bsp_kout<<"EFI_ACPI_NVS"; break;
-            case EFI_MEMORY_MAPPED_IO:
-                bsp_kout<<"EFI_MMIO"; break;
-            case EFI_MEMORY_MAPPED_IO_PORT_SPACE:
-                bsp_kout<<"EFI_MMIO_PORT"; break;
-            case EFI_PAL_CODE:
-                bsp_kout<<"EFI_PAL_CODE"; break;
-            case EFI_PERSISTENT_MEMORY:
-                bsp_kout<<"EFI_PERSISTENT"; break;
-            case EFI_UNACCEPTED_MEMORY_TYPE:
-                bsp_kout<<"EFI_UNACCEPTED"; break;
-            case EFI_MAX_MEMORY_TYPE:
-                bsp_kout<<"EFI_MAX_TYPE"; break;
-            case OS_KERNEL_DATA:
-                bsp_kout<<"OS_KERNEL_DATA"; break;
-            case OS_KERNEL_CODE:
-                bsp_kout<<"OS_KERNEL_CODE"; break;
-            case OS_KERNEL_STACK:
-                bsp_kout<<"OS_KERNEL_STACK"; break;
-            case OS_HARDWARE_GRAPHIC_BUFFER:
-                bsp_kout<<"OS_GFX_BUFFER"; break;
-            case ERROR_FAIL_TO_FIND:
-                bsp_kout<<"ERROR_NOT_FOUND"; break;
-            case OS_ALLOCATABLE_MEMORY:
-                bsp_kout<<"OS_ALLOCATABLE"; break;
-            case OS_RESERVED_MEMORY:
-                bsp_kout<<"OS_RESERVED"; break;
-            case OS_PGTB_SEGS:
-                bsp_kout<<"OS_PGTABLE"; break;
-            case OS_MEMSEG_HOLE:
-                bsp_kout<<"OS_HOLE"; break;
-            default:
-                if(transfer->memory_map[i].type >= MEMORY_TYPE_OEM_RESERVED_MIN && 
-                   transfer->memory_map[i].type <= MEMORY_TYPE_OEM_RESERVED_MAX){
-                    bsp_kout<<"OEM_RESERVED(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
-                } else if(transfer->memory_map[i].type >= MEMORY_TYPE_OS_RESERVED_MIN && 
-                          transfer->memory_map[i].type <= MEMORY_TYPE_OS_RESERVED_MAX){
-                    bsp_kout<<"OS_RESERVED_EXT(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
-                } else {
-                    bsp_kout<<"UNKNOWN(0x"<<HEX<<static_cast<uint32_t>(transfer->memory_map[i].type)<<")";
-                }
-                
-                break;
-        }
-        bsp_kout<<DEC<<kendl;
-    }
-    bsp_init_kurd=gKernelSpace->second_stage_init();//传入trasfer,特殊重载，要接手相关内存
-    bsp_init_kurd=[&]()->KURD_t{
-        KURD_t kurd=KURD_t();
-        pgaccess WB_ACCESS={
-                .is_kernel=1,
-                .is_writeable=1,
-                .is_readable=1,
-                .is_executable=0,
-                .is_global=0,
-                .cache_strategy=WB
-            };
-        pgaccess UC_ACCESS={
-                .is_kernel=1,
-                .is_writeable=1,
-                .is_readable=1,
-                .is_executable=0,
-                .is_global=0,
-                .cache_strategy=UC
-            };
-        pgaccess WB_RX_ACCESS{
-            .is_kernel=1,
-                .is_writeable=1,
-                .is_readable=0,
-                .is_executable=1,
-                .is_global=0,
-                .cache_strategy=WB
-        };
-        VM_DESC identity_map_template={
-            .start=0,
-            .end=0,
-            .map_type=VM_DESC::MAP_PHYSICAL,
-            .phys_start=0,
-            .access=WB_ACCESS,
-            .committed_full=1,
-            .is_vaddr_alloced=1,
-            .is_out_bound_protective=0,
-            .SEG_SIZE_ONLY_UES_IN_BASIC_SEG=0xffffffffffffffff
-        };
-        for(uint64_t i=0;i<phymem_segments_count;i++){
-            identity_map_template.start=phymem_segments[i].start;
-            identity_map_template.phys_start=phymem_segments[i].start;
-            identity_map_template.end=phymem_segments[i].size+phymem_segments[i].start;
-            if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_MEMORY_MAPPED_IO||
-            phymem_segments[i].type==PHY_MEM_TYPE::EFI_ACPI_MEMORY_NVS||
-            phymem_segments[i].type==PHY_MEM_TYPE::EFI_RESERVED_MEMORY_TYPE){
-                identity_map_template.access=UC_ACCESS;
-            }else if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_RUNTIME_SERVICES_CODE){
-                identity_map_template.access=WB_RX_ACCESS;
-            }else if(phymem_segments[i].type==PHY_MEM_TYPE::EFI_RUNTIME_SERVICES_DATA){
-                identity_map_template.access=WB_ACCESS;
-            }
-            kurd=gKernelSpace->enable_VM_desc(identity_map_template);
-            
-            if(error_kurd(kurd))return kurd;
-        }
-        for(uint64_t i=0;i<VM_intervals_count;i++){
-            if(VM_intervals[i].VM_interval_specifyid<VM_ID_architecture_agnostic_base){
-                if(VM_intervals[i].vbase<0xffff800000000000){
-                    identity_map_template.start=VM_intervals[i].vbase;
-            identity_map_template.phys_start=VM_intervals[i].pbase;
-            identity_map_template.end=VM_intervals[i].vbase+align_up(VM_intervals[i].size,4096);
-            identity_map_template.access=VM_intervals[i].access;
-            kurd=gKernelSpace->enable_VM_desc(identity_map_template);
-            if(error_kurd(kurd))return kurd;
-                }
-            }
-        }
-        return kurd;
-    }();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"identity map fail"<<kendl;return;
-    }
-    Status=EFI_RT_SVS::Init((EFI_SYSTEM_TABLE*)transfer->gST_ptr);
+    
     gAcpiVaddrSapceMgr.Init(global_gST);
-    gKernelSpace->unsafe_load_pml4_to_cr3(KERNEL_SPACE_PCID);
-    GlobalKernelStatus=kernel_state::MM_READY;
     bsp_init_kurd=idt_vec_dispatch_mgr::Init(logical_processor_count);
     x86_smp_processors_container::regist_core(0);
     ktime::heart_beat_alarm::processor_regist();
     bsp_kout<<now<<"BSP online"<<kendl;
     gAnalyzer=new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
-    bsp_init_kurd=kpoolmemmgr_t::multi_heap_enable();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"Kpoolmemmgr_t::multi_heap_enable Failed"<<kendl;
-    }
     bsp_init_kurd=x86_smp_processors_container::AP_Init_one_by_one();
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug"<<kendl;

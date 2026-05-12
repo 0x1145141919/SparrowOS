@@ -12,6 +12,6 @@ private:
     static uint64_t tailIndex;
     static spinrwlock_cpp_t rwlock;
 public:
-    static void Init(loaded_VM_interval*logbuffer);
+    static void Init(vm_interval*logbuffer);
     static void putsk(char *str,uint64_t len_in_bytes);
 };

@@ -195,6 +195,7 @@ constexpr alloc_flags_t default_flags={
 struct buddy_alloc_params{
     uint64_t numa;//不支持，暂时
     uint64_t try_lock_always_try:1;//多BCB的架构下，会尝试多次获取锁，失败次数过高会失败返回繁忙重试，这个标志位为1则永远尝试直到成功获取锁
+    uint64_t must_down_4gb:1;
     uint8_t align_log2;
 };
 constexpr buddy_alloc_params BUDDY_ALLOC_DEFAULT_FLAG{
@@ -205,6 +206,13 @@ constexpr buddy_alloc_params BUDDY_ALLOC_DEFAULT_FLAG{
 constexpr buddy_alloc_params BUDDY_ALLOC_ALWAYS_TRY{
     .numa = 0,
     .try_lock_always_try = 1,
+    .must_down_4gb = 0,
+    .align_log2 = 12
+};
+constexpr buddy_alloc_params BUDDY_ALLOC_DOWN_4GB{
+    .numa = 0,
+    .try_lock_always_try = 0,
+    .must_down_4gb = 1,
     .align_log2 = 12
 };
 struct phymem_segment {
@@ -225,6 +233,10 @@ struct vm_interval{
     phyaddr_t pbase;
     uint64_t size;
     pgaccess access;
+};
+struct vm_interval_payload{
+    vm_interval interval;
+    uint64_t is_fixed_property:1;
 };
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, VM_DESC vmentry);
 extern loaded_VM_interval* VM_intervals;

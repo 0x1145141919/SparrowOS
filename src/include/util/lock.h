@@ -109,3 +109,20 @@ public:
 
     void unlock();
 };
+class spintrylock_spin_guard{
+    spintrylock_cpp_t& lock_ref;
+    public:
+    explicit spintrylock_spin_guard(spintrylock_cpp_t& lock);
+    spintrylock_spin_guard(const spintrylock_spin_guard&) = delete;
+    spintrylock_spin_guard&operator=(const spintrylock_spin_guard&)=delete;
+    ~spintrylock_spin_guard();
+};
+class spintrylock_try_guard{
+    spintrylock_cpp_t* lock_ref;
+    public:
+    explicit spintrylock_try_guard(spintrylock_cpp_t* lock);
+    spintrylock_try_guard(const spintrylock_try_guard&) = delete;
+    spintrylock_try_guard&operator=(const spintrylock_try_guard&)=delete;
+    bool is_locked() const;
+    ~spintrylock_try_guard();
+};

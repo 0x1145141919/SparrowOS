@@ -3,76 +3,65 @@
 #include <cstring>
 
 // ============================================================================
-// 最小化 ELF64 结构体（无 elf.h，自给自足）
-// ============================================================================
-struct Elf64_Ehdr {
-    uint8_t  e_ident[16];
-    uint16_t e_type;
-    uint16_t e_machine;
-    uint32_t e_version;
-    uint64_t e_entry;
-    uint64_t e_phoff;
-    uint64_t e_shoff;
-    uint32_t e_flags;
-    uint16_t e_ehsize;
-    uint16_t e_phentsize;
-    uint16_t e_phnum;
-    uint16_t e_shentsize;
-    uint16_t e_shnum;
-    uint16_t e_shstrndx;
-};
-
-struct Elf64_Shdr {
-    uint32_t sh_name;       // .shstrtab 中的偏移
-    uint32_t sh_type;
-    uint64_t sh_flags;
-    uint64_t sh_addr;       // 虚拟地址（非 ALLOC 则为 0）
-    uint64_t sh_offset;     // 文件偏移
-    uint64_t sh_size;
-    uint32_t sh_link;
-    uint32_t sh_info;
-    uint64_t sh_addralign;
-    uint64_t sh_entsize;
-};
-
-// ELF 常量
-static const uint32_t SHT_NULL     = 0;
-static const uint32_t SHT_PROGBITS = 1;
-static const uint32_t SHT_NOBITS   = 8;
-static const uint32_t SHT_NOTE     = 7;
-static const uint32_t SHF_ALLOC    = 2;
-
-// NOTE 条目头部
-struct Elf64_Nhdr {
-    uint32_t n_namesz;      // 名字长度（含结尾 \0，对齐到 4 字节）
-    uint32_t n_descsz;      // 描述大小（对齐到 4 字节）
-    uint32_t n_type;        // 类型
-};
-
-// NOTE 类型
-static const uint32_t NT_GNU_BUILD_ID = 3;
-
-// ============================================================================
 // 内部状态
 // ============================================================================
 vm_interval KImage, Kbss;
 
-// 最大支持的节数（kernel.elf 目前 22 个节）
-static const uint64_t MAX_SECTIONS = 64;
-static kimg_section   sg_sections[MAX_SECTIONS];
-static uint64_t        sg_section_count = 0;
-static const char*    sg_shstrtab      = nullptr;  // .shstrtab 在 vaddr 空间的地址
+// Shdr 表在文件镜像中的原始指针（init 时记录，无需深拷贝）
+static const Elf64_Shdr* sg_shdr_table  = nullptr;
+static uint64_t          sg_shdr_count  = 0;
+static const char*       sg_shstrtab    = nullptr;  // .shstrtab 在 vaddr 空间的地址
+
+// Phdr 表
+static const Elf64_Phdr* sg_phdr_table  = nullptr;
+static uint64_t          sg_phdr_count  = 0;
 
 // ============================================================================
-// init — 解析 ELF 节头表
+// phdr_type_str / phdr_type_from_name — 程序头类型名 ↔ 数值
+// ============================================================================
+static const char* phdr_type_str(uint32_t p_type) {
+    switch (p_type) {
+        case PT_NULL:    return "PT_NULL";
+        case PT_LOAD:    return "PT_LOAD";
+        case PT_DYNAMIC: return "PT_DYNAMIC";
+        case PT_INTERP:  return "PT_INTERP";
+        case PT_NOTE:    return "PT_NOTE";
+        case PT_SHLIB:   return "PT_SHLIB";
+        case PT_PHDR:    return "PT_PHDR";
+        case PT_TLS:     return "PT_TLS";
+        case PT_GNU_EH_FRAME: return "PT_GNU_EH_FRAME";
+        case PT_GNU_STACK:    return "PT_GNU_STACK";
+        case PT_GNU_RELRO: return "PT_GNU_RELRO";
+        default:          return "PT_UNKNOWN";
+    }
+}
+
+static uint32_t phdr_type_from_name(const char* name) {
+    if (!name) return ~0U;
+    if (strcmp(name, "PT_LOAD") == 0)    return PT_LOAD;
+    if (strcmp(name, "PT_DYNAMIC") == 0) return PT_DYNAMIC;
+    if (strcmp(name, "PT_INTERP") == 0)  return PT_INTERP;
+    if (strcmp(name, "PT_NOTE") == 0)    return PT_NOTE;
+    if (strcmp(name, "PT_TLS") == 0)     return PT_TLS;
+    if (strcmp(name, "PT_NULL") == 0)    return PT_NULL;
+    if (strcmp(name, "PT_GNU_EH_FRAME") == 0) return PT_GNU_EH_FRAME;
+    if (strcmp(name, "PT_GNU_STACK") == 0)    return PT_GNU_STACK;
+    return ~0U;
+}
+
+// ============================================================================
+// init — 解析 ELF 节头表和程序头表
 // ============================================================================
 void self_introspection_init(vm_interval KImage_, vm_interval Kbss_) {
     KImage = KImage_;
     Kbss   = Kbss_;
 
-    sg_section_count = 0;
+    sg_shdr_table = nullptr;
+    sg_shdr_count = 0;
+    sg_shstrtab   = nullptr;
+    sg_phdr_table = nullptr;
+    sg_phdr_count = 0;
 
-    // KImage.vbase = kIMG_self_window 的 vaddr（覆盖整个 kernel.elf 文件）
     uint64_t file_base = KImage.vbase;
     const auto* ehdr = reinterpret_cast<const Elf64_Ehdr*>(file_base);
 
@@ -83,90 +72,123 @@ void self_introspection_init(vm_interval KImage_, vm_interval Kbss_) {
         return;
     }
 
-    uint64_t shoff     = ehdr->e_shoff;
-    uint16_t shnum     = ehdr->e_shnum;
-    uint16_t shentsize = ehdr->e_shentsize;
-    uint16_t shstrndx  = ehdr->e_shstrndx;
+    bsp_kout << "[KImage] ELF entry=0x" << ehdr->e_entry
+             << " phoff=0x" << ehdr->e_phoff << " phnum=" << ehdr->e_phnum
+             << " shoff=0x" << ehdr->e_shoff << " shnum=" << ehdr->e_shnum << kendl;
 
-    if (shnum > MAX_SECTIONS) shnum = MAX_SECTIONS;
+    // ---- 1. 程序头表 ----
+    {
+        sg_phdr_table = reinterpret_cast<const Elf64_Phdr*>(file_base + ehdr->e_phoff);
+        sg_phdr_count = ehdr->e_phnum;
 
-    // 先解析 .shstrtab 自身
-    const auto* shdr_arr = reinterpret_cast<const Elf64_Shdr*>(file_base + shoff);
-    const auto& shstr_sh = shdr_arr[shstrndx];
-    sg_shstrtab = reinterpret_cast<const char*>(file_base + shstr_sh.sh_offset);
+        for (uint64_t i = 0; i < sg_phdr_count; i++) {
+            const auto& ph = sg_phdr_table[i];
+            if (ph.p_type == PT_NULL && ph.p_memsz == 0) continue;
 
-    // 遍历所有节
-    for (uint16_t i = 0; i < shnum; i++) {
-        const auto& sh = shdr_arr[i];
-        auto& out = sg_sections[sg_section_count];
-        out.name    = (sh.sh_type != SHT_NULL) ? (sg_shstrtab + sh.sh_name) : "";
-        out.vaddr   = sh.sh_addr;
-        out.size    = sh.sh_size;
-        out.file_off = sh.sh_offset;
-        out.flags   = sh.sh_flags;
-        sg_section_count++;
+            bsp_kout << "[KImage] phdr " << i << ": "
+                     << phdr_type_str(ph.p_type)
+                     << " v=0x" << ph.p_vaddr
+                     << " p=0x" << ph.p_paddr
+                     << " filesz=0x" << ph.p_filesz
+                     << " memsz=0x" << ph.p_memsz << kendl;
+        }
+    }
 
-        if (sh.sh_type != SHT_NULL) {
+    // ---- 2. 节头表 ----
+    {
+        sg_shdr_table = reinterpret_cast<const Elf64_Shdr*>(file_base + ehdr->e_shoff);
+        sg_shdr_count = ehdr->e_shnum;
+
+        // 定位 .shstrtab
+        if (ehdr->e_shstrndx < sg_shdr_count) {
+            const auto& strtab_sh = sg_shdr_table[ehdr->e_shstrndx];
+            sg_shstrtab = reinterpret_cast<const char*>(file_base + strtab_sh.sh_offset);
+        }
+
+        for (uint64_t i = 0; i < sg_shdr_count; i++) {
+            const auto& sh = sg_shdr_table[i];
+            if (sh.sh_type == SHT_NULL && sh.sh_size == 0) continue;
+
+            const char* sh_name = (sg_shstrtab) ? (sg_shstrtab + sh.sh_name) : "";
+
             bsp_kout << "[KImage] section " << i << ": "
-                     << out.name << " vaddr=0x" << out.vaddr
-                     << " off=0x" << out.file_off
-                     << " size=0x" << out.size << kendl;
+                     << sh_name << " vaddr=0x" << sh.sh_addr
+                     << " off=0x" << sh.sh_offset
+                     << " size=0x" << sh.sh_size << kendl;
         }
     }
 }
 
 // ============================================================================
-// get_KImage_sections — 返回所有节信息
+// 节头表查询
 // ============================================================================
-const kimg_section* get_KImage_sections(uint64_t* out_count) {
-    if (out_count) *out_count = sg_section_count;
-    return sg_sections;
+const Elf64_Shdr* get_KImage_sections(uint64_t* out_count) {
+    if (out_count) *out_count = sg_shdr_count;
+    return sg_shdr_table;
 }
 
-// ============================================================================
-// 按名字查找节
-// ============================================================================
-static const kimg_section* find_section(const char* name) {
-    for (uint64_t i = 0; i < sg_section_count; i++) {
-        if (std::strcmp(sg_sections[i].name, name) == 0)
-            return &sg_sections[i];
+const Elf64_Shdr* get_KImage_section(const char* name) {
+    if (!name || !sg_shstrtab) return nullptr;
+    for (uint64_t i = 0; i < sg_shdr_count; i++) {
+        const auto& sh = sg_shdr_table[i];
+        if (sh.sh_type == SHT_NULL) continue;
+        if (strcmp(sg_shstrtab + sh.sh_name, name) == 0)
+            return &sg_shdr_table[i];
     }
     return nullptr;
 }
 
 // ============================================================================
-// get_KImage_comment — 返回 .comment 节字符串
+// 程序头表查询
 // ============================================================================
-const char* get_KImage_comment() {
-    auto* sh = find_section(".comment");
-    if (!sh || sh->size == 0) return nullptr;
-    return reinterpret_cast<const char*>(KImage.vbase + sh->file_off);
+const Elf64_Phdr* get_KImage_phdrs(uint64_t* out_count) {
+    if (out_count) *out_count = sg_phdr_count;
+    return sg_phdr_table;
+}
+
+const Elf64_Phdr* get_KImage_phdr_by_type(uint32_t p_type) {
+    for (uint64_t i = 0; i < sg_phdr_count; i++) {
+        if (sg_phdr_table[i].p_type == p_type)
+            return &sg_phdr_table[i];
+    }
+    return nullptr;
+}
+
+const Elf64_Phdr* get_KImage_phdr_by_name(const char* type_name) {
+    uint32_t ptype = phdr_type_from_name(type_name);
+    if (ptype == ~0U) return nullptr;
+    return get_KImage_phdr_by_type(ptype);
 }
 
 // ============================================================================
-// get_KImage_note — 按名字在 NOTE 节中查找条目
-//
-// NOTE 节格式：
-//   [Elf64_Nhdr][name 对齐到 4B][desc 对齐到 4B]
-//   ...
+// .comment 节
+// ============================================================================
+const char* get_KImage_comment() {
+    auto* sh = get_KImage_section(".comment");
+    if (!sh || sh->sh_size == 0) return nullptr;
+    return reinterpret_cast<const char*>(KImage.vbase + sh->sh_offset);
+}
+
+// ============================================================================
+// NOTE 条目遍历
 // ============================================================================
 const void* get_KImage_note(const char* name, uint64_t* out_size) {
-    auto* sh = find_section(".note");
-    if (!sh || sh->size == 0) return nullptr;
+    auto* sh = get_KImage_section(".note");
+    if (!sh || sh->sh_size == 0) return nullptr;
 
-    const uint8_t* base = reinterpret_cast<const uint8_t*>(KImage.vbase + sh->file_off);
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(KImage.vbase + sh->sh_offset);
     uint64_t pos = 0;
 
-    while (pos + sizeof(Elf64_Nhdr) <= sh->size) {
+    while (pos + sizeof(Elf64_Nhdr) <= sh->sh_size) {
         const auto* nhdr = reinterpret_cast<const Elf64_Nhdr*>(base + pos);
-        uint32_t namesz = (nhdr->n_namesz + 3) & ~3;   // 对齐到 4
+        uint32_t namesz = (nhdr->n_namesz + 3) & ~3;
         uint32_t descsz = (nhdr->n_descsz + 3) & ~3;
         uint64_t next   = pos + sizeof(Elf64_Nhdr) + namesz + descsz;
 
-        if (next > sh->size) break;
+        if (next > sh->sh_size) break;
 
         const char* entry_name = reinterpret_cast<const char*>(base + pos + sizeof(Elf64_Nhdr));
-        if (nhdr->n_namesz > 0 && std::strcmp(entry_name, name) == 0) {
+        if (nhdr->n_namesz > 0 && strcmp(entry_name, name) == 0) {
             if (out_size) *out_size = nhdr->n_descsz;
             return base + pos + sizeof(Elf64_Nhdr) + namesz;
         }
@@ -175,15 +197,12 @@ const void* get_KImage_note(const char* name, uint64_t* out_size) {
     return nullptr;
 }
 
-// ============================================================================
-// get_KImage_build_id — 获取 .note.gnu.build-id
-// ============================================================================
 const void* get_KImage_build_id(uint64_t* out_size) {
     return get_KImage_note("GNU", out_size);
 }
 
 // ============================================================================
-// 以下为已有接口（保持不变）
+// 已有接口保留
 // ============================================================================
 bool is_bss_vaddr(vaddr_t vaddr) {
     return (vaddr >= Kbss.vbase && vaddr < Kbss.vbase + Kbss.size);
@@ -196,7 +215,5 @@ phyaddr_t get_KImage_base() {
 phyaddr_t get_phyaddr_for_Kbss(vaddr_t vaddr) {
     if (!is_bss_vaddr(vaddr)) return 0;
     uint64_t offset = vaddr - Kbss.vbase;
-    if (Kbss.pbase != 0)
-        return Kbss.pbase + offset;
-    return 0;
+    return (Kbss.pbase != 0) ? (Kbss.pbase + offset) : 0;
 }

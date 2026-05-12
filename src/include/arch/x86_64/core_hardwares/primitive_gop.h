@@ -101,7 +101,7 @@ public:
     };
 
     // 唯一入口
-    static KURD_t Init(GlobalBasicGraphicInfoType* metainf,loaded_VM_interval interval);
+    static KURD_t Init(GlobalBasicGraphicInfoType* metainf,vm_interval interval);
     static bool Ready();
     static const Info GetInfo();
     static void* BackBuffer();

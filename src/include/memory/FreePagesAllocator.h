@@ -14,7 +14,12 @@ struct fpa_stats {
     uint64_t alloc_fail;
     uint64_t lock_try_fail;
     uint64_t free_count;
-    };
+};
+
+enum fpa_state_t : uint8_t {
+    FPA_STATE_SEED,   // Init 完成，BCB 就绪，仅 interval_pollute 可用
+    FPA_STATE_ACTIVE  // unlock() 后，alloc/free/interval_clean 可用
+};
 namespace MEMMODULE_LOCAIONS{
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR=28;
     
@@ -23,7 +28,7 @@ namespace MEMMODULE_LOCAIONS{
         constexpr uint8_t EVENT_CODE_INIT= 0;
         constexpr uint8_t EVENT_CODE_INIT_SECOND_STAGE = 1;
         constexpr uint8_t EVENT_CODE_ALLOC = 2;
-        namespace INIT_SECOND_STAGE_RESULTS_CODE{
+        namespace INIT_RESULTS_CODE{
             namespace FATAL_REASONS_CODE{
                 constexpr uint16_t FAIL_NO_AVALIABLE_MEM= 1;
                 constexpr uint16_t FAIL_THREAD_COUNT_ZERO= 2;
@@ -52,6 +57,11 @@ namespace MEMMODULE_LOCAIONS{
         namespace FREE_RESULTS_CODE{
             namespace FAIL_REASONS_CODE{
                 constexpr  uint16_t FAIL_REASON_CODE_BASE_NOT_BELONG=1;
+            }
+        }
+        namespace CALL_VIOLATION_RESULTS_CODE{
+            namespace FATAL_REASONS_CODE{
+                constexpr uint16_t CALL_VIOLATION=1;
             }
         }
     }
@@ -189,15 +199,6 @@ public:
             );
             ~mixed_bitmap_t();
         };
-
-#ifdef REPALY_MODE
-        void replay_internal_init();
-        void replay_internal_mark_split(uint8_t order, uint64_t idx);
-        void replay_internal_mark_free(uint8_t order, uint64_t idx);
-        KURD_t replay_validate_node(uint8_t order, uint64_t idx, const char* tag);
-
-        Ktemplats::kernel_bitmap* order_Internal_bitmap[DESINGED_MAX_SUPPORT_ORDER];
-#endif
         friend mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr);
         mixed_bitmap_t* order_freepage_existency_bitmaps; // 这个位图编码为 1 表示这个 order 的对应引索的页面是存在的，反之不存在
         uint64_t order_bases[DESINGED_MAX_SUPPORT_ORDER]; // 在 mixed_bitmap_t 里面各 order 的引索基址
@@ -227,13 +228,10 @@ public:
         void print_bitmap_info_no_lock();
         void print_bitmap_order_info_compress_no_lock(uint8_t order);
         void print_bitmap_order_interval_compress_no_lock(uint8_t order, uint64_t base, uint64_t length);
-#ifdef REPALY_MODE
-        KURD_t replay_validate_tree_no_lock(const char* tag);
-#endif
 
     public:
         bool is_bcb_avaliable();
-        bool dirty;//这个位是在init.elf中移植的时候受多BCB框架下
+        uint64_t dirty_count;
         uint8_t get_max_order();
         friend all_pages_arr;
         void print_basic_info();
@@ -293,15 +291,18 @@ public:
     static KURD_t default_error();
     static KURD_t default_fatal();
     static KURD_t default_retry();
+    static fpa_state_t state;
     public:
-    static KURD_t second_stage(strategy_t strategy);
-    static KURD_t Init(strategy_t strategy,loaded_VM_interval* VM_intervals_bcbs_bitmap);
+    static KURD_t Init(strategy_t strategy,vm_interval* VM_intervals_bcbs_bitmap);
     static all_pages_arr::free_segs_t* get_memory_crumbs();
     static phyaddr_t alloc(uint64_t size, buddy_alloc_params params,page_state_t interval_type,KURD_t&kurd);//params只有在
     static KURD_t free(phyaddr_t base, uint64_t size);
     static fpa_stats get_fpa_stats();//当前本地 CPU 的统计数据，必须在 second_stage 初始化完成后才可以调用，否则行为未定义
     static fpa_stats get_fpa_stats(uint64_t pid);//pid 为处理器 id，必须在 second_stage 初始化完成后才可以调用，否则行为未定义，不提供锁保护
     static fpa_stats get_fpa_stats_all();//所有统计信息的总计，除 bcb_scan_max 是取最大，其他字段是求和，不在锁保护下
+    static void activate();       // SEED → ACTIVE；ACTIVE 下调无操作
+    static void interval_pollute(phymem_segment seg);
+    static void interval_clean(phymem_segment seg);
     static constexpr uint64_t INVALID_ALLOC_BASE = ~0ULL;
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();

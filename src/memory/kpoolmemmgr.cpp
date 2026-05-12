@@ -71,7 +71,7 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
         fail.reason=MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_ALREADY_ENABLED;
         return fail;
     }
-    uint64_t processor_count=gAnalyzer->processor_x64_list->size();
+    uint64_t processor_count=logical_processor_count;
     if(processor_count==0){
         fail.reason=MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_BAD_PROCESSOR_COUNT;
         return fail;
@@ -102,7 +102,7 @@ KURD_t kpoolmemmgr_t::alloc_heap(uint32_t idx)
     KURD_t fail=default_fail();
     success.event_code=MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
     fail.event_code=MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
-    uint64_t processor_count=gAnalyzer->processor_x64_list->size();
+    uint64_t processor_count=logical_processor_count;
     uint64_t hcb_count=processor_count*(1<<PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
     if(idx>=hcb_count){
         fail.reason=MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_IDX_OUT_OF_RANGE;

@@ -50,7 +50,7 @@ KURD_t GfxPrim::default_fatal()
     return kurd;
 }
 
-KURD_t GfxPrim::Init(GlobalBasicGraphicInfoType *metainf, loaded_VM_interval interval)
+KURD_t GfxPrim::Init(GlobalBasicGraphicInfoType *metainf, vm_interval interval)
 {
     s_info.format = metainf->pixelFormat;
     s_info.width=metainf->horizentalResolution;

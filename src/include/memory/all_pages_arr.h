@@ -96,7 +96,7 @@ class all_pages_arr{
     
     static free_segs_t*free_segs_get();
     static void subtb_alloc_shift_pages_way();    
-    static KURD_t Init(init_to_kernel_header*info);
+    static KURD_t Init(vm_interval* pages_arr_interval);
     page* operator[](phyaddr_t phyaddr);
     /**
      * 设置内部的类的页面类型为TYPE，refcoutn为1,没有其它任何隐式行为

@@ -16,7 +16,9 @@ KURD_t FreePagesAllocator::BuddyControlBlock::default_success()
 }
 bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
 {
-
+    if (dirty_count != 0) {
+        return false;
+    }
     for(uint8_t current_order=order;current_order<=max_supprt_order;++current_order){
         if(statistics.free_count[current_order]>0){
             return true;
@@ -65,121 +67,6 @@ KURD_t FreePagesAllocator::BuddyControlBlock::default_kurd()
 {
     return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK,0,0,err_domain::CORE_MODULE);
 }
-#ifdef REPALY_MODE
-void FreePagesAllocator::free_pages_in_seg_control_block::replay_internal_init()
-{
-    for (uint8_t order = 0; order < DESINGED_MAX_SUPPORT_ORDER; ++order) {
-        order_Internal_bitmap[order] = nullptr;
-    }
-    for (uint8_t order = 1; order <= MAX_SUPPORT_ORDER && order < DESINGED_MAX_SUPPORT_ORDER; ++order) {
-        order_Internal_bitmap[order] = new Ktemplats::kernel_bitmap(1ULL << (MAX_SUPPORT_ORDER - order));
-    }
-}
-
-void FreePagesAllocator::free_pages_in_seg_control_block::replay_internal_mark_split(uint8_t order, uint64_t idx)
-{
-    if (order == 0 || order >= DESINGED_MAX_SUPPORT_ORDER) return;
-    if (order_Internal_bitmap[order]) {
-        order_Internal_bitmap[order]->bit_set(idx, true);
-    }
-}
-
-void FreePagesAllocator::free_pages_in_seg_control_block::replay_internal_mark_free(uint8_t order, uint64_t idx)
-{
-    if (order == 0 || order >= DESINGED_MAX_SUPPORT_ORDER) return;
-    if (order_Internal_bitmap[order]) {
-        order_Internal_bitmap[order]->bit_set(idx, false);
-    }
-}
-
-KURD_t FreePagesAllocator::free_pages_in_seg_control_block::replay_validate_node(uint8_t order, uint64_t idx, const char* tag)
-{
-    namespace REPLAY_FATAL = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::REPLAY_VALIDATE_RESULTS_CODE::FATAL_REASONS_CODE;
-    auto make_success = [this]() {
-        KURD_t kurd = default_success();
-        kurd.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_REPLAY_VALIDATE;
-        return kurd;
-    };
-    auto make_fatal = [this](uint16_t reason) {
-        KURD_t kurd = default_fatal();
-        kurd.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_REPLAY_VALIDATE;
-        kurd.reason = reason;
-        return kurd;
-    };
-    if (order > MAX_SUPPORT_ORDER) {
-        bsp_kout<< "Replay validate invalid order at " << tag << kendl;
-        return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_INVALID_ORDER);
-    }
-    const uint64_t count = 1ULL << (MAX_SUPPORT_ORDER - order);
-    if (idx >= count) {
-        bsp_kout<< "Replay validate invalid index at " << tag << kendl;
-        return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_INVALID_INDEX);
-    }
-
-    bool parent_free = order_freepage_existency_bitmaps->bit_get(order_bases[order] + idx);
-    bool parent_internal = false;
-    if (order > 0) {
-        if (!order_Internal_bitmap[order]) {
-            bsp_kout<< "Replay validate missing internal bitmap at " << tag << kendl;
-            return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_INTERNAL_BITMAP_MISSING);
-        }
-        parent_internal = order_Internal_bitmap[order]->bit_get(idx);
-    }
-    if (parent_free && parent_internal) {
-        bsp_kout<< "Replay validate conflict parent free/internal at " << tag << kendl;
-        return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_INTERNAL_CONFLICT);
-    }
-    if (order == 0) {
-        return make_success();
-    }
-
-    const uint64_t left_idx = idx << 1;
-    const uint64_t right_idx = left_idx + 1;
-    bool left_free = order_freepage_existency_bitmaps->bit_get(order_bases[order - 1] + left_idx);
-    bool right_free = order_freepage_existency_bitmaps->bit_get(order_bases[order - 1] + right_idx);
-    bool left_internal = false;
-    bool right_internal = false;
-    if (order > 1) {
-        if (!order_Internal_bitmap[order - 1]) {
-            bsp_kout<< "Replay validate missing internal bitmap at " << tag << kendl;
-            return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_INTERNAL_BITMAP_MISSING);
-        }
-        left_internal = order_Internal_bitmap[order - 1]->bit_get(left_idx);
-        right_internal = order_Internal_bitmap[order - 1]->bit_get(right_idx);
-    }
-
-    if (parent_free) {
-        if (left_free || right_free || left_internal || right_internal) {
-            bsp_kout<< "Replay validate parent free but child used at " << tag << kendl;
-            return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_PARENT_FREE_CHILD_USED);
-        }
-        return make_success();
-    }
-    if (!parent_internal) {
-        if (left_free || right_free || left_internal || right_internal) {
-            bsp_kout<< "Replay validate parent used but child used at " << tag << kendl;
-            return make_fatal(REPLAY_FATAL::FAIL_REASON_CODE_PARENT_USED_CHILD_USED);
-        }
-        return make_success();
-    }
-
-    KURD_t left_res = replay_validate_node(order - 1, left_idx, tag);
-    if (!success_all_kurd(left_res)) return left_res;
-    KURD_t right_res = replay_validate_node(order - 1, right_idx, tag);
-    return right_res;
-}
-
-KURD_t FreePagesAllocator::free_pages_in_seg_control_block::replay_validate_tree_no_lock(const char* tag)
-{
-    return replay_validate_node(MAX_SUPPORT_ORDER, 0, tag ? tag : "replay_validate_tree");
-}
-
-KURD_t FreePagesAllocator::free_pages_in_seg_control_block::replay_validate_tree(const char* tag)
-{
-    bcb_lock_guard_t guard(lock);
-    return replay_validate_tree_no_lock(tag);
-}
-#endif
 uint8_t FreePagesAllocator::BuddyControlBlock::get_max_order()
 {
 

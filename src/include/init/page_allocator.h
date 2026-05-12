@@ -83,7 +83,7 @@ private:
     static uint64_t  mem_map_page_count;
     static phyaddr_t mem_map_pbase;
     static uint64_t  mem_map_bytes;
-    static phyinterval_t* mem_map_intervals;
+    static phyinterval_t* mem_map_intervals;//区间数组的成员随引索上升而
     static uint64_t       mem_map_intervals_count;
     static uint64_t       free_pages;
     static phyaddr_t       dram_top_addr;

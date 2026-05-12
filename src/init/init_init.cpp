@@ -290,10 +290,10 @@ static void phase_3a_load_kernel(kernel_mmu* kmmu, BootInfoHeader* header) {
     // ---- 5. kIMG_self_window: 整个 kernel.elf 文件映射窗口 ----
     uint64_t ws = align_up(kelf_sz, 4096);
     vaddr_t wv = va_alloc(ws, 21);
-    pgaccess wa = {1,1,1,1,1,WB};
+    pgaccess wa = {1,1,1,0,1,WB};
     if (kmmu->map({g_kimg_pbase, wv, ws}, wa)) {
         bsp_kout << "[Phase3a] kIMG_window map fail" << kendl; asm volatile("hlt"); }
-    g_kIMG_self_window = {wv, g_kimg_pbase, ws, wa};
+    g_kIMG_self_window = {wv, g_kimg_pbase, kelf_sz, wa};
 
     bsp_kout << "[Phase3a] done: kIMG 0x" << g_kimg_pbase << "->0x" << wv
              << " kBSS p=0x" << g_kBSS_interval.pbase
@@ -393,7 +393,7 @@ static void phase_3b_load_intervals(kernel_mmu* kmmu, BootInfoHeader* header) {
             ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
             vaddr_t v = va_alloc_up(sz, 21);
             kmmu->map({p, v, sz}, {1,1,0,0,1,WB});  // RW, no X
-            g_symtable_file = {v, p, sz, {1,1,0,0,1,WB}};
+            g_symtable_file = {v, p, sym_sz, {1,1,0,0,1,WB}};
             bsp_kout << "[Phase3b] symtable: p=0x" << p << " v=0x" << v << kendl;
         }
     }
@@ -434,47 +434,6 @@ static void phase_3b_load_intervals(kernel_mmu* kmmu, BootInfoHeader* header) {
                                  {1,1,1,1,0,WB}};
         bsp_kout << "[Phase3b] identity_window: [0x4000, 0x" << top << ")" << kendl;
     }
-
-    // ---- first_heap (probe_keep) ----
-    {
-        uint64_t sz = FIRST_HEAP_SIZE_CONST;
-        phyaddr_t p = page_allocator::available_meminterval_probe_keep(sz >> 12, 21);
-        if (!p) { bsp_kout << "heap OOM" << kendl; asm volatile("hlt"); }
-        page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
-        ksetmem_8((void*)(uint64_t)p, 0, sz);
-        vaddr_t v = va_alloc_up(sz, 21);
-        kmmu->map({p, v, sz}, {1,1,1,0,1,WB});
-        add_extra(p, v, sz, VM_ID_FIRST_HEAP, {1,1,1,0,1,WB});
-        bsp_kout <<HEX<< "[Phase3b] first_heap: p=0x" << p << " v=0x" << v << kendl;
-    }
-
-    // ---- first_heap_bitmap (probe_keep) ----
-    {
-        uint64_t sz = FIRST_HEAP_BITMAP_SIZE;
-        phyaddr_t p = page_allocator::available_meminterval_probe_keep(sz >> 12, 12);
-        if (!p) { bsp_kout << "heap_bmp OOM" << kendl; asm volatile("hlt"); }
-        page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
-        ksetmem_8((void*)(uint64_t)p, 0, sz);
-        vaddr_t v = va_alloc_up(sz, 12);
-        kmmu->map({p, v, sz}, {1,1,1,0,1,WB});
-        add_extra(p, v, sz, VM_ID_FIRST_HEAP_BITMAP, {1,1,1,0,1,WB});
-        bsp_kout <<HEX<< "[Phase3b] first_heap_bmp: p=0x" << p << " v=0x" << v << kendl;
-    }
-
-    // ---- kspaceUPpdpt (probe) ----
-    {
-        uint64_t sz = UP_KSPACE_PDPT_SIZE;
-        phyaddr_t p = page_allocator::available_meminterval_probe(sz >> 12, 12);
-        if (!p) { bsp_kout << "uppdpt OOM" << kendl; asm volatile("hlt"); }
-        p -= sz;  // top → base
-        page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
-        ksetmem_8((void*)(uint64_t)p, 0, sz);
-        vaddr_t v = va_alloc_up(sz, 12);
-        kmmu->map({p, v, sz}, {1,1,1,0,1,WB});
-        add_extra(p, v, sz, VM_ID_UP_KSPACE_PDPT, {1,1,1,0,1,WB});
-        bsp_kout <<HEX<< "[Phase3b] kspaceUPpdpt: p=0x" << p << " v=0x" << v << kendl;
-    }
-
     // ---- x86 arch_specify ----
     // GOP
     for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {

@@ -161,7 +161,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         }else{
             
             phyaddr_t entry_to_alloc_phybase=0;
-            entry_to_alloc_phybase= FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,contain);
+            entry_to_alloc_phybase= FreePagesAllocator::alloc(_4KB_SIZE, (this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, contain);
             if(!entry_to_alloc_phybase||error_kurd(contain)) return 0;
             
             // 初始化新分配的页表内存为0
@@ -1059,7 +1059,7 @@ KURD_t AddressSpace::second_stage_init()
     flags.force_first_linekd_heap=true;
     flags.align_log2=12;
     KURD_t contain=KURD_t();
-    pml4_phybase=FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,contain);
+    pml4_phybase=FreePagesAllocator::alloc(_4KB_SIZE, (this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, contain);
     if(pml4_phybase==0||error_kurd(contain))return contain;
     for(uint16_t i=0;i<256;i++){
         PhyAddrAccessor::writeu64(

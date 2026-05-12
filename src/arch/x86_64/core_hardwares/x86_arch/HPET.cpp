@@ -4,15 +4,11 @@
 #include "memory/AddresSpace.h"
 #include "util/OS_utils.h"
 HPET_driver_only_read_time_stamp*readonly_timer=nullptr;
-HPET_driver_only_read_time_stamp::HPET_driver_only_read_time_stamp(loaded_VM_interval* entry)
+HPET_driver_only_read_time_stamp::HPET_driver_only_read_time_stamp(vm_interval* entry)
 {
-    if(entry->VM_interval_specifyid!=VM_ID_HPET_MMIO){
-        //panic
-    }
     phy_reg_base=entry->pbase;
     virt_reg_base=entry->vbase;
     hpet_timer_period_fs=atomic_read32_rmb((void*)(virt_reg_base+HPET::regs::offset_General_Capabilities_and_ID+4));
-
 }
 KURD_t HPET_driver_only_read_time_stamp::default_kurd()
 {

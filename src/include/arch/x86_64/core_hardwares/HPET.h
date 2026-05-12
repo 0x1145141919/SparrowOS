@@ -76,7 +76,7 @@ class HPET_driver_only_read_time_stamp {
     KURD_t default_kurd();
     KURD_t default_success();
     public:
-    HPET_driver_only_read_time_stamp(loaded_VM_interval* entry);
+    HPET_driver_only_read_time_stamp(vm_interval* entry);
     ~HPET_driver_only_read_time_stamp();
     uint64_t get_time_stamp_in_mius();
 };

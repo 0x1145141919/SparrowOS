@@ -3,6 +3,7 @@
 #include "memory/FreePagesAllocator.h"
 #include "memory/AddresSpace.h"
 #include "linker_symbols.h"
+#include "KImage_Introspection.h"
 #include "abi/os_error_definitions.h"
 #include "util/OS_utils.h"
 #include "panic.h"
@@ -925,9 +926,9 @@ kpoolmemmgr_t::HCB_v2::HCB_bitmap_error_code_t
 
 int kpoolmemmgr_t::HCB_v2::first_linekd_heap_Init()
 {
-    bitmap_controller.Init(first_static_heap_bitmap);
+    bitmap_controller.Init();
     vbase=(uint64_t)first_heap;
-    phybase=first_static_heap->pbase;
+    phybase=get_phyaddr_for_Kbss((vaddr_t)first_heap);
     total_size_in_bytes=default_first_heap_size;
     return OS_SUCCESS;
 }

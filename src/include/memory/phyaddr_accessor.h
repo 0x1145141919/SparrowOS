@@ -8,12 +8,13 @@ class PhyAddrAccessor {
     static phyaddr_t init_pgtb_root;
     static VM_DESC BASIC_DESC;
     static VM_DESC cache_tb[CACHE_VMDESC_MAX];
-    static bool is_init_cr3();
     public:
     #ifdef USER_MODE
     PhyAddrAccessor();
     #endif
+    static void Init(vm_interval basic_desc);
     static uint8_t readu8(phyaddr_t addr);
+    static bool paddr_memcpy(phyaddr_t dest,phyaddr_t src,uint64_t size);
     static uint16_t readu16(phyaddr_t addr);
     static uint32_t readu32(phyaddr_t addr);
     static uint64_t readu64(phyaddr_t addr);

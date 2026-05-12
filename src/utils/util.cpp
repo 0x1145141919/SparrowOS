@@ -50,7 +50,10 @@ uint8_t log2_up(uint64_t value) {
     }
     return result;
 }
-
+uint64_t alignup_and_shift_right(uint64_t value, uint8_t align_log2)
+{
+    return align_up(value, 1ull<<align_log2)>>align_log2;
+}
 uint64_t format_num_to_buffer(char* out, uint64_t raw, num_format_t format, numer_system_select radix)
 {
     if (!out) return 0;

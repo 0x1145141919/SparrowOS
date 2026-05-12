@@ -9,7 +9,7 @@ char* DmesgRingBuffer::buff = nullptr;
 uint64_t DmesgRingBuffer::buffSize = 0;
 uint64_t DmesgRingBuffer::tailIndex = 0;
 spinrwlock_cpp_t DmesgRingBuffer::rwlock;
-void DmesgRingBuffer::Init(loaded_VM_interval*logbuffer)
+void DmesgRingBuffer::Init(vm_interval*logbuffer)
 {
     rwlock.write_lock();
     buff= (char*)logbuffer->vbase;

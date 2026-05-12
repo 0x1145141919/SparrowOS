@@ -14,6 +14,7 @@
 #include "util/kout.h"
 #include "memory/init_memory_info.h"
 #include "arch/x86_64/Interrupt_system/Interrupt.h"
+#include "KImage_Introspection.h"
 #ifdef USER_MODE
 #include <elf.h>
 #include <stdio.h>
@@ -39,7 +40,8 @@ static inline KspacePageTableStatisitcs* kpt_stat_for_current_cpu()
 void invalidate_tlb_by_vaddr(vaddr_t vaddr){
     asm volatile("invlpg (%0)" ::"r"(vaddr) : "memory");
 }
-PageTableEntryUnion*KspacePageTable::kspaceUPpdpt;
+PageTableEntryUnion *KspacePageTable::kspaceUPpdpt;
+alignas(4096) uint64_t kspace_up_half[256*512];
 shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
 KURD_t KspacePageTable::default_kurd()
 {
@@ -64,77 +66,14 @@ KURD_t KspacePageTable::default_fatal()
     kurd=set_fatal_result_level(kurd);
     return kurd;
 }
-KURD_t KspacePageTable::Init(loaded_VM_interval* kspace_up_layer)
+KURD_t KspacePageTable::Init()
 {
     KURD_t success=default_success();
-    KURD_t fail=default_failure();
-  success.event_code=MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INIT;
-    fail.event_code=MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INIT;
-    kspace_uppdpt_phyaddr=kspace_up_layer->pbase;
-    kspaceUPpdpt=(PageTableEntryUnion*)kspace_up_layer->vbase;
+    kspace_uppdpt_phyaddr=get_phyaddr_for_Kbss((vaddr_t)kspace_up_half);
+    kspaceUPpdpt=(PageTableEntryUnion*)kspace_up_half;
     kspace_vm_table=new kspace_vm_table_t();
-    KURD_t status=KURD_t();
-    uint64_t basic_seg_size=PhyAddrAccessor::BASIC_DESC.SEG_SIZE_ONLY_UES_IN_BASIC_SEG;
-    uint64_t intervals_count=VM_intervals_count;
-    loaded_VM_interval*interval_arr=VM_intervals;
     kspace_pagetable_statistics=new KspacePageTableStatisitcs[logical_processor_count];
-    for(uint64_t i=0;i<intervals_count;i++){
-        if(interval_arr[i].vbase>=PAGELV4_KSPACE_BASE){
-            vm_interval interval{
-                .vbase = interval_arr[i].vbase,
-                .pbase = interval_arr[i].pbase,
-                .size = interval_arr[i].size,
-                .access = interval_arr[i].access
-            };
-            status = enable_VMentry(interval);
-            if(error_kurd(status)){
-                return status;
-            }
-            VM_DESC desc{
-                .start = interval.vbase,
-                .end = interval.vbase + interval.size,
-                .map_type = VM_DESC::MAP_PHYSICAL,
-                .phys_start = interval.pbase,
-                .access = interval.access,
-                .committed_full = 1,
-                .is_vaddr_alloced = 0,
-                .is_out_bound_protective = 0,
-                .SEG_SIZE_ONLY_UES_IN_BASIC_SEG = 0
-            };
-            kspace_vm_table->insert(desc);
-        }
-    }
-    kspace_vm_table->all_node_print();
-
-    vaddr_t basic_vaddr = kspace_vm_table->alloc_available_space(basic_seg_size, 0);
-    if (basic_vaddr == 0) {
-        return fail;
-    }
-    vm_interval basic_interval{
-        .vbase = basic_vaddr,
-        .pbase = 0,
-        .size = basic_seg_size,
-        .access = PG_RW
-    };
-    status = enable_VMentry(basic_interval);
-    if (error_kurd(status)) {
-        return status;
-    }
-    PhyAddrAccessor::BASIC_DESC = VM_DESC{
-        .start = basic_vaddr,
-        .end = basic_vaddr + basic_seg_size,
-        .map_type = VM_DESC::MAP_PHYSICAL,
-        .phys_start = 0,
-        .access = PG_RW,
-        .committed_full = 1,
-        .is_vaddr_alloced = 1,
-        .is_out_bound_protective = 0,
-        .SEG_SIZE_ONLY_UES_IN_BASIC_SEG = basic_seg_size
-    };
-    kspace_vm_table->insert(PhyAddrAccessor::BASIC_DESC);
-
     return success;
-
 }
 void nonleaf_pgtbentry_flagsset(PageTableEntryUnion&entry){//内核态的是全局的，
     entry.raw=0;
