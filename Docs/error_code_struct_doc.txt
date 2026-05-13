@@ -1,0 +1,143 @@
+内核通用结果结构体Kernel Unified Result Descriptor (KURD)，V1.0.0
+概述：
+    设计理念以及目标：
+        由于内核是基于c/cpp的，那些标准的api都会返回一个数表示结果如何，之前是采用的错误码
+        本内核最开始是采用的unix错误码，使用宏，但是unix错误吗宏可读性太差，由此采用了自定义错误码
+        但是自定义错误码存在语义无序膨胀问题，有些程序写着写着就想复用语义上有偏差但是不完全合适的错误码
+        一般来说，描述一个事件需要至少一个需要，时间，地点，事件，结果，原因，时间可以通过时间子系统在任意代码中获取，
+        事件语义由调用者调用的函数/api知道，那么这个通用消息需要传递的信息就是"地点"，“结果”，“原因”这三个字段，以及额外的标记错误域/事件等级的信息
+        为解决问题，考虑到64位的普遍支持，我决定以在64位中划分结构体，将结果这个抽象概念分离出内核场景下的通用具体子概念
+abi定义：
+    跨语言版本：
+    result:[0:3]
+    reason:[4:15]
+    in_module_location:[16:23]
+    module_code:[24:31]
+    free_to_use:[32:47]
+    event_code:[48:55]
+    level:[56:58]
+    domain:[59:63]
+字段描述：
+
+
+domain：
+    表明结果属于哪个语义上的域，编码范围从0~31
+namespace err_domain {
+    constexpr uint8_t INVALID = 0;
+    constexpr uint8_t CORE_MODULE = 1;
+    constexpr uint8_t ARCH = 2;
+    constexpr uint8_t USER = 3;
+    constexpr uint8_t HYPERVISOR = 4;
+    constexpr uint8_t OUT_MODULES = 16;//更大的是外部模块
+    constexpr uint8_t FILE_SYSTEM = 17;
+    constexpr uint8_t HARDWARE = 18;
+};
+这个字段是属于整个内核语义的
+module_code：
+    表明结果属于哪个模块domain 是 ABI 级别稳定字段，module_code 是内核实现级字段
+    namespace module_code {
+    constexpr uint8_t INVALID = 0;
+    constexpr uint8_t MEMORY = 1;
+    constexpr uint8_t SCHEDULER = 2;
+    constexpr uint8_t INTERRUPT = 3;
+    constexpr uint8_t FIRMWARE = 4;
+    constexpr uint8_t VFS = 5;
+    constexpr uint8_t VMM = 6;
+    constexpr uint8_t INFRA = 7;  //基础设施，比如内核特供strlen,strcmp这种，不过基础设施的接口简单，不容得向外传递KURD,只允许这多级别语义进行规范
+    constexpr uint8_t DEVICES = 8;//允许生死/插拔的硬件
+    constexpr uint8_t DEVICES_CORE = 9;//系统设计上启动时必须找到/加载的硬件，不允许也不会设计卸载，panic路径中仍可使用的硬件，现行包括lapic,ioapic,重映射硬件pcie根复合体以及根端口，hpet,uart,i8042.
+    constexpr uint8_t HARDWARE_DEBUG = 10;
+    constexpr uint8_t USER_KERNEL_ABI = 11;
+    constexpr uint8_t TIME = 12;
+    constexpr uint8_t PANIC = 13;
+}
+    这里的模块是内核顶级设计上的模块，是属于全局内核空间的语义
+in_module_location：
+    表明结果属于哪个模块的哪个位置，是模块内部语义，但是全局规定0号是无效，不得使用
+    in_module_location 必须是模块内部稳定编号，比如模块内某重要巨型数据结构
+    设计规范上不得绑定源码行号、函数地址、编译期变化值
+reason：
+    表明出现这个结果的原因是如何，是<模块，模块内位置,事件，结果>下的语义,
+    不应在 reason 中编码事件、位置或模块信息。
+result:
+    表明这次操作在语义上是否完成 / 是否可继续，总计是4位，
+    namespace result_code {
+    constexpr uint16_t SUCCESS = 0;
+    constexpr uint16_t SUCCESS_BUT_SIDE_EFFECT = 1;
+    constexpr uint16_t PARTIAL_SUCCESS = 2;
+    constexpr uint16_t FAIL = 8;
+    constexpr uint16_t RETRY = 9;
+    constexpr uint16_t FATAL = 0xF;
+}这几个值是属于整个abi规范的，各<模块，模块内位置,事件>可以自行使用未占用的值规定语义，但是>=8是错误语义，<8是成功语义
+result 不直接决定系统处理策略（如 panic、重试或忽略），
+处理策略应结合 level、domain 及上下文共同决定。
+level：
+    表明结果对系统的影响程度如何，系统是否需要被告警、记录、升级处理全局abi规范，各模块不得使用非占用值
+    namespace level_code {
+    constexpr uint8_t INVALID = 0;
+    constexpr uint8_t INFO = 1;
+    constexpr uint8_t NOTICE = 2;
+    constexpr uint8_t WARNING = 3;
+    constexpr uint8_t ERROR = 4;
+    constexpr uint8_t FATAL = 5;
+}不得仅依据 level 判断操作是否成功或失败。
+free_to_use：
+    设计上是<模块，模块内位置,事件，结果，原因>下的语义，任意值皆可
+    但是从设计规范上，free_to_use 不得用于跨模块、跨 ABI 解释
+    只允许：资源 ID，计数器，索引，本模块调试上下文这种局部语义，而非全局语义如指针
+event_code:
+    模块内事件编号，是<模块，模块内位置>下的语义 ，全局abi规定0为生命周期初始化事件，0xFF为生命周期结束事件，剩下编码自由发挥
+内核通用结果结构体Kernel Unified Result Descriptor (KURD)的字符化打印解释交由kout进行，
+kout使用<<重载类型打印，但是kout只负责对全局abi的字段进行解释，<模块，模块内位置,事件，结果，原因，free_to_use>下的具体语义由每个模块自行解释，通过编译时/运行时机制注册
+模块内解释推荐按照<模块，模块内位置,事件，结果，原因，free_to_use>的字段打印解析，不管是全局abi还是模块内都涉及到表的打印，而
+namespace err_domain {
+    constexpr uint8_t INVALID = 0;
+    constexpr uint8_t CORE_MODULE = 1;
+    constexpr uint8_t ARCH = 2;
+    constexpr uint8_t USER = 3;
+    constexpr uint8_t HYPERVISOR = 4;
+    constexpr uint8_t OUT_MODULES = 8;
+    constexpr uint8_t FILE_SYSTEM = 9;
+    constexpr uint8_t HARDWARE = 10;
+};
+
+形如这种数据结构已经完全包含了对应层级的打印信息，推荐工作流中用llm直接生成代码，但是可能还涉及到是否有下一级的打印，下面是提示词示例：
+背景：
+内核通用结果结构体 Kernel Unified Result Descriptor (KURD) 采用
+<模块，模块内位置，事件，结果，原因，free_to_use> 六层语义模型。
+本任务仅涉及表驱动的打印解释代码生成，不涉及业务逻辑。
+
+已知信息：
+1. 当前层级对应一个命名空间，例如：
+   namespace memmodule_err_definitions::in_module_location_code
+2. 命名空间中包含若干 constexpr 编码常量（uint8_t / uint16_t）。
+3. 打印使用 bsp_kout<< 运算符（头文件 src/utils/kout.h）。
+4. 本函数仅在非 panic 路径调用，无需 SMP 同步，但必须 panic-safe（禁止分配内存、禁止锁）。
+
+任务：
+请根据给定命名空间中的编码常量，
+生成一个打印函数，函数签名必须为：
+
+    void __print_<命名空间全名展开>(uint64_t value)
+
+生成规则（必须严格遵守）：
+1. 使用 switch (value) + case 的形式进行分支，不允许使用数组、map、动态结构。
+2. 每个 case：
+   - 打印“[$层级简称:$该编码对应的稳定字符串标识]”（使用 << 直接输出字符串字面量）。
+   - 不得打印模块外或跨 ABI 语义。
+3. default 分支必须存在，打印 "unknown" 或等价占位字符串。
+4. 不得引入新的头文件、类型、宏或工具函数。
+5. 不得进行任何语义推断、合并或简化，仅按表展开。
+
+说明：
+- 本代码为模式化生成代码，后续将人工审查并可能手工调整。
+- 不需要考虑未来扩展，仅覆盖当前命名空间中已定义的编码。
+
+下一级打印（可选）：
+- 若该层级存在“下一级语义”（例如模块内位置 → 事件）：
+  - 在 case 内**仅以函数名形式尝试调用**下一级打印函数：
+      __print_<下一层命名空间>(...)
+  - 不判断其是否存在，不实现其逻辑，不递归设计。
+- 仅展开函数调用命名，LLM 不生成下一级逻辑。
+
+整个abi上保证module_code字段对应的模块是不会生命周期结束的，但是in_module_location乃至下面的事件的生命周期是模块管理，所以复杂度交由模块管理，解释函数交由模块实现

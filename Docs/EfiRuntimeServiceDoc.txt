@@ -1,0 +1,5 @@
+uefi运行时服务由EFI_RT_SVS提供
+在初始化的时候会尝试根据内存表注册运行时服务的内存
+由于setvirtualaddressmap函数过于阴间，
+本类在外部调用运行时服务时会自动无条件切换到gKernelSpace，并且不会切回
+外部调用者需要自行管理AddressSpace的切换

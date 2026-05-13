@@ -180,28 +180,22 @@ public:
             uint8_t order
         );
 
-        class mixed_bitmap_t : bitmap_t {
-        private:
-            uint64_t entry_count;
-            KURD_t default_kurd();
-            KURD_t default_success();
-            KURD_t default_error();
-            KURD_t default_fatal();
-
+        class mixed_bitmap_v2 : bitmap_t {
+            uint8_t out_order = 0;
         public:
             using bitmap_t::bit_set;
             using bitmap_t::bit_get;
-            mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr);
-            void mixedbitmap_base_specify(vaddr_t bitmap_base_addr = 0);
-            uint64_t find_free_in_interval(
-                uint64_t start_idx,
-                uint64_t interval_length
-            );
-            ~mixed_bitmap_t();
+            mixed_bitmap_v2() = default;
+            void online(vaddr_t bitmap_va, uint8_t out_order);
+            void offline();
+            uint64_t scan_free_block(uint8_t& order);
+            // <order, offset> 安全位操作
+            void bit_set0(uint64_t offset, uint8_t order);
+            void bit_set1(uint64_t offset, uint8_t order);
+            bool bit_get(uint64_t offset, uint8_t order);
         };
-        friend mixed_bitmap_t::mixed_bitmap_t(uint64_t entry_count,vaddr_t base_addr);
-        mixed_bitmap_t* order_freepage_existency_bitmaps; // 这个位图编码为 1 表示这个 order 的对应引索的页面是存在的，反之不存在
-        uint64_t order_bases[DESINGED_MAX_SUPPORT_ORDER]; // 在 mixed_bitmap_t 里面各 order 的引索基址
+        mixed_bitmap_v2 bcb_bitmap; // heap-encoded 二叉树位图 (内嵌, 无需 new)
+        // order_bases 已删除: 位置编码 order, 不需要该数组
 
         struct BCB_statistics {
             uint64_t free_count[DESINGED_MAX_SUPPORT_ORDER];

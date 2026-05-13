@@ -1,0 +1,574 @@
+# 内核内存初始化时序 (v4)
+
+## 1. 文档定位
+
+本文档分析并比较 f34f7f3（v3）与 7cfa253（v4 master）两个版本之间 kernel.elf 内存初始化时序的架构性差异。
+
+这不是「逐行比代码」，而是分析两版设计的**核心哲学转变**：v3 以 `loaded_VM_interval[]` 容器为中心、模块自行 parse；v4 以 `vm_interval` 一等字段为中心、信息包阅后即焚、全局变量承载关键蓝图。
+
+理解 v4 的设计前提是理解 init.elf v2 协议带来的变化——当信息包从指针式 `init_to_kernel_info` 变为偏移式 `init_to_kernel_header` 时，哪些原本藏在容器里的区间被提升为显式的 header 字段，直接影响了 kernel.elf 的内存初始化架构。
+
+---
+
+## 2. 根本差异：container 中心 vs 一等字段
+
+### 2.1 v3 的 container 模式
+
+**运行在 init_v1 协议之上。**
+
+```
+init_to_kernel_info (指针式，不可重定位)
+  ├── loaded_VM_interval* (数组指针)
+  ├── loaded_VM_interval_count
+  └── memory_map (phymem_segment*)
+```
+
+所有区间（堆、位图、日志缓冲、符号表、页表等）全部塞进 `loaded_VM_interval[]` 数组。kernel 在 `kernel_start()` 中靠一个巨大的 `switch/case` 按 `VM_interval_specifyid` 分拣：
+
+```cpp
+for (uint64_t i = 0; i < transfer->loaded_VM_interval_count; i++) {
+    switch (transfer->loaded_VM_intervals[i].VM_interval_specifyid) {
+        case VM_ID_FIRST_HEAP:         → first_heap
+        case VM_ID_FIRST_HEAP_BITMAP:  → first_heap_bitmap
+        case VM_ID_LOGBUFFER:          → logbuffer
+        // ... 每个模块手动从容器中抓出属于它的区间
+    }
+}
+```
+
+**设计特点：**
+- 所有区间是**二等公民**——用数字 ID 区分，靠人为约定对应关系
+- 模块初始化全是参数式：`kpoolmemmgr_t::Init(first_heap, first_heap_bitmap)`——传什么用什么
+- 信息包生命周期不明确：`transfer` 指针未标记为销毁，数据区可能被后续操作覆盖
+
+被 VM_ID 标记的区间中，有 5 个在 v4 中提升为 header 一等字段（log_buffer、symtable_file、initramfs_file、kernel_entry_stack、identity_map_window），另有 **3 个 VM_ID 被彻底消灭**——它们的数据不再经过任何区间容器或 header 字段传递，而是直接转为 kernel.elf BSS 中的静态变量：
+
+### 2.2 v4 的一等字段模式
+
+**运行在 init_v2 协议之上。**
+
+init_v2 将 8 个关键区间提升为 header 一等字段。另外两类的区间则更进一步：
+- **转移到 kernel.elf BSS**：`kspace_up_half`、`first_heap`——不再出现在任何跨阶段协议中
+- **仍保留在容器中**：极少数 arch 特有或其他可变长区间
+
+```
+init_to_kernel_header (偏移式，可重定位)
+  ├── kIMG_self_window    ← 一等字段
+  ├── kBSS_interval       ← 一等字段
+  ├── pages_arr           ← 一等字段
+  ├── FPA_bitmaps         ← 一等字段
+  ├── log_buffer          ← 一等字段（原在容器中）
+  ├── kernel_entry_stack  ← 一等字段（原在容器中）
+  ├── symtable_file       ← 一等字段（原在容器中）
+  ├── initramfs_file      ← 一等字段（原在容器中）
+  ├── identity_map_window ← 一等字段
+  └── loaded_VM_interval[] ← 仅存极少数无法枚举的区间（如 arch 特有）
+
+  ← 注意：VM_ID_UP_KSPACE_PDPT、VM_ID_FIRST_HEAP、VM_ID_FIRST_HEAP_BITMAP
+     在 v4 中不再出现在任何区间集合中——它们已溶解到 kernel.elf BSS
+```
+
+v2 协议将这些频繁使用、语义明确的区间**直接嵌入 header 结构体**，不再经过容器 ID 分发。
+
+但还有两个区间甚至不需要进入 header——它们的数据来源于 kernel.elf 编译期的 BSS 声明，完全不需要 init.elf 侧的任何参与（详见 §2.3）。
+
+kernel 端：
+
+```cpp
+void very_early_init(init_to_kernel_header* transfer) {
+    // 一等字段：一次赋值即成为全局变量
+    kIMG_self_window   = transfer->kIMG_self_window;
+    kBSS_interval      = transfer->kBSS_interval;
+    pages_arr          = transfer->pages_arr;
+    FPA_bitmaps        = transfer->FPA_bitmaps;
+    log_buffer         = transfer->log_buffer;
+    kernel_entry_stack = transfer->kernel_entry_stack;
+    symtable_file      = transfer->symtable_file;
+    initramfs_file     = transfer->initramfs_file;
+    identity_map_window = transfer->identity_map_window;
+
+    // copy 完即焚：信息包使命终结
+    transfer = nullptr;  // 阅后即焚
+}
+```
+
+**设计特点：**
+- 所有频繁使用的区间是**一等公民**——不靠 ID，不靠容器，直接是命名的全局变量
+- 模块初始化无参数化：`kpoolmemmgr_t::Init()` 无参数，使用内部静态堆
+- 信息包生命周期明确：`very_early_init` 消化完所有一等字段后立即标记销毁
+
+---
+
+### 2.3 被溶解到 BSS 的区间
+
+v3 中通过 VM_ID 在容器中传递的三个区间，在 v4 中被彻底消灭——不再以任何形式经过信息包。
+
+| v3 VM_ID | v4 归宿 | 文件 |
+|----------|--------|------|
+| `VM_ID_UP_KSPACE_PDPT` | `kspace_up_half`（BSS 静态数组） | `KspacMapMgr_pagediretct_operate.cpp` |
+| `VM_ID_FIRST_HEAP` | `first_heap` 数组静态衰减为变量（BSS） | `kpoolmemmgr_HCBv2.cpp` |
+| `VM_ID_FIRST_HEAP_BITMAP` | 同上，`first_heap` 内部的 `bitmap_controller` | `kpoolmemmgr_HCBv2.cpp` |
+
+#### `VM_ID_UP_KSPACE_PDPT` → BSS `kspace_up_half`
+
+v3 中，`kspaceUPpdpt`（内核高半 PDTP 页表页）由 init.elf 分配物理页并通过 `loaded_VM_interval[]` 传递给 kernel.elf。kernel.elf 在 `KspacePageTable::Init(kspaceUPpdpt)` 中接收此物理基址。
+
+v4 中，内核高半的 PDPT 页表页在编译期就作为 BSS 数组存在：
+```cpp
+// KspacMapMgr_pagediretct_operate.cpp 内部
+static uint8_t kspace_up_half[PAGE_SIZE_4KB] __attribute__((aligned(PAGE_SIZE_4KB)));
+```
+`KspacePageTable::Init()` 不再需要任何参数——页表基址在 BSS 中，链接时已确定虚拟地址，通过 `get_phyaddr_for_Kbss` 获取物理地址。
+
+效果：
+- **消除一个 VM_ID**：不再需要 init.elf 分配并传递
+- **消除一次参数传递**：`Init()` 变无参数
+- **页表页持久化**：BSS 的性质保证页表页不会被回收
+
+#### `VM_ID_FIRST_HEAP` + `VM_ID_FIRST_HEAP_BITMAP` → BSS `first_heap`
+
+v3 中，kpoolmemmgr 的 first_linked_heap（引导阶段的通用堆分配器）需要两块物理区间——堆本体和其位图——均由 init.elf 分配并通过 ID 传递。
+
+v4 中，这两个区间被静态声明为 BSS 数组：
+```cpp
+// kpoolmemmgr_HCBv2.cpp
+static uint8_t first_heap[default_first_heap_size] __attribute__((aligned(4096)));
+```
+位图 `bitmap_controller` 是 `HCB_v2` 的内嵌成员，不再需要独立区间。`first_linekd_heap_Init()` 直接获取 BSS 地址：
+
+```cpp
+int HCB_v2::first_linekd_heap_Init() {
+    bitmap_controller.Init();
+    vbase = (uint64_t)first_heap;           // BSS 地址
+    phybase = get_phyaddr_for_Kbss((vaddr_t)first_heap);  // 物理地址
+    total_size_in_bytes = default_first_heap_size;
+    return OS_SUCCESS;
+}
+```
+
+效果：
+- **消除两个 VM_ID**：堆和位图不再需要 init.elf 分配
+- **模块完全自包含**：`kpoolmemmgr_t::Init()` 变无参数
+- **不占用信息包资源**：信息包对 kpoolmemmgr 一无所知
+
+#### 总结：三阶段迁移
+
+```
+v3: loaded_VM_interval[] 容器
+  ├── 通过 VM_ID 分发 ← 二进制枚举，硬编码对应关系
+  │
+  v4: 三种处理方式
+  ├── header 一等字段（8 个 vm_interval）
+  │     log_buffer, symtable_file, initramfs_file, ...
+  ├── 溶解到 kernel.elf BSS（3 个 VM_ID 消灭）
+  │     kspace_up_half, first_heap, first_heap_bitmap
+  └── 残留容器
+        arch 特有区间等极少数可变长条目
+```
+
+## 3. 信息包生命周期
+
+### 3.1 v3：隐含继承，生命周期模糊
+
+```
+init_to_kernel_info (allocated by init.elf, physical address)
+  │
+  ▼
+kernel_start() 全程使用 transfer→ 指针
+  ├── 从容器中抓取各区间
+  ├── 各模块初始化的参数来自于此
+  └── transfer 指针从未释放
+```
+
+风险：`transfer` 指向的物理内存属于 init.elf 的遗留分配。kernel 在运行过程中可能覆盖这片区域（例如页表重新映射后），导致内存损坏。但 v3 没有机制防范。
+
+### 3.2 v4：阅后即焚
+
+```
+init_to_kernel_header (allocated by init.elf, offset-based, relocatable)
+  │
+  ▼
+very_early_init()
+  ├── 8 个一等 vm_interval → 全局变量
+  ├── loaded_VM_interval[] → VM_intervals 新分配
+  ├── phymem_segment[] → phymem_segments 新分配
+  └── transfer = nullptr    ← ★ 阅后即焚
+  │
+  ▼
+  kernel_start 后续代码 → 访问全局变量，不再碰 transfer
+```
+
+设计要点：
+
+1. **信息包是「关键蓝图」**：`very_early_init` 从信息包读取所有内容，将其提取到内核全局变量中。信息包本身是一份「机密文档」——一旦泄露（页表重映射导致物理地址暴露），后果恶劣。因此 kernel 在消化完后立即废弃 `transfer` 指针。
+
+2. **全局变量作为「持久化蓝图」**：提取后的全局变量（`kIMG_self_window`、`kBSS_interval`、`pages_arr` 等）贯穿整个内核生命周期。这些变量不仅在初始化阶段使用，在后续的 `KImage_map_rebuild`、`properties_modify_stage1`、`kimg_affiliate_property_map1` 中也被反复引用。
+
+3. **不再有「传递参数给模块」的负担**：各模块（FPA、KspacePageTable、kpoolmemmgr）不再从外部传入参数，而是直接读取已就绪的全局变量。
+
+---
+
+## 4. init_v2 协议如何塑造 v4 的 kernel 端
+
+### 4.1 从指针到偏移：信息包可重定位
+
+v1 的信息包使用物理地址指针：
+
+```cpp
+loaded_VM_interval* loaded_VM_intervals;  // 物理地址，不可重定位
+```
+
+v2 改为偏移：
+
+```cpp
+uint64_t loaded_VM_intervals_offset;  // 相对 header 基址的偏移
+```
+
+这意味着 kernel.elf 不论被 init.elf 映射到哪个虚拟基址，都可以通过：
+```cpp
+arr = (loaded_VM_interval*)((uint64_t)transfer + transfer->loaded_VM_intervals_offset);
+```
+正确访问。这在 CR3 切换后信息包所在的 VA 改变时尤为关键。
+
+### 4.2 从 ID 匹配到直接赋值
+
+v3 需要 ID 匹配（而且 ID 枚举是隐式约定）：
+
+```cpp
+// v3: 按 ID 从容器中一一匹配
+for (auto& vm : transfer->loaded_VM_intervals) {
+    if (vm.VM_interval_specifyid == VM_ID_LOGBUFFER) {
+        logbuffer = &vm;  // 拿到的是容器内的指针
+    }
+}
+```
+
+v4 直接赋值 header 字段：
+
+```cpp
+// v4: 无可回避的直接赋值
+kIMG_self_window   = transfer->kIMG_self_window;   // header 内嵌
+log_buffer         = transfer->log_buffer;          // header 内嵌（v3 要从容器抓）
+symtable_file      = transfer->symtable_file;        // 同上
+initramfs_file     = transfer->initramfs_file;
+```
+
+### 4.3 非破坏性加载的恩惠
+
+init_v2 的非破坏性加载保留了完整的 kernel.elf 文件镜像。这意味着：
+
+1. **`kIMG_self_window` 是活着的**——v4 的 `KImage_map_rebuild()` 通过此窗口读取 ELF header，无需额外磁盘 IO 或 bootloader 配合。
+
+2. **ELF section 始终可访问**——`KImage_Introspection` 在 v4 中可以提供完整的 `addr_to_sym`、section 遍历、`.note` 段解析，因为 `kIMG_self_window` 始终映射着完整的 ELF 文件。
+
+3. **v4 可以使用 `phyaddr_direct_map` 复刻映射**——因为 `kIMG_self_window` 的物理基址已知（`kIMG_self_window.pbase`），在 CR3 切换前可以通过 `phyaddr_direct_map` （固定 VA 模式）在新 PML4 的同一 VA 上重建映射。这是 v3 无法做到的——v3 中 ELF 文件已被破坏性加载抹掉。
+
+---
+
+## 5. 时序演变的深层原因
+
+| 层面 | v3 (f34f7f3) | v4 (7cfa253) |
+|------|--------------|--------------|
+| **信息包协议** | init_v1 (指针式, `init_to_kernel_info`) | init_v2 (偏移式, `init_to_kernel_header`) |
+| **区间传递** | `loaded_VM_interval[]` 容器 + switch/case ID 分拣 | 8 个一等 vm_interval header 字段直接赋值 |
+| **信息包生命周期** | 模糊（transfer 一直存活） | 阅后即焚（`very_early_init` 后 `transfer = nullptr`） |
+| **模块初始化风格** | 参数式（传 VM 区间指针） | 全局变量式（模块读取已就绪的全局 vm_interval） |
+| **FPA 污染模型** | 不存在 | SEED → ACTIVE 状态机 + dirty_count 保护 |
+| **瞬态区间处理** | 无（永远占用，不归还） | `properties_modify_stage1` 搬走 + clean |
+| **CR3 切换前映射** | 依赖旧页表继承 | `KImage_map_rebuild` + `kimg_affiliate_property_map1` 重建 |
+| **ELF 持久性** | 破坏性加载 → 文件丢失 | 非破坏性加载 → `kIMG_self_window` 永存 |
+
+### 5.1 核心驱动力
+
+init_v1→v2 的协议升级是 v4 改造的**前提条件**：
+
+```
+init_v1 协议（指针式，container 中心）
+  ↓ 限制了 kernel 端的表达力
+  ↓ kernel 只能从容器中抓取区间，无法做状态机/污染/映射重建
+  ↓
+init_v2 协议（偏移式，一等字段）
+  ↓ 释放了 kernel 端的表达力
+  ↓ 可以设计 clean architecture:
+      very_early_init → FPA state machine → CR3 rebuild → properties modify
+```
+
+正是 init_v2 将 8 个关键区间提升为一等字段，才让 v4 的 kernel 端能够：
+
+1. **在 `very_early_init` 中一步消化所有关键信息**，而不是散落在 `kernel_start` 各处
+2. **设计 SEED → ACTIVE 状态机**——FPA 知道所有瞬态区间的物理基址（全局变量），可以精确污染
+3. **在 CR3 切换前重建映射**——`kIMG_self_window` 等全局变量提供了物理基址和大小，`KImage_map_rebuild` 和 `kimg_affiliate_property_map1` 直接使用
+4. **在 CR3 切换后高效转生**——`properties_modify_stage1` 读取同一个全局变量集合，无需重新解析任何元数据
+
+---
+
+## 6. 信息包安全模型（v4 新增）
+
+v4 明确意识到 `init_to_kernel_header` 是一个**高级别机密的蓝图**：
+
+| 机密内容 | 泄露后果 |
+|----------|----------|
+| `kIMG_self_window` 物理基址 | ELF 完整镜像可被读取（符号表、所有代码布局） |
+| `kBSS_interval` | 内核运行时数据区可被定位 |
+| `pages_arr` | 所有物理页状态表可被读取 |
+| `FPA_bitmaps` | 空闲物理页池可被枚举 |
+| `symtable_file` | 完整符号表（FPA 未 pollute 前） |
+| 所有 8 个一等区间 | 内核完整物理内存布局全部暴露 |
+
+因此：
+- `very_early_init` 将关键数据**提取到内核全局变量**后，信息包物理页不再被内核引用
+- `transfer` 指针置 null —— 后续任何代码都无法再通过此指针访问原始信息包
+- 信息包所在的物理页在 FPA ACTIVE 后属于 `all_pages_arr` 管理的 `freeSystemRam` 区间，但 FPA 已通过 `interval_pollute(legacy_mmu_interval)` 防止被分配
+
+---
+
+## 7. v3 → v4 时序对比
+
+### 7.1 v3 时序（f34f7f3）
+
+```
+kernel_start(transfer)
+  │
+  ├── [信息包解析] switch/case 从 loaded_VM_interval[] 抓区间
+  ├── [早期初始化] Gfx / ksymmanager / kpoolmemmgr / Dmesg / kout / tsc
+  │
+  ├── all_pages_arr::Init(transfer)
+  ├── FreePagesAllocator::Init(BEST_FIT, BCBs_bitmap)     ← 无状态机
+  ├── KspacePageTable::Init(kspaceUPpdpt)                 ← 参数式
+  │
+  ├── gKernelSpace = new AddressSpace
+  ├── gKernelSpace->second_stage_init()
+  ├── [identity map lambda] 逐段 enable_VM_desc          ← 内联在 kernel_start
+  │
+  ├── gKernelSpace->unsafe_load_pml4_to_cr3(PCID)
+  ├── kpoolmemmgr_t::multi_heap_enable()                   ← 后才启用多堆
+  │
+  └── AP_Init / irq / sched
+```
+
+### 7.2 v4 时序（7cfa253）
+
+```
+kernel_start(transfer)
+  │
+  ├── very_early_init(transfer)                            ← 新
+  │     info_packet → global vars (8 个一等 vm_interval)
+  │     kpoolmemmgr_t::Init()  (无参数)
+  │     transfer = nullptr  /* 阅后即焚 */
+  │
+  ├── [早期初始化] Gfx / ksymmanager / Dmesg / kout / tsc
+  │
+  ├── mem_init()
+  │     PhyAddrAccessor::Init(identity_map_window)         ← 新
+  │     all_pages_arr::Init(&pages_arr)
+  │     pesisitent_properties_set()                       ← 新
+  │     FreePagesAllocator::Init(BEST_FIT, &FPA_bitmaps)  → SEED
+  │     fpa_properties_deal()                              ← 新
+  │       ├── interval_pollute × 5
+  │       └── activate() → ACTIVE
+  │     KspacePageTable::Init()  (无参数)
+  │     KImage_map_rebuild()                               ← 新
+  │     kimg_affiliate_property_map1()                     ← 新
+  │     gKernelSpace = new AddressSpace
+  │     gKernelSpace->second_stage_init()
+  │     gKernelSpace->unsafe_load_pml4_to_cr3(PCID)
+  │     properties_modify_stage1()                         ← 新
+  │       ├── alloc + copy + map + flush + clean × 3
+  │     kpoolmemmgr_t::multi_heap_enable()
+  │
+  ├── AP_Init / irq / sched / ...
+```
+
+### 7.3 关键差异数量统计
+
+| 差异项 | v3 | v4 |
+|--------|----|----|
+| kernel_start 中 inline 的内存初始化代码行 | 集中在一个巨型函数 | 拆为 3 个专用函数 |
+| vm_interval 传递方式 | container + ID 匹配 | 全局变量直接赋值 |
+| 信息包生命周期 | 隐含存活 | 阅后即焚 |
+| FPA 状态机 | 无 | SEED → ACTIVE |
+| CR3 切换前映射准备 | 无（依赖旧页表） | `KImage_map_rebuild` + `kimg_affiliate_property_map1` |
+| 瞬态区间处理 | 无 | `properties_modify_stage1` |
+| 模块 Init 参数 | 传大结构体 / 3 项 VM_ID 容器传递 | 零参数 / BSS 溶解 / header 一等字段 |
+
+---
+
+## 8. 模块初始化的边界划分
+
+### 8.1 v3：命令式 → 模块自行解析大结构体
+
+v3 的 `KspacePageTable::Init` 和 `all_pages_arr::Init` 接受 `transfer` 或 `kspaceUPpdpt` 等大结构体，内部自行解析：
+
+```cpp
+// v3: 传大结构体，内部处理
+all_pages_arr::Init(transfer);
+// 内部: 从 transfer→ 解析 pages_arr 区间、memory_map 等
+
+KspacePageTable::Init(kspaceUPpdpt);
+// 内部: 从 loaded_VM_interval* 解析 PDPT 基址、页表位置等
+```
+
+问题：
+- 信息包的解析逻辑分散在多个模块内部
+- `transfer` 指针泄露到模块内部，模块生命周期与信息包生命周期耦合
+- 修改信息包结构可能需要追踪所有引用它的模块
+
+### 8.2 v4：声明式 → mem_init.cpp 集中管理
+
+v4 中所有信息包的解析和初始化的「外部边界」全部在 `mem_init.cpp` 内部完成：
+
+```cpp
+// v4: 外部统一提取、统一传递
+all_pages_arr::Init(&pages_arr);          // 只传一个 vm_interval 指针
+KspacePageTable::Init();                  // 零参数，页表基址内部管理
+
+// 所有区间提取在 very_early_init 中完成：
+// pages_arr = transfer→pages_arr;         ← 共用的全局变量
+// kspaceUPpdpt 从 KspacePageTable 内部派生
+```
+
+边界原则：**信息包的知识不出 `very_early_init` 的范围**。`very_early_init` 负责将 `init_to_kernel_header` 的内容提取到全局变量，之后各模块只接触这些全局变量，不碰 `transfer`。
+
+### 8.3 效果
+
+| 模块 | v3 初始化参数 | v4 初始化参数 |
+|------|--------------|--------------|
+| `all_pages_arr::Init` | `init_to_kernel_header*`（全量信息包） | `vm_interval*`（仅 pages_arr 区间） |
+| `KspacePageTable::Init` | `loaded_VM_interval*`（PDPT 区间信息） | 无参数（BSS `kspace_up_half`） |
+| `kpoolmemmgr_t::Init` | `vm_interval*`, `vm_interval*`（堆+位图） | 无参数（BSS `first_heap`） |
+
+---
+
+## 9. FPA 污染模型的外部资产处理与时序
+
+### 9.1 污染模型的角色定位
+
+FPA 污染模型不是内存分配器的内部优化，而是**协调 kernel.elf 与 init.elf 之间物理页资产交接的外部协议**。
+
+init.elf 分配的物理页在移交给 kernel.elf 时，它们的生命周期并没有结束——log_buffer 还有未读的日志、symtable_file 还有符号表查询、initramfs_file 还有文件数据。FPA 通过 dirty_count + state machine 来管理这些「残留资产」的过渡期。
+
+### 9.2 资产生命周期全景
+
+```
+init.elf phase 3a/3b:
+  分配 → log_buffer (probe 瞬态)
+  分配 → symtable_file (probe 瞬态)
+  分配 → initramfs_file (probe 瞬态)
+  分配 → kernel_entry_stack (probe 瞬态)
+  // 这些物理页在 init.elf 中是活跃使用的
+
+shift_kernel → kernel.elf
+
+very_early_init:
+  读取所有 vm_interval 到全局变量
+  transfer = nullptr  /* 阅后即焚 */
+
+FPA::Init → SEED:
+  BCB 构建，将 init.elf 的所有 freeSystemRam 纳入空闲池
+  → 但 log_buffer 等 5 个区间实际仍有数据
+
+fpa_properties_deal:
+  interval_pollute(log_buffer)          ← 资产保全
+  interval_pollute(symtable_file)
+  interval_pollute(initramfs_file)
+  interval_pollute(kernel_entry_stack)
+  interval_pollute(legacy_mmu_interval) // 信息包所在区间
+  FPA::activate() → ACTIVE
+  // 此时脏 BCB 不可分配，干净 BCB 可分配
+
+CR3 switch (新 PML4 激活)
+
+[自此 ACTIVE 态下：
+  alloc 走干净 BCB（跳过脏 BCB 对应的物理页）
+  free 检测到脏 BCB → panic（时序错误）
+]
+
+properties_modify_stage1:
+  处理 3 个瞬态区间：
+  ┌──────────────────────────────────────────────┐
+  │ initramfs:                                   │
+  │   1. alloc(size)  → 新物理页（干净 BCB）      │
+  │   2. paddr_memcpy(新, 旧, size) 拷贝数据       │
+  │   3. phyaddr_direct_map → 新 VA 映射          │
+  │   4. tlb_full_flush()                        │
+  │   5. interval_clean(旧) → dirty_count--       │
+  │   → 旧物理页可安全归还 FPA                    │
+  ├──────────────────────────────────────────────┤
+  │ symtable: 同上                                 │
+  ├──────────────────────────────────────────────┤
+  │ log_buffer: 同上                               │
+  └──────────────────────────────────────────────┘
+
+  kernel_entry_stack 不做转生：
+    interval_clean(stack_old)  // 直接丢弃
+  legacy_mmu_interval 不做转生：
+    interval_clean(legacy_mmu) // 信息包物理页归还
+
+  此时所有 dirty_count == 0
+  所有 BCB 重新可分配
+  FPA 管理所有物理页，无外部残留
+]
+```
+
+### 9.3 资产的三种处理模式
+
+| 模式 | 适用区间 | 步骤 |
+|------|----------|------|
+| **转生 (move + clean)** | initramfs_file, symtable_file, log_buffer | alloc 新 → paddr_memcpy → map → flush → clean 旧 |
+| **丢弃 (clean only)** | kernel_entry_stack, legacy_mmu_interval | 直接 clean（内容已无用） |
+| **永驻 (不 pollute)** | kIMG_self_window, kBSS_interval, pages_arr, FPA_bitmaps | 不参与污染，直接标记 kernel_persisit |
+
+### 9.4 时序安全保证
+
+```
+pollute 在 SEED 态
+  ↓ 所有 alloc 被禁止
+  ↓ 脏 BCB 被锁定，干净 BCB 未启用
+  ↓ 不可能有并发访问冲突
+
+activate → ACTIVE
+  ↓ 脏 BCB: can_alloc() 返回 false（dirty_count > 0）
+  ↓ 干净 BCB: 正常分配
+  ↓ 分配绝不会踩踏瞬态区间
+
+properties_modify_stage1
+  ↓ ACTIVE 态下 alloc 从干净 BCB 分配新页
+  ↓ tlb_full_flush() 确保旧页 TLB 失效
+  ↓ interval_clean() 只减 dirty_count，不 free
+  ↓ clean 后方可安全释放旧页
+```
+
+### 9.5 与 v3 的直接对比
+
+| 维度 | v3 | v4 |
+|------|----|----|
+| 瞬态区间资产 | 永远占用物理页，不可回收 | 转生或丢弃后归还 FPA |
+| 分配安全性 | 可能踩踏未释放的瞬态区间 | dirty_count + can_alloc 双重过滤 |
+| 脏检测 | 无 | free() 检测 dirty → panic |
+| 下溢检测 | 无 | clean() 检测 dirty_count==0 → warn |
+| TLB 安全 | 无专门处理 | phyaddr_direct_map 后 tlb_full_flush() |
+| 外部时序依赖 | 无（无状态机） | SEED → ACTIVE 显式状态转换 |
+
+---
+
+## 10. 结论
+
+v4 对 v3 的重构不是补丁式的增量修改，而是由 init_v2 协议升级**触发的一轮架构级简化**：
+
+| v3 的问题 | v4 的解决 |
+|-----------|-----------|
+| 区间 ID 匹配 + switch/case | 直接命名的全局 vm_interval |
+| 信息包生命周期模糊 | `very_early_init` 后 `transfer = nullptr` |
+| 模块初始化的参数耦合 | 外部统一初始化，模块零参数 |
+| 无 FPA 状态机，瞬态区间裸奔 | SEED → ACTIVE + dirty_count 保护 |
+| 无 CR3 切换前映射重建 | `KImage_map_rebuild` 从 `kIMG_self_window` 读取 ELF |
+| 瞬态区间永不归还 | `properties_modify_stage1` + `interval_clean` |
+| AP 页表可能超 4GB | `must_down_4gb` + `BUDDY_ALLOC_DOWN_4GB` |
+
+---
+
+*文档版本: v4*  
+*基于 commit f34f7f3（v3）→ 7cfa253（v4）*  
+*前置文档参考: `Docs/init_v2/init_protocal_v2_initelf_specification.md`*  
+*其他关联文档: `Docs/Memory/FPAPollutionModel.md` (FPA 污染模型详细设计)*  
+*最后更新: 2026-05-13*
