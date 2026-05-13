@@ -145,7 +145,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
     */
     // 匿名函数替代原来的get_sub_tb函数
     KURD_t pages_alloc_event_kurd=KURD_t();
-    auto get_sub_tb = [&pages_alloc_event_kurd](PageTableEntryUnion& entry, PageTableEntryType Clevel) -> phyaddr_t {
+    auto get_sub_tb = [&](PageTableEntryUnion& entry, PageTableEntryType Clevel) -> phyaddr_t {
         KURD_t contain;
         if(Clevel==PageTableEntryType::PT) return 0;
         constexpr uint32_t _4KB_SIZE=0x1000;

@@ -278,11 +278,13 @@ private:
     static bool is_muli_heap_enabled;//是否允许在HCB_ARRAY中分配新的HCB,应该在全局页管理器初始化完成之后调用
     //这个位开启后会优先在cpu专属堆里面操作，再尝试first_linekd_heap
     static HCB_v2 first_linekd_heap;
-    static HCB_v2**HCB_ARRAY;
+    static HCB_v2 *HCB_ARRAY;
     static spinrwlock_cpp_t HCB_ARRAY_lock;
     static KURD_t alloc_heap(uint32_t idx);
     static KURD_t free_heap(uint32_t idx);
     static HCB_v2*find_hcb_by_address(void* ptr);
+    static VM_DESC heap_area;
+    static VM_DESC heap_area_bitmaps;
 public:
     /**
      * @param vaddraquire true返回虚拟地址，false返回物理地址
