@@ -669,28 +669,6 @@ void *operator new[](size_t size, alloc_flags_t flags)
     return result;
 }
 
-void* operator new[](size_t size, bool vaddraquire, uint8_t alignment) {
-    KURD_t kurd;
-    void* result= kpoolmemmgr_t::kalloc(size,kurd, default_flags);
-    if(error_kurd(kurd)||result==nullptr){
-        panic_info_inshort inshort={
-            .is_bug=false,
-            .is_policy=true,
-            .is_hw_fault=false,
-            .is_mem_corruption=false,
-            .is_escalated=false
-        };
-        Panic::panic(
-            default_panic_behaviors_flags,
-            "new operator failed",
-            nullptr,
-            &inshort,
-            kurd
-        );
-    }
-    return result;
-}
-
 void operator delete(void* ptr) noexcept {
     kpoolmemmgr_t::kfree(ptr);
 }

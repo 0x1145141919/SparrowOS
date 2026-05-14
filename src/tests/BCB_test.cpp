@@ -1,277 +1,224 @@
+// ════════════════════════════════════════════════════════════════
+// BCB_test — FreePagesAllocator::BuddyControlBlock 测试
+//
+// 测试 mixed_bitmap_v2 + buddy 算法 (allocate_buddy_way / free_buddy_way)
+// 在用户态运行，用 malloc 模拟 BCB 的 bitmap 区域
+// ════════════════════════════════════════════════════════════════
 
-#ifdef BEHAVIOR_SAVE
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <cstring>
-#endif
 #include "memory/FreePagesAllocator.h"
 #include "util/kout.h"
 #include <vector>
 #include <random>
-#include "util/OS_utils.h"
-#include "cmath"
-struct mem_seg
-{
-    uint64_t start_addr;//为1代表无效地址，其它4k对齐的地址都是有效地址
+#include <cstdlib>
+#include <cstring>
+#include <cstdio>
+#include <cmath>
+#include <ctime>
+#include <new>
+
+// ===== rdtsc stub =====
+static inline uint64_t rdtsc() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+// ===== 测试辅助 =====
+struct mem_seg {
+    uint64_t addr;  // 1 = 无效（未分配）
     uint64_t size;
 };
 
-struct test_set_record
-{
-    uint32_t index;
-    uint64_t size;
-    uint64_t initial_addr;
-};
+static int g_failures = 0;
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { fprintf(stderr, "  FAIL [L%d]: %s\n", __LINE__, msg); g_failures++; } \
+} while(0)
 
-enum class op_type : uint8_t
-{
-    ALLOCATE = 0,
-    FREE = 1,
-};
+#define CHECK_OK(kurd) do { \
+    if (!success_all_kurd(kurd)) { \
+        fprintf(stderr, "  FAIL [L%d]: KURD result=%d reason=%d\n", \
+                __LINE__, (int)(kurd).result, (int)(kurd).reason); \
+        g_failures++; \
+    } \
+} while(0)
 
-struct op_record
-{
-    uint32_t cycle;
-    op_type op;
-    uint32_t index;
-    uint64_t request_size;
-    uint64_t addr;
-    uint32_t result_code;
-};
-
-static void* map_file_rw(const char* path, size_t size, int& fd_out)
-{
-#ifdef BEHAVIOR_SAVE
-    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        return MAP_FAILED;
+// ===== 页框校验 (全量扫描 BCB) =====
+static int do_flush(FreePagesAllocator::BuddyControlBlock* bcb) {
+    KURD_t fk = bcb->free_pages_flush();
+    if (!success_all_kurd(fk)) {
+        fprintf(stderr, "  FAIL: free_pages_flush result=%d reason=%d\n",
+                (int)fk.result, (int)fk.reason);
+        g_failures++;
+        return 1;
     }
-    if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
-        close(fd);
-        return MAP_FAILED;
-    }
-    void* p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (p == MAP_FAILED) {
-        close(fd);
-        return MAP_FAILED;
-    }
-    fd_out = fd;
-    return p;
-#else
-    (void)path;
-    (void)size;
-    (void)fd_out;
-    return nullptr;
-#endif
+    return 0;
 }
 
-static inline bool is_no_available_buddy_fail(const KURD_t& k)
-{
-    return k.result == result_code::FAIL &&
-           k.module_code == module_code::MEMORY &&
-           k.in_module_location == MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK &&
-           k.event_code == MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_ALLOCATE_BUDY_WAY &&
-           k.reason == MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::ALLOCATE_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_NO_AVALIABLE_BUDDY;
+// ================================================================
+// 基础测试
+// ================================================================
+
+static void test_single(FreePagesAllocator::BuddyControlBlock* bcb) {
+    printf("[test] single alloc/free...\n");
+    KURD_t k;
+    phyaddr_t a = bcb->allocate_buddy_way(4096, k);
+    CHECK_OK(k);
+    CHECK(a != 0, "alloc returned 0");
+    CHECK_OK(bcb->free_buddy_way(a, 4096));
+    do_flush(bcb);
+    printf("  OK\n");
 }
 
-static int exit_with_cleanup(int code)
-{
-    if (FreePagesAllocator::first_BCB) {
-        FreePagesAllocator::first_BCB->free_pages_flush();
-        delete FreePagesAllocator::first_BCB;
-        FreePagesAllocator::first_BCB = nullptr;
+static void test_various_sizes(FreePagesAllocator::BuddyControlBlock* bcb) {
+    printf("[test] various sizes...\n");
+    static const uint64_t sizes[] = {4096, 8192, 16384, 32768, 65536,
+                                     0x20000, 0x40000, 0x80000, 0x100000};
+    phyaddr_t allocs[sizeof(sizes)/sizeof(sizes[0])];
+    KURD_t k;
+
+    for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
+        allocs[i] = bcb->allocate_buddy_way(sizes[i], k);
+        CHECK_OK(k);
+        CHECK(allocs[i] != 0, "alloc returned 0");
     }
-    exit(code);
+    for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
+        CHECK_OK(bcb->free_buddy_way(allocs[i], sizes[i]));
+    }
+    do_flush(bcb);
+    printf("  OK\n");
 }
 
-int main()
-{
-    bsp_kout.Init();  
-    bsp_kout.shift_dec();
-    bsp_kout<< "=== Starting FreePagesAllocator BCB Test ===" << kendl;
-     
-    // 创建第一个BCB实例，用于管理从0x100000000开始的20阶内存区域（约1GB）
-    FreePagesAllocator::first_BCB = new FreePagesAllocator::BuddyControlBlock(
-        0x100000000, 18
-    );
+static void test_split_coalesce(FreePagesAllocator::BuddyControlBlock* bcb) {
+    printf("[test] split & coalesce...\n");
+    KURD_t k;
+    phyaddr_t p1 = bcb->allocate_buddy_way(4096, k);
+    CHECK_OK(k);
+    phyaddr_t p2 = bcb->allocate_buddy_way(4096, k);
+    CHECK_OK(k);
+    CHECK_OK(bcb->free_buddy_way(p1, 4096));
+    CHECK_OK(bcb->free_buddy_way(p2, 4096));
+    do_flush(bcb);
+    printf("  OK\n");
+}
 
-    // 验证BCB基本属性
-    bsp_kout<< "Testing basic info..." << kendl;
-    bsp_kout<< "Max support order: " << (uint32_t)FreePagesAllocator::first_BCB->get_max_order() << kendl;
-    
-    // 初始化第二阶段
-    bsp_kout<< "Initializing second stage..." << kendl;
-    KURD_t init_result = FreePagesAllocator::first_BCB->second_stage_init();
-    if (init_result.result == result_code::SUCCESS) {
-        bsp_kout<< "Second stage initialization successful!" << kendl;
-    } else {
-        bsp_kout<< "Second stage initialization failed!" << kendl;
-        return exit_with_cleanup(-1);
-    }
+// ================================================================
+// 压力测试
+// ================================================================
 
-    // 打印基本信息
-    FreePagesAllocator::first_BCB->print_basic_info();
+static constexpr int   NUM_ITEMS  = 10000;
+static constexpr int   NUM_CYCLES = 1000000;
+static constexpr int   FLUSH_INTERVAL = 100000;
 
-    // 生成随机mem_seg向量
-    std::vector<mem_seg> allocations;
+static void run_stress(FreePagesAllocator::BuddyControlBlock* bcb) {
+    printf("\n=== Stress Test ===\n");
+    std::vector<mem_seg> items(NUM_ITEMS);
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::lognormal_distribution<double> size_dist(log(1<<14), 1.0); 
+    std::lognormal_distribution<double> dist(log(1<<14), 1.0);
+    std::uniform_int_distribution<int> idx_dist(0, NUM_ITEMS - 1);
 
-    const int num_allocations = 10000; // 分配100000次
-    bsp_kout<< "Generating " << num_allocations << " random allocations..." << kendl;
-
-    // 创建文件A用于保存测试集（二进制结构体数组）
-#ifdef BEHAVIOR_SAVE
-    const char* test_set_path = "test_set_A.bin";
-    const size_t test_set_bytes = static_cast<size_t>(num_allocations) * sizeof(test_set_record);
-    int test_set_fd = -1;
-    auto* test_set_map = static_cast<test_set_record*>(
-        map_file_rw(test_set_path, test_set_bytes, test_set_fd)
-    );
-    if (test_set_map == MAP_FAILED) {
-        bsp_kout<< "Failed to mmap " << test_set_path << " for writing!" << kendl;
-        return exit_with_cleanup(-1);
+    for (auto& item : items) {
+        item.addr = 1;
+        item.size = ((uint64_t)dist(gen) % 0x100000) + 4096;
     }
-    std::memset(test_set_map, 0, test_set_bytes);
-#endif
 
-    for (int i = 0; i < num_allocations; ++i) {
-        mem_seg seg;
-        seg.start_addr = 1; // 按照注释初始化为无效地址
-        // 使用对数正态分布生成大小，并转换为uint64_t类型，限制最大值为4MB
-        uint64_t size = static_cast<uint64_t>(size_dist(gen)) % 0x100000000 + 1;
-        seg.size = size; // 使用对数正态分布生成的size
-        allocations.push_back(seg);
-        
-        // 保存到文件A（二进制）
-#ifdef BEHAVIOR_SAVE
-        test_set_map[i].index = static_cast<uint32_t>(i);
-        test_set_map[i].size = size;
-        test_set_map[i].initial_addr = seg.start_addr;
-#endif
-    }
-#ifdef BEHAVIOR_SAVE
-    msync(test_set_map, test_set_bytes, MS_SYNC);
-    munmap(test_set_map, test_set_bytes);
-    close(test_set_fd);
-    bsp_kout<< "Test set saved to " << test_set_path << kendl;
-#else
-    bsp_kout<< "BEHAVIOR_SAVE not enabled: skip test set file output" << kendl;
-#endif
+    uint64_t alloc_count = 0, free_count = 0;
+    uint64_t t0 = rdtsc();
 
-    // 创建文件B用于记录操作日志（二进制结构体数组）
-    const int num_cycles = 1000000;
-#ifdef BEHAVIOR_SAVE
-    const char* op_log_path = "operation_log_B.bin";
-    const size_t op_log_bytes = static_cast<size_t>(num_cycles) * sizeof(op_record);
-    int op_log_fd = -1;
-    auto* op_log_map = static_cast<op_record*>(
-        map_file_rw(op_log_path, op_log_bytes, op_log_fd)
-    );
-    if (op_log_map == MAP_FAILED) {
-        bsp_kout<< "Failed to mmap " << op_log_path << " for writing!" << kendl;
-        return exit_with_cleanup(-1);
-    }
-    std::memset(op_log_map, 0, op_log_bytes);
-    size_t op_log_count = 0;
-#else
-    bsp_kout<< "BEHAVIOR_SAVE not enabled: skip operation log file output" << kendl;
-#endif
+    for (int cycle = 0; cycle < NUM_CYCLES; ++cycle) {
+        int idx = idx_dist(gen);
+        mem_seg& item = items[idx];
 
-    // 创建状态机进行100万次分配和释放操作
-    std::uniform_int_distribution<int> index_dist(0, num_allocations - 1);
-    bsp_kout<< "Starting state machine with 1,000,000 allocation/deallocation cycles..." << kendl;
-    uint64_t old_stamp=rdtsc();
-    int exit_code = 0;
-    
-    for (int cycle = 0; cycle < num_cycles; ++cycle) {
-        // 随机选择一个索引
-        int idx = index_dist(gen);
-        
-        // 获取对应的mem_seg
-        mem_seg& seg = allocations[idx];
-#ifdef BEHAVIOR_SAVE
-        op_record& rec = op_log_map[op_log_count++];
-        rec.cycle = static_cast<uint32_t>(cycle);
-        rec.index = static_cast<uint32_t>(idx);
-        rec.request_size = seg.size;
-#endif
-        
-        if (seg.start_addr == 1) {
-            // 地址无效，进行分配
-            KURD_t alloc_result;
-            phyaddr_t addr = FreePagesAllocator::first_BCB->allocate_buddy_way(seg.size, alloc_result);
-            
-            // 记录分配操作到文件B
-#ifdef BEHAVIOR_SAVE
-            rec.op = op_type::ALLOCATE;
-            rec.addr = addr;
-            rec.result_code = static_cast<uint32_t>(alloc_result.result);
-#endif
-            if (alloc_result.result == result_code::SUCCESS && addr != 0) {
-                seg.start_addr = addr; // 更新为实际分配的地址
-            } else if (is_no_available_buddy_fail(alloc_result)) {
-                // 正常的内存不足情况，跳过
-            } else {
-                bsp_kout<< "Allocation failed at cycle " << cycle 
-                             << ", size=" << seg.size << kendl;
-                exit_code = 2;
-                break;
+        if (item.addr == 1) {
+            KURD_t k;
+            phyaddr_t a = bcb->allocate_buddy_way(item.size, k);
+            if (success_all_kurd(k) && a != 0) {
+                item.addr = a;
+                alloc_count++;
             }
         } else {
-            // 地址有效，进行对称释放
-            KURD_t free_result = FreePagesAllocator::first_BCB->free_buddy_way(
-                seg.start_addr, 
-                seg.size
-            );
-            
-            // 记录释放操作到文件B
-#ifdef BEHAVIOR_SAVE
-            rec.op = op_type::FREE;
-            rec.addr = seg.start_addr;
-            rec.result_code = static_cast<uint32_t>(free_result.result);
-#endif
-            if (free_result.result == result_code::SUCCESS) {
-                seg.start_addr = 1; // 重置为无效地址
-            } else {
-                bsp_kout<< "Deallocation failed at cycle " << cycle 
-                             << ", addr=0x" << seg.start_addr << kendl;
-                exit_code = 3;
-                break;
+            KURD_t fk = bcb->free_buddy_way(item.addr, item.size);
+            if (success_all_kurd(fk)) {
+                item.addr = 1;
+                free_count++;
             }
         }
-        
-        // 每隔100000次输出一次进度和时间
-        if ((cycle + 1) % 100000 == 0) {
-            bsp_kout<< "Completed " << (cycle + 1) << " cycles" << kendl;
-            uint64_t now_tsc=rdtsc();
-            bsp_kout<< "Elapsed time: " << (now_tsc-old_stamp)/100000 << " tsc" << kendl;
-            old_stamp=now_tsc;
-            bsp_kout<< "Timestamp: " <<now<< kendl;
+
+        if ((cycle + 1) % FLUSH_INTERVAL == 0) {
+            uint64_t t1 = rdtsc();
+            printf("  cycle %7d/%d  alloc=%lu free=%lu  flush...",
+                   cycle + 1, NUM_CYCLES, alloc_count, free_count);
+            fflush(stdout);
+            if (do_flush(bcb) == 0)
+                printf(" OK  (%lu ms)\n", (t1 - t0) / 1000000);
+            else
+                printf(" FAIL\n");
         }
     }
-    
-    // 关闭操作日志文件
-#ifdef BEHAVIOR_SAVE
-    const size_t used_log_bytes = op_log_count * sizeof(op_record);
-    if (used_log_bytes > 0) {
-        msync(op_log_map, used_log_bytes, MS_SYNC);
+
+    uint64_t remain = 0;
+    for (auto& item : items) {
+        if (item.addr != 1) {
+            bcb->free_buddy_way(item.addr, item.size);
+            item.addr = 1;
+            remain++;
+        }
     }
-    munmap(op_log_map, op_log_bytes);
-    ftruncate(op_log_fd, static_cast<off_t>(used_log_bytes));
-    close(op_log_fd);
-    bsp_kout<< "Operation log saved to " << op_log_path << kendl;
-#endif
-    
-    FreePagesAllocator::first_BCB->print_basic_info();
-    KURD_t flush=FreePagesAllocator::first_BCB->free_pages_flush();
-    if(!success_all_kurd(flush)){
-        bsp_kout<< "violation detect" << kendl;
-        FreePagesAllocator::first_BCB->print_basic_info();
+
+    uint64_t t1 = rdtsc();
+    printf("Done: %lu alloc %lu free, %lu remaining freed, %lu ms\n",
+           alloc_count, free_count, remain, (t1 - t0) / 1000000);
+    do_flush(bcb);
+    printf("Stress: %s\n", g_failures == 0 ? "ALL CLEAN" : "HAD FAILURES");
+}
+
+// ================================================================
+// 主函数
+// ================================================================
+
+int main() {
+    printf("=== BCB Test (mixed_bitmap_v2) ===\n\n");
+
+    constexpr phyaddr_t FAKE_BASE = 0x100000000ULL;
+    constexpr uint8_t   BCB_ORDER = 18;
+
+    FreePagesAllocator::BuddyControlBlock* bcb =
+        new FreePagesAllocator::BuddyControlBlock(FAKE_BASE, BCB_ORDER);
+
+    printf("BCB base=0x%lx  max_order=%u\n", (unsigned long)FAKE_BASE, (unsigned)BCB_ORDER);
+
+    // 分配 bitmap
+    constexpr uint64_t total_bits = 1ULL << (BCB_ORDER + 1);
+    constexpr uint64_t bitmap_bytes = ((total_bits + 63) / 64) * sizeof(uint64_t);
+    void* bitmap_mem = std::malloc(bitmap_bytes);
+    if (!bitmap_mem) { fprintf(stderr, "malloc bitmap failed\n"); return 1; }
+    std::memset(bitmap_mem, 0, bitmap_bytes);
+    printf("Bitmap: %lu bytes at %p\n", (unsigned long)bitmap_bytes, bitmap_mem);
+
+    bcb->corebcb_mixedbitmap_base_acclaim((vaddr_t)bitmap_mem);
+    printf("BCB initialized\n\n");
+
+    // --- 基础测试 ---
+    printf("--- Basic Tests ---\n");
+    test_single(bcb);
+    test_various_sizes(bcb);
+    test_split_coalesce(bcb);
+
+    if (g_failures > 0) {
+        printf("\n*** %d basic test(s) FAILED ***\n\n", g_failures);
+    } else {
+        printf("\n*** All basic tests PASSED ***\n\n");
     }
-    bsp_kout<< "=== Random Allocation/Deallocation Test Completed ===" << kendl;
-    return exit_with_cleanup(exit_code);
+
+    // --- 压力测试 ---
+    if (g_failures == 0) {
+        run_stress(bcb);
+    }
+
+    do_flush(bcb);
+    delete bcb;
+    std::free(bitmap_mem);
+
+    printf("\n=== Complete: %d failure(s) ===\n", g_failures);
+    return g_failures ? 1 : 0;
 }

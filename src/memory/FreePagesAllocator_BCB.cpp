@@ -145,26 +145,23 @@ phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(uint64_t siz
     statistics.scan_count++;
     for(uint8_t i=order; i<=max_supprt_order; i++){
         uint8_t found_order = i;
-        uint64_t found_idx = bcb_bitmap.scan_free_block(found_order);
-        if(found_idx == ~0ULL) continue;
-
-        // 从 heap-index 转 <found_order, offset>
-        uint64_t level = 63 - __builtin_clzll(found_idx);
-        uint64_t found_offset = found_idx - (1ULL << level);
+        uint64_t found_off = bcb_bitmap.scan_free_block(found_order);
+        // scan_free_block 返回 offset (非 bitmap 绝对引索)
+        if(found_off == ~0ULL) continue;
 
         if(found_order > order){
-            KURD_t kurd = split_page(found_offset, found_order, order);
+            KURD_t kurd = split_page(found_off, found_order, order);
             if(!success_all_kurd(kurd)){ result=kurd; return 0; }
-            found_offset = found_offset << (found_order - order);
+            found_off <<= (found_order - order);
         }
-        bcb_bitmap.bit_set0(found_offset, order);
+        bcb_bitmap.bit_set0(found_off, order);
         #ifdef REPALY_MODE
-        replay_internal_mark_free(order, found_offset);
+        replay_internal_mark_free(order, found_off);
         KURD_t replay_kurd = replay_validate_tree_no_lock("allocate_buddy_way");
         if(!success_all_kurd(replay_kurd)){ result=replay_kurd; return 0; }
         #endif
         statistics.alloc_times_success++;
-        phyaddr_t res_addr = base + (found_offset << (order + 12));
+        phyaddr_t res_addr = base + (found_off << (order + 12));
         statistics.free_count[order]--;
         result=success; return res_addr;
     }
@@ -352,6 +349,7 @@ bool FreePagesAllocator::BuddyControlBlock::is_addr_belong_to_this_BCB(phyaddr_t
 
 KURD_t FreePagesAllocator::BuddyControlBlock::free_buddy_way(phyaddr_t base, uint64_t size)
 {
+    using namespace MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::FREE_RESULTS_CODE;
     KURD_t success=default_success();
     KURD_t error=default_error();
     error.event_code=MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::EVENT_CODE_FREE;
@@ -359,7 +357,7 @@ KURD_t FreePagesAllocator::BuddyControlBlock::free_buddy_way(phyaddr_t base, uin
     if(!is_addr_belong_to_this_BCB_no_lock(base) ||
        !is_addr_belong_to_this_BCB_no_lock(base + size - 1)){
         bsp_kout << "free_buddy_way: addr not belong" << kendl;
-        error.reason=MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES::FREE_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_BASE_NOT_BELONG;
+        error.reason=FAIL_REASONS_CODE::FAIL_REASON_CODE_BASE_NOT_BELONG;
         return error;
     }
     uint8_t order = size_to_order(size);

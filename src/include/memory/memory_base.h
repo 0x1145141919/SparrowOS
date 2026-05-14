@@ -164,21 +164,15 @@ struct VM_DESC
     uint8_t is_out_bound_protective:1; // 是否有越界保护区,只有is_vaddr_alloced为1的bit此位才有意义，
     uint64_t SEG_SIZE_ONLY_UES_IN_BASIC_SEG;
 };
+// v3: 砍掉 is_longtime, is_crucial_variable, vaddraquire, align_log2
+// 仅保留 force_first_linekd_heap 和 is_when_realloc_force_new_addr
 struct alloc_flags_t{
-    uint8_t is_longtime:1;
-    uint8_t is_crucial_variable:1;
-    uint8_t vaddraquire:1;
-    uint8_t force_first_linekd_heap:1;
-    uint8_t is_when_realloc_force_new_addr:1;//在realloc中强制重新分配内存，非realloc接口忽视此位但是会忠实记录进入metadata,realloc中此位不设置会优先原地调整，原地调整解决则不会修改源地址和元数据flags
-    uint8_t align_log2;
+    uint8_t force_first_linekd_heap:1;    // 强制使用 first_linekd_heap
+    uint8_t is_when_realloc_force_new_addr:1;// realloc 强制新分配
 };
 constexpr alloc_flags_t default_flags={
-    .is_longtime=false,
-    .is_crucial_variable=false,
-    .vaddraquire=true,
     .force_first_linekd_heap=false,
     .is_when_realloc_force_new_addr=false,
-    .align_log2=4
 };
 
 /**

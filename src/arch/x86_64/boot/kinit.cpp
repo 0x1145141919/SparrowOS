@@ -166,12 +166,13 @@ void very_early_init(init_to_kernel_header* transfer){
 extern "C" void kernel_start(init_to_kernel_header* transfer) 
 {   
     very_early_init(transfer);
+    ksetmem_8(transfer,0,transfer->self_pages_count*0x1000);
     transfer=nullptr;//此信息包是属于阅后即焚
     int  Status=0;
     KURD_t bsp_init_kurd=KURD_t();
     bsp_init_kurd=GfxPrim::Init(&gop_info,gop_buffer);//要开发直接写图形缓冲区的接口
     if(error_kurd(bsp_init_kurd)){
-        asm volatile("hlt");
+        return;
     }
     ksymmanager::Init(&symtable_file,symtable_file.size);  
     readonly_timer=new HPET_driver_only_read_time_stamp(&hpet_mmio);

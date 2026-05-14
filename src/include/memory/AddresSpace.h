@@ -240,13 +240,10 @@ class kspace_vm_table_t:Ktemplats::RBTree<VM_DESC,VM_desc_cmp>
 {
 public:
     using Node = Ktemplats::RBTree<VM_DESC,VM_desc_cmp>::Node;
+// v3: 精简 alloc_flags_t
 static constexpr alloc_flags_t specify_alloc_flag={
-    .is_longtime=true,
-    .is_crucial_variable=true,
-    .vaddraquire=true,
     .force_first_linekd_heap=true,
-    .is_when_realloc_force_new_addr=false,//在realloc中强制重新分配内存，非realloc接口忽视此位但是会忠实记录进入metadata,realloc中此位不设置会优先原地调整，原地调整解决则不会修改源地址和元数据flags
-    .align_log2=4
+    .is_when_realloc_force_new_addr=false,
 };
 protected:
     Node* allocate_node(const VM_DESC& val) override

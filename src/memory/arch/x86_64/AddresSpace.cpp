@@ -1055,9 +1055,6 @@ AddressSpace::~AddressSpace()
 
 KURD_t AddressSpace::second_stage_init()
 {
-    alloc_flags_t flags=default_flags;
-    flags.force_first_linekd_heap=true;
-    flags.align_log2=12;
     KURD_t contain=KURD_t();
     pml4_phybase=FreePagesAllocator::alloc(_4KB_SIZE, (this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, contain);
     if(pml4_phybase==0||error_kurd(contain))return contain;

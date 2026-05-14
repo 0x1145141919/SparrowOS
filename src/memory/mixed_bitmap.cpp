@@ -12,6 +12,14 @@ static inline uint64_t idx_from_order_offset(uint8_t out_order, uint8_t order, u
     return (1ULL << (out_order - order)) + offset;
 }
 
+static inline void order_offset_from_idx(uint8_t out_order, uint64_t idx,
+                                           uint8_t& out_order_val, uint64_t& out_offset)
+{
+    uint64_t level = 63 - __builtin_clzll(idx);
+    out_order_val = static_cast<uint8_t>(out_order - level);
+    out_offset = idx - (1ULL << level);
+}
+
 static uint64_t u64_scan_interval(uint64_t* bitmap, uint64_t start, uint64_t end)
 {
     if (start >= end) return ~0ULL;
@@ -78,5 +86,9 @@ bool FreePagesAllocator::BuddyControlBlock::mixed_bitmap_v2::bit_get(uint64_t of
 uint64_t FreePagesAllocator::BuddyControlBlock::mixed_bitmap_v2::scan_free_block(uint8_t& order)
 {
     uint64_t range_end = 1ULL << (1 + out_order - order);
-    return u64_scan_interval(bitmap, 1, range_end);
+    uint64_t found = u64_scan_interval(bitmap, 1, range_end);
+    if (found == ~0ULL) return ~0ULL;
+    uint64_t offset;
+    order_offset_from_idx(out_order, found, order, offset);
+    return offset;
 }

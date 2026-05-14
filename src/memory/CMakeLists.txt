@@ -3,7 +3,7 @@
 set(MEMORY_SOURCE 
     ${CMAKE_CURRENT_SOURCE_DIR}/all_pages_arr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/kpoolmemmgr.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/kpoolmemmgr_HCBv2.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/kpoolmemmgr_HCBv3.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/AddresSpace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/KspacMapMgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/KspacMapMgr_pagediretct_operate.cpp
