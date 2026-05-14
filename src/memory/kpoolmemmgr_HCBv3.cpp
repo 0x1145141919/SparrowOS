@@ -279,9 +279,11 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
     if (valid) { return error; }
 
     // data_va 必须至少 2M 对齐
+#ifndef TEST_MODE
     if (data_va & ((1ULL << 21) - 1)) {
         return error;
     }
+#endif
 
     vbase_      = data_va;
     total_size_ = size;
@@ -509,14 +511,17 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_free(uint64_t offset, uint8_t order)
         return error;
     }
 
+    // 初始块：设位 + 计数 + 入缓存（三位一体）
+    free_page_without_merge(offset, order);
+
+    // 向上折叠（参考 conanico_free）
     uint64_t cur_off = offset;
     uint8_t  cur_ord = order;
-
-    // 向上折叠：中间步骤只维护位图和计数，不入缓存
     while (cur_ord < max_order_) {
         uint64_t buddy_off = cur_off ^ 1;
         if (!bcb_bitmap.bit_get(buddy_off, cur_ord)) break;
 
+        // 折叠：清两个子块的位和计数
         bcb_bitmap.bit_set0(cur_off, cur_ord);
         bcb_bitmap.bit_set0(buddy_off, cur_ord);
         order_free_count[cur_ord] -= 2;
@@ -530,11 +535,10 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_free(uint64_t offset, uint8_t order)
             return fatal;
         }
 
+        // 父块：设位 + 计数 + 入缓存
+        free_page_without_merge(cur_off, cur_ord);
         stat_coalesce++;
     }
-
-    // 折叠结束：最终块三位一体（设位 + 计数 + 入缓存）
-    free_page_without_merge(cur_off, cur_ord);
 
     return success;
 }

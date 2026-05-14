@@ -204,6 +204,9 @@ private:
     // first_linekd_heap: BSS 静态数据, 内核入口尽早 online().
     // 编译时 bitmap/data 在 BSS, 第一行代码即可 alloc.
     static HCB_v3   first_linekd_heap;
+#ifdef TEST_MODE
+public:
+#endif
     static HCB_v3*  HCB_ARRAY;          // 动态分配, multi_heap_enable 后可用
     static spinrwlock_cpp_t HCB_ARRAY_lock;
     static KURD_t   alloc_heap(uint32_t idx);

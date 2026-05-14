@@ -128,13 +128,16 @@ phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(uint64_t siz
                 KURD_t kurd = split_page(cached_idx, i, order);
                 if(!success_all_kurd(kurd)){ result=kurd; return 0; }
             }
-            bcb_bitmap.bit_set0(cached_idx, order);
+            // 分裂后, 目标 order 上的偏移为 cached_idx << (i - order)
+            uint64_t alloc_idx = (i > order) ? (cached_idx << (i - order)) : cached_idx;
+            bcb_bitmap.bit_set0(alloc_idx, order);
             #ifdef REPALY_MODE
-            replay_internal_mark_free(order, cached_idx);
+            replay_internal_mark_free(order, alloc_idx);
             KURD_t replay_kurd = replay_validate_tree_no_lock("allocate_buddy_way");
             if(!success_all_kurd(replay_kurd)){ result=replay_kurd; return 0; }
             #endif
-            phyaddr_t res_addr = base + (cached_idx << (order + 12));
+            // 物理地址由原始 cache_idx 在 order i 上决定 (分裂不改变物理地址)
+            phyaddr_t res_addr = base + (cached_idx << (i + 12));
             statistics.alloc_times_success++;
             statistics.free_count[order]--;
             result=success; return res_addr;

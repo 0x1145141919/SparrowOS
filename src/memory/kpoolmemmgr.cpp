@@ -4,6 +4,10 @@
 #include "util/kout.h"
 #include "panic.h"
 #include "memory/kpoolmemmgr.h"
+#ifdef TEST_MODE
+#include <sys/mman.h>
+#include <cstring>
+#endif
 #include "memory/AddresSpace.h"
 #include "memory/all_pages_arr.h"
 #include "firmware/ACPI_APIC.h"
@@ -60,58 +64,80 @@ void kpoolmemmgr_t::Init()
 }
 
 // ── multi_heap_enable ──
-// 逻辑同 HCB_v2, 但 HCB_ARRAY 为 HCB_v3 对象数组 (不落 first_linekd_heap)
 KURD_t kpoolmemmgr_t::multi_heap_enable()
 {
+    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS;
+
     KURD_t success = default_success();
     KURD_t fail    = default_fail();
-    success.event_code = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
-    fail.event_code    = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    success.event_code = EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    fail.event_code    = EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
 
     if (is_muli_heap_enabled) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_ALREADY_ENABLED;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_ALREADY_ENABLED;
         return fail;
     }
     uint64_t processor_count = logical_processor_count;
     if (processor_count == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_BAD_PROCESSOR_COUNT;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_BAD_PROCESSOR_COUNT;
         return fail;
     }
     uint64_t hcb_count = processor_count * (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
+    uint64_t heap_area_size = HCB_DEFAULT_SIZE * hcb_count;
+    uint64_t bitmap_area_size = heap_area_size / 128;
 
+#ifdef TEST_MODE
+    HCB_ARRAY = (HCB_v3*)mmap(nullptr, sizeof(HCB_v3) * hcb_count,
+                               PROT_READ|PROT_WRITE,
+                               MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (HCB_ARRAY == MAP_FAILED) { return fail; }
+    memset(HCB_ARRAY, 0, sizeof(HCB_v3) * hcb_count);
+
+    void* heap_mem = mmap(nullptr, heap_area_size + bitmap_area_size,
+                           PROT_READ|PROT_WRITE,
+                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (heap_mem == MAP_FAILED) { return fail; }
+    heap_area.start = (vaddr_t)heap_mem;
+    heap_area.end   = heap_area.start + heap_area_size;
+    heap_area.is_vaddr_alloced = 1;
+    heap_area_bitmaps.start = heap_area.end;
+    heap_area_bitmaps.end   = heap_area_bitmaps.start + bitmap_area_size;
+    heap_area_bitmaps.is_vaddr_alloced = 1;
+#else
     HCB_ARRAY_lock.write_lock();
-    KURD_t kurd;
-    HCB_ARRAY = (HCB_v3*)__wrapped_pgs_valloc(&kurd,
-        alignup_and_shift_right(sizeof(HCB_v3) * hcb_count, 12),
-        page_state_t::kernel_pinned, 12);
+    {
+        KURD_t kurd;
+        HCB_ARRAY = (HCB_v3*)__wrapped_pgs_valloc(&kurd,
+            alignup_and_shift_right(sizeof(HCB_v3) * hcb_count, 12),
+            page_state_t::kernel_pinned, 12);
+    }
     ksetmem_8(HCB_ARRAY, 0, hcb_count * sizeof(HCB_v3));
     HCB_ARRAY_lock.write_unlock();
 
-    uint64_t heap_area_size = HCB_DEFAULT_SIZE * hcb_count;
     heap_area.start = kspace_vm_table->alloc_available_space(heap_area_size, 0);
     if (heap_area.start == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
         return fail;
     }
     heap_area.end = heap_area.start + heap_area_size;
     heap_area.is_vaddr_alloced = 1;
     if (kspace_vm_table->insert(heap_area) != OS_SUCCESS) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
         return fail;
     }
 
-    uint64_t bitmap_area_size = heap_area_size / 128;
     heap_area_bitmaps.start = kspace_vm_table->alloc_available_space(bitmap_area_size, 0);
     if (heap_area_bitmaps.start == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
         return fail;
     }
     heap_area_bitmaps.end = heap_area_bitmaps.start + bitmap_area_size;
     heap_area_bitmaps.is_vaddr_alloced = 1;
     if (kspace_vm_table->insert(heap_area_bitmaps) != OS_SUCCESS) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
+        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
         return fail;
     }
+#endif
 
     is_muli_heap_enabled = true;
     return success;
