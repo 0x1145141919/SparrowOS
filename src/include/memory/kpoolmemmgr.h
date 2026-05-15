@@ -1,6 +1,7 @@
 #pragma once
 #include "stdint.h"
 #include "util/bitmap.h"
+#include "util/BuddyControlBlock_foundation.h"
 #include "memmodule_err_definitions.h"
 #include "abi/boot.h"
 #include <util/lock.h>
@@ -100,28 +101,7 @@ public:
     static_assert(sizeof(buddy_meta) == 16, "buddy_meta must be 16 bytes");
 
     // ── HCB_v3 内部类 ──
-#ifdef TEST_MODE
-public:
-#else
-private:
-#endif
-    class mixed_bitmap_v2 : bitmap_t {
-        uint8_t out_order = 0;
-    public:
-        using bitmap_t::bit_set;
-        using bitmap_t::bit_get;
-        mixed_bitmap_v2() = default;
-        KURD_t online(vaddr_t bitmap_va, uint8_t out_order);
-        KURD_t offline();
-        uint64_t scan_free_block(uint8_t& order);
-        void bit_set0(uint64_t offset, uint8_t order);
-        void bit_set1(uint64_t offset, uint8_t order);
-        bool bit_get(uint64_t offset, uint8_t order);
-        // 用于 linktime_init 等已有现成物理页的场景（BSS数据，不需要分配物理页）
-        void init_existing(vaddr_t bitmap_va, uint8_t out_order_val);
-        phyaddr_t bitmap_pbase = 0;
-        uint64_t  bitmap_allocated_size = 0;
-    };
+    // （mixed_bitmap_v2 已替换为 BuddyControlBlock_foundation）
 
     struct BuddyCache {
         uint64_t entries[PER_ORDER_CACHE_COUNT];
@@ -156,8 +136,7 @@ private:
         void test_init(vaddr_t data_va, vaddr_t bitmap_va, uint32_t size);
 #endif
 
-        // 统计
-        uint64_t order_free_count[MAX_ORDER + 1] = {};
+        // 统计（order_free_count 由底座内部维护）
         uint64_t stat_alloc   = 0;
         uint64_t stat_free    = 0;
         uint64_t stat_alloc_fail = 0;
@@ -168,21 +147,21 @@ private:
 
     private:
         friend class kpoolmemmgr_t;
-        mixed_bitmap_v2 bcb_bitmap;
+        BuddyControlBlock_foundation fnd;
         BuddyCache      caches_[MAX_ORDER + 1];
         vaddr_t         vbase_  = 0;
         phyaddr_t       data_pbase = 0;
         uint32_t        total_size_ = 0;
         uint8_t         max_order_ = MAX_ORDER;
+        phyaddr_t       bitmap_pbase = 0;
+        uint64_t        bitmap_allocated_size = 0;
 
         // BCB core
         buddy_meta* meta_from_ptr(void* ptr) const;
         uint8_t     size_to_order(uint32_t size_with_meta) const;
-        uint64_t    ptr_to_offset(void* ptr) const;
+        uint64_t    ptr_to_offset(void* ptr, uint8_t order) const;
         KURD_t internal_alloc(uint64_t& out_offset, uint8_t order);
         KURD_t internal_free(uint64_t offset, uint8_t order);
-        KURD_t internal_split(uint64_t offset, uint8_t from_order, uint8_t to_order);
-        void   free_page_without_merge(uint64_t offset, uint8_t order);
         void   cache_insert(uint8_t order, uint64_t offset);
         bool   cache_pick(uint8_t order, uint64_t& out_offset);
 

@@ -154,7 +154,6 @@ x64_local_processor::x64_local_processor(uint32_t alloced_id)
         Panic::panic(default_panic_behaviors_flags,
             "[x64_local_processor]x2apic not supported",nullptr,&inshort,KURD_t());
     }
-    handler_register_bitmap=new Ktemplats::kernel_bitmap(allocatable_handler_count);
 }
 
 KURD_t x64_local_processor::default_kurd()

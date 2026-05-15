@@ -195,7 +195,41 @@ if(bcb_bitmap.bit_get(j, i)) actual++;
 - 锁/`dirty_count`/`is_addr_belong_to_this_BCB` — 不变
 - `first_BCB_bitmap[]` 备用数组 — 保留
 
-## 6. 与 v2 文档的主要差异
+## 6. 发现的缺陷与修复（2026-05-14）
+
+### 6.1 allocate_buddy_way 缓存路径缺陷
+
+**症状**：压力测试（BCB_test 1M cycles）中 `free_pages_flush` 报告 order 1 的 `free_count` 持续偏差,
+expected > actual, 表示释放计数虚增。
+
+**根因**：缓存命中的代码路径在从 `split_page` 返回后, 未将 `cached_idx` 从 source order `i` 换算到 target order `order`：
+
+```cpp
+// ❌ 错误：cached_idx 是 order i 的偏移, 不是 order
+bcb_bitmap.bit_set0(cached_idx, order);
+phyaddr_t res_addr = base + (cached_idx << (order + 12));
+
+// ✅ 修复：
+uint64_t alloc_idx = (i > order) ? (cached_idx << (i - order)) : cached_idx;
+bcb_bitmap.bit_set0(alloc_idx, order);
+// 物理地址仍由原始 cached_idx 在 order i 上决定
+phyaddr_t res_addr = base + (cached_idx << (i + 12));
+```
+
+该缺陷在从 `mixed_bitmap_t`（分段线性）迁移到 `mixed_bitmap_v2`（堆编码）时引入,
+参考提交 `808f40e` 之前的 `FreePagesAllocator.cpp` 中对应路径的正确写法（`cached_idx << (i - order)` 和 `cached_idx << (i + 12)`）。
+
+### 6.2 kpoolmemmgr_t::HCB_v3::internal_free 折叠计数缺陷
+
+**症状**：Phase 1 测试中 `flush_free_count` 报告 order 0~2 的 `order_free_count` 偏差。
+
+**根因**：折叠循环中 `order_free_count[cur_ord] -= 2` 时,
+其中一个计数是刚释放的块（从未被计入 free count）, 减去 2 导致下溢/计数漂移。
+
+**修复**：将 `free_page_without_merge`（设位+计数+入缓存）提前到折叠循环之前,
+与 FreePagesAllocator::BuddyControlBlock::conanico_free 保持一致的流程。
+
+## 7. 与 v2 文档的主要差异
 
 | 方面 | v2 (mixed_bitmap_t) | v3 (mixed_bitmap_v2) |
 |------|---------------------|---------------------|

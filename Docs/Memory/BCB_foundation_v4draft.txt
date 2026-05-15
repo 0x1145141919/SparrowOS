@@ -1,0 +1,380 @@
+本文档为伙伴系统底座的v4的文档草案，一个基于位图数据结构上面编码的伙伴系统
+本文档是在mixed_bitmap_v2的自组织数据编码思想，发现了其中的硬性缺陷，改进而来的
+由此理解这个文档之前务必在git历史中学习mixed_bitmap_v2或者至少看BCB_docv3.md的相应章节，学习透彻了再学习此文档
+
+引言：mixed_bitmap_v2的实现思路详见BCB_docv3.md，而这种只记录叶子节点存在性的行为理论上存储了整个伙伴系统二叉树的所有信息，但是验证成本巨高，难以DFS，由是在这个文档里面，我在mixed_bitmap_v2的基础上，增加数据量以及改变组织形式，让其改变这个问题
+
+────────────────────────────────────────────────
+一、原始位图数据层
+────────────────────────────────────────────────
+
+相较于v2，这里的改进是从每个order0 2bit预算上调到3bit预算。
+由是从bit数组视角从 [0, 3<<order_max) 个bit。
+
+总大小：3 × 2^N bits (N = max_supprt_order)
+
+分两区：
+  [0, 2^(N+1))       非order0节点区
+                      2-bit/node, 节点索引 i ∈ [0, 2^N)
+  [2^(N+1), 3·2^N)   order0叶子节点区
+                      1-bit/node, 节点索引 j ∈ [0, 2^N)
+
+以 uint64_t bitmap[] 承载。
+
+────────────────────────────────────────────────
+二、非order0节点区：原始bit → node数组转换
+────────────────────────────────────────────────
+
+原始bit数组 [0, 2^(N+1)) 映射为node数组，每项2bit：
+
+  node[i] = bitmap[ (2i)/64 ] 的 bit[ 2i%64, 2i%64+2 )
+
+  i ∈ [0, 2^N)
+
+注：2i%64恒为偶数（取值范围为0, 2, 4, …, 62），2bit始终在同一uint64_t内，不跨越word边界。
+
+节点状态编码（非order0，2bit）：
+
+  0b11  存在且为空闲叶子节点（整个块空闲）
+  0b10  存在且为非叶子节点（子树中有空闲，但拼不成当前order整块）
+  0b01  存在且为占用叶子节点（整块已分配）
+  0b00  不存在（从未分裂至此粒度）
+
+节点索引语义（标准heap索引布局）：
+
+  i = 0      弃用，恒为0b00（不被任何节点使用）
+  i = 1      order = N,     level=0        的节点
+  i = 2~3    order = N−1,   level=1        的节点（共2个）
+  i = 4~7    order = N−2,   level=2        的节点（共4个）
+  i = 8~15   order = N−3,   level=3        的节点（共8个）
+  ⋮
+  i ∈ [2^k, 2^(k+1)−1]     order = N−k,    level=k   的节点（共2^k个）
+  ⋮
+  i ∈ [2^(N−1), 2^N−1]     order = 1,      level=N−1 的节点（共2^(N−1)个）
+
+heap索引 ↔ (order, offset) 转换：
+
+  heap index → order/offset:
+    level = 63 − __builtin_clzll(i)         // floor(log2(i)), i≠0
+    order = N − level
+    offset = i − (1 << level)
+
+  (order, offset) → heap index:
+    level = N − order
+    i = (1 << level) + offset
+
+────────────────────────────────────────────────
+三、order0叶子节点区：1bit位图
+────────────────────────────────────────────────
+
+order0区域的bit起始位置 = 2^(N+1) = 2·2^N
+
+order0节点 j ∈ [0, 2^N) 映射回heap索引：
+  i = 2^N + j
+  j = i − 2^N
+
+bit定位：
+  order0_bit_pos = (1 << N) + (2^N + j) = (1 << N) + i
+  其中 i = 2^N + j ∈ [2^N, 2^(N+1)−1]
+  所以 order0_bit_pos ∈ [2^(N+1), 3·2^N) ✓
+
+叶子节点编码（1bit）：
+  1    空闲页框
+  0    已占用页框
+
+────────────────────────────────────────────────
+四、访问原语
+────────────────────────────────────────────────
+
+class mixed_bitmap_v4 {
+    uint64_t* bitmap;
+    uint8_t   N;  // max_supprt_order
+
+    // ─── 非order0节点：2bit ───
+    uint8_t node_read(uint64_t heap_idx) {
+        uint64_t boff = heap_idx * 2;
+        return (bitmap[boff >> 6] >> (boff & 63)) & 0b11;
+    }
+    void node_write(uint64_t heap_idx, uint8_t val) {
+        uint64_t boff = heap_idx * 2;
+        uint64_t& w = bitmap[boff >> 6];
+        uint8_t  sh = boff & 63;
+        w = (w & ~(0b11ull << sh)) | ((uint64_t)val << sh);
+    }
+
+    // ─── order0叶子节点：1bit ───
+    bool leaf_read(uint64_t leaf_idx) {  // leaf_idx ∈ [2^N, 2^(N+1))
+        uint64_t boff = (1ull << N) + leaf_idx;
+        return (bitmap[boff >> 6] >> (boff & 63)) & 1;
+    }
+    void leaf_write(uint64_t leaf_idx, bool free) {
+        uint64_t boff = (1ull << N) + leaf_idx;
+        uint64_t& w = bitmap[boff >> 6];
+        uint8_t  sh = boff & 63;
+        if (free) w |=  (1ull << sh);
+        else      w &= ~(1ull << sh);
+    }
+
+    // ─── 转换辅助 ───
+    static uint64_t order_offset_to_idx(uint8_t order, uint64_t offset) {
+        return (1ull << (N - order)) + offset;
+    }
+    static void idx_to_order_offset(uint64_t idx,
+                                    uint8_t& order, uint64_t& offset) {
+        uint8_t lvl = 63 - __builtin_clzll(idx);
+        order  = N - lvl;
+        offset = idx - (1ull << lvl);
+    }
+
+    // ─── 内部 free_count 数组 ───
+    uint64_t free_count[DESINGED_MAX_SUPPORT_ORDER];
+};
+
+────────────────────────────────────────────────
+五、不变约束
+────────────────────────────────────────────────
+
+1. node[0] 恒为 0b00（弃用哨兵，不被任何节点使用）
+
+2. 非order0节点 0b00 意味着其整个子树（含所有order0后代页框）
+   从未参与过分配——DFS剪枝的硬边界。
+
+3. 非order0节点 0b01 vs 0b11 的区分使得合并时不需要检查后代：
+   两个子节点都是 0b11 → 父节点可直接升级为 0b11（折叠完成），
+   子节点降为 0b00（从该order的视角，不再需要存子节点这层）。
+
+4. 关键一致性：
+   非order0节点为0b10时，其两个子节点中至少有一个不是0b00或0b01。
+   非order0节点为0b11时，其两个子节点必为0b00（从未分裂至此粒度）。
+
+5. order0节点（1bit）不参与上述约束的后代检查，本身即为最细粒度。
+
+6. free_count[order] 必须始终与二叉树状态一致。
+   每一次 node_write/leaf_write 涉及节点状态变化时，
+   free_count 相应增减。free_count 的精度是后续 DFS
+   预跳的前提。
+
+7. 非order0节点 0b10 状态的子树结构内，所有子节点的 order
+   严格递减（子节点 order = 父节点 order − 1），这是 heap
+   索引布局的固有性质。
+
+────────────────────────────────────────────────
+六、上层接口设计
+────────────────────────────────────────────────
+
+底座以order级为操作粒度，接口设计如下：
+
+──────────────────────────────────
+6.1 find_candidate(base_order, KURD&) → uint64_t offset
+──────────────────────────────────
+
+功能：DFS 只读路径，找到第一个 ≥ base_order 的空闲叶节点。
+      只读不写，不修改树状态，不占用。
+
+执行步骤：
+
+  (1) free_count 预跳：从 base_order 到 N 扫描 free_count[]，
+      找到第一个 non-zero 的 order，记为 candidate_order。
+      如果扫完 N 都没有 → base_order 置为 0x40~0xff 错误码返回。
+
+  (2) 从 candidate_order 的节点范围开始 DFS：
+      入口节点 = node[(1 << (N − candidate_order)) + 0]，
+      即该 order 的 offset=0 节点。
+
+      对每个访问的节点 node[idx]：
+        state = node_read(idx)
+        order = N − level_of(idx)
+
+        - 0b00 / 0b01 → 此子树无可用块，剪枝返回上层
+        - 0b10 → 非叶节点，先下左子 (idx<<1)，再下右子 (idx<<1|1)
+        - 0b11 → 找到了！记录 (order, offset)，返回
+
+  (3) 返回时 base_order 设回 candidate_order（实际是哪个 order
+      找到的），返回值是该块的 offset。
+
+  约束：
+  - candidate_order 一定 ≥ 入参 base_order
+  - 找到的块一定是二叉树中 DFS 遍历序里第一个空闲块
+  - find_candidate 绝不修改位图或 free_count
+
+──────────────────────────────────
+6.2 split(order, offset, target_order) → KURD
+──────────────────────────────────
+
+功能：将一个 0b11 叶节点分裂到 target_order。
+      分裂时右保留空闲（0b11 保持不变），左路递归减小 order。
+      分裂出的右兄弟供调用方缓存。
+
+执行步骤：
+
+  (1) 验证当前 node[idx]（对应 (order, offset)）为 0b11。
+      若不是 → 返回错误 KURD。
+
+  (2) 若 order == target_order → 已经达到目标，直接返回成功。
+
+  (3) 分裂一级：
+      a) 当前节点 0b11 → 0b10（非叶节点）
+      b) free_count[order]--   （大块不再作为此 order 的空闲叶）
+      c) 左子 idx×2      → 置为 0b11
+      d) 右子 idx×2+1    → 置为 0b11
+      e) free_count[order−1] += 2（两个子块各算一个空闲叶）
+
+  (4) 递归（或迭代）：调 split(order−1, offset×2, target_order)
+      即只对左子递归分裂。
+
+  (5) 全部完成后：
+      - 左路最终节点在 target_order 上为 0b11（待 occupy）
+      - 右兄弟链均为 0b11（调用方可缓存）
+      - free_count 精确反映当前树结构
+
+  约束：
+  - split 只接受 0b11 作为起点
+  - 调用方必须在 split 后对左路做 order_occupy_try
+  - 分裂过程中如果 node_read 发现状态与预期不符（如子节点
+    居然不是 0b00），应产生 fatal KURD 上报
+
+──────────────────────────────────
+6.3 order_occupy_try(order, offset) → KURD
+──────────────────────────────────
+
+功能：占用一个空闲叶节点。将 0b11 节点标记为 0b01
+      （或 order0 叶子 1→0），更新 free_count。
+
+执行步骤：
+
+  (1) 读取当前节点状态：
+      若 order > 0 → node_read(idx)，必须为 0b11
+      若 order == 0 → leaf_read(idx)，必须为 1
+
+  (2) 若状态不满足，返回失败 KURD（可尝试其他候选者）。
+
+  (3) 写入占用状态：
+      order > 0 → node_write(idx, 0b01)
+      order == 0 → leaf_write(idx, false)
+
+  (4) free_count[order]--。
+
+  约束：
+  - 此接口可重入：如果两个线程对同一个节点 call，
+    第二个会失败（状态已经不是 0b11 了）
+  - 调用方应在 find_candidate → split 流程完成后
+    对左路最终节点 call 此接口
+
+──────────────────────────────────
+6.4 order_return(order, offset) → uint8_t final_order / KURD
+──────────────────────────────────
+
+功能：归还一个已占用的块，标记为空闲，然后向上合并。
+      返回值：折叠结束后最终达到的最高 order。
+      错误：0x40~0xff 编码为 KURD。
+
+执行步骤：
+
+  (1) 验证当前节点状态为已占用：
+      order > 0 → 应为 0b01
+      order == 0 → 应为 0
+      若不满足，返回错误。
+
+  (2) 标记为 free 叶节点：
+      order > 0 → node_write(idx, 0b11)
+      order == 0 → leaf_write(idx, true)
+      free_count[order]++
+
+  (3) 向上合并循环：
+      cur_order = order
+      cur_idx   = idx_to_heap_index(cur_order, offset)
+
+      while cur_order < N:
+          parent_idx    = cur_idx >> 1
+          buddy_idx     = cur_idx ^ 1    // 兄弟
+          parent_order  = cur_order + 1
+
+          buddy_state = (buddy_idx < 2^N)
+                        ? node_read(buddy_idx)
+                        : leaf_read(buddy_idx) ? 0b11 : 0b01
+
+          // 有序版的合并判定:
+          // 需要兄弟也是全空闲叶节点（0b11 或 leaf=1）
+          if buddy_state != 0b11:
+              break    // 兄弟不全空闲，无法继续合并
+
+          // 兄弟也是全空闲 → 可合并
+          // 清两个子节点
+          node_write(cur_idx, 0b00)
+          node_write(buddy_idx, 0b00)
+          free_count[cur_order]--       // 子 order 减少一个空闲叶
+          free_count[cur_order]--       // 另一子也减少
+
+          // 置父节点为全空闲叶
+          node_write(parent_idx, 0b11)
+          free_count[parent_order]++    // 父 order 增加一个空闲叶
+
+          // 上升一级，继续
+          cur_idx   = parent_idx
+          cur_order = parent_order
+
+      // 如果已经到 order0 层，兄弟检查要到 leaf 位图：
+      // 实际流程中 order0 合并到 order1 时的 buddy 判定
+      // 会涉及 leaf_read → node_write 的跨区操作，
+      // 上面伪代码已覆盖（buddy_idx 在 2^N 外时用 leaf_read）
+
+  (4) 返回 final_order = cur_order。
+
+  约束：
+  - 合并过程中不产生中间态不一致期（每次 node_write
+    都是原子 2-bit 写）
+  - free_count[0..N] 在循环各步精确增减
+  - 如果合并中遇到 0b10（非叶节点），说明兄弟子树不是
+    完全空闲，不满足"全为零碎叶"的合并条件，停
+
+──────────────────────────────────
+6.5 order_exist_check(order) → bool
+──────────────────────────────────
+
+功能：通过 free_count 预先判断此 order 是否有可用块。
+      O(1)，用于快速过滤不可用的 BCB。
+
+实现：return free_count[order] > 0;
+
+──────────────────────────────────
+6.6 辅助：free_pages_flush()
+──────────────────────────────────
+
+功能：从位图完全重建 free_count，用于诊断 / 恢复一致性。
+      （不放在热路径上，仅调试/兜底用）
+
+实现：遍历全部非 order0 节点 + order0 节点，对 0b11
+      节点（或 leaf=1）按 order 累加 free_count。
+
+────────────────────────────────────────────────
+七、BCB 调用流程（完整分配路径）
+────────────────────────────────────────────────
+
+分配（缓存全 miss → fallback）：
+
+  (1) order_exist_check(wanted_order)  → 快速失败
+  (2) find_candidate(wanted_order, kurd) → (found_order, offset)
+  (3) 若 found_order > wanted_order:
+        split(found_order, offset, wanted_order)
+  (4) order_occupy_try(wanted_order, leftmost_offset)
+  (5) 缓存右兄弟链的自由块（由 split 暴露）
+
+释放：
+
+  (1) 外部传入物理基址 + size
+  (2) BCB 转换为 (order, offset)
+  (3) order_return(order, offset) → 返回 final_order（用于统计）
+
+────────────────────────────────────────────────
+八、与 v2 的差异总结
+────────────────────────────────────────────────
+
+  v2 (mixed_bitmap_v2)               v4 (mixed_bitmap_v4)
+  ─────────────────────────────────────────────────────────────
+  heap 编码，每节点 1bit              非 order0 区 2bit，order0 区 1bit
+  0 语义模糊（不可剪枝）             0b00/0b01/0b10/0b11 状态明确
+  scan_free_block BFS 全量扫         find_candidate DFS O(max_order)
+  BCB 手动维护 split/conanico_free   split/order_return 底座内化
+  free_count 散落 BCB 各处维护       free_count 底座统一维护
+  位图 2×2^N bits                    位图 3×2^N bits（+50%）
+  每 alloc 最坏 O(2^N) 位图访问      每 alloc 最坏 O(N) 位图访问

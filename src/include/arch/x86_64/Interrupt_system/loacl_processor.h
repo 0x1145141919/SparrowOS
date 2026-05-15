@@ -183,7 +183,6 @@ class x64_local_processor {//承担部分当前核心状态机切换维护的语
         bool is_x2apic_supported;
     }processor_features;
     spinlock_cpp_t  lock;
-    Ktemplats::kernel_bitmap*handler_register_bitmap;
     constexpr static uint8_t allocatable_handler_count = 192; 
     constexpr static uint8_t allocatable_handler_base = 32; 
     KURD_t default_kurd();

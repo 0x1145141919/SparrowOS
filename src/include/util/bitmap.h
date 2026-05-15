@@ -13,7 +13,6 @@ class bitmap_t {
     spinlock_cpp_t used_bit_count_lock;
     uint64_t*bitmap;
     uint64_t bitmap_size_in_64bit_units;
-    uint64_t bitmap_used_bit;
 
 
     uint8_t* byte_bitmap_base;
@@ -31,10 +30,4 @@ public:
     bool all_true();
     bool all_false();
     //上面三个函数不进行边界检查以及锁检查,设计思路上是基本操作，bits_set某种程度上可以被bytes_set,u64s_set优化但不会采用
-    
-    int get_bitmap_used_bit();
-    void count_bitmap_used_bit();
-    int avaliable_bit_search(uint64_t& result_base_idx);
-    int used_bit_count_add(uint64_t add_count);//这操作是加锁的
-    int used_bit_count_sub(uint64_t sub_count);//这操作是加锁的
 };

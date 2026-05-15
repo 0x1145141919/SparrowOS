@@ -18,9 +18,9 @@
 
 // ===== rdtsc stub =====
 static inline uint64_t rdtsc() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    uint32_t hi, lo;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t)hi << 32 | lo;
 }
 
 // ===== 测试辅助 =====
@@ -62,8 +62,10 @@ static void test_single(FreePagesAllocator::BuddyControlBlock* bcb) {
     printf("[test] single alloc/free...\n");
     KURD_t k;
     phyaddr_t a = bcb->allocate_buddy_way(4096, k);
-    CHECK_OK(k);
-    CHECK(a != 0, "alloc returned 0");
+    if (!success_all_kurd(k) || a == 0) {
+        fprintf(stderr, "  FAIL [L%d]: alloc\n", __LINE__);
+        g_failures++; return;
+    }
     CHECK_OK(bcb->free_buddy_way(a, 4096));
     do_flush(bcb);
     printf("  OK\n");
@@ -73,28 +75,34 @@ static void test_various_sizes(FreePagesAllocator::BuddyControlBlock* bcb) {
     printf("[test] various sizes...\n");
     static const uint64_t sizes[] = {4096, 8192, 16384, 32768, 65536,
                                      0x20000, 0x40000, 0x80000, 0x100000};
-    phyaddr_t allocs[sizeof(sizes)/sizeof(sizes[0])];
+    uint64_t allocs[sizeof(sizes)/sizeof(sizes[0])];
+    bool ok = true;
     KURD_t k;
 
     for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
         allocs[i] = bcb->allocate_buddy_way(sizes[i], k);
-        CHECK_OK(k);
-        CHECK(allocs[i] != 0, "alloc returned 0");
+        if (!success_all_kurd(k) || allocs[i] == 0) {
+            fprintf(stderr, "  FAIL [L%d]: alloc size=%lu\n", __LINE__, sizes[i]);
+            g_failures++; ok = false; break;
+        }
     }
-    for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
-        CHECK_OK(bcb->free_buddy_way(allocs[i], sizes[i]));
+    if (ok) {
+        for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
+            if (allocs[i] != 0)
+                CHECK_OK(bcb->free_buddy_way(allocs[i], sizes[i]));
+        }
+        do_flush(bcb);
+        printf("  OK\n");
     }
-    do_flush(bcb);
-    printf("  OK\n");
 }
 
 static void test_split_coalesce(FreePagesAllocator::BuddyControlBlock* bcb) {
     printf("[test] split & coalesce...\n");
     KURD_t k;
     phyaddr_t p1 = bcb->allocate_buddy_way(4096, k);
-    CHECK_OK(k);
+    if (!success_all_kurd(k) || p1 == 0) { g_failures++; return; }
     phyaddr_t p2 = bcb->allocate_buddy_way(4096, k);
-    CHECK_OK(k);
+    if (!success_all_kurd(k) || p2 == 0) { g_failures++; return; }
     CHECK_OK(bcb->free_buddy_way(p1, 4096));
     CHECK_OK(bcb->free_buddy_way(p2, 4096));
     do_flush(bcb);
@@ -180,15 +188,15 @@ int main() {
     printf("=== BCB Test (mixed_bitmap_v2) ===\n\n");
 
     constexpr phyaddr_t FAKE_BASE = 0x100000000ULL;
-    constexpr uint8_t   BCB_ORDER = 18;
+    constexpr uint8_t   BCB_ORDER = 16;
 
     FreePagesAllocator::BuddyControlBlock* bcb =
         new FreePagesAllocator::BuddyControlBlock(FAKE_BASE, BCB_ORDER);
 
     printf("BCB base=0x%lx  max_order=%u\n", (unsigned long)FAKE_BASE, (unsigned)BCB_ORDER);
 
-    // 分配 bitmap
-    constexpr uint64_t total_bits = 1ULL << (BCB_ORDER + 1);
+    // 分配 bitmap (v4 底座需要 3×2^N bits)
+    constexpr uint64_t total_bits = 3ULL << BCB_ORDER;
     constexpr uint64_t bitmap_bytes = ((total_bits + 63) / 64) * sizeof(uint64_t);
     void* bitmap_mem = std::malloc(bitmap_bytes);
     if (!bitmap_mem) { fprintf(stderr, "malloc bitmap failed\n"); return 1; }

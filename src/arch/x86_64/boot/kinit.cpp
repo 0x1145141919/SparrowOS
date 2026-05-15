@@ -196,7 +196,6 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
         bsp_kout<<"mem_init Failed"<<kendl;
         return;
     }
-    
     gAcpiVaddrSapceMgr.Init(global_gST);
     bsp_init_kurd=idt_vec_dispatch_mgr::Init(logical_processor_count);
     x86_smp_processors_container::regist_core(0);

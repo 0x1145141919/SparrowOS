@@ -5,6 +5,7 @@
 #include "util/lock.h"
 #include "util/Ktemplats.h"
 #include "util/bitmap.h"
+#include "util/BuddyControlBlock_foundation.h"
 #include "memory/all_pages_arr.h"
 class KspacePageTable;
 struct fpa_stats {
@@ -155,68 +156,37 @@ public:
     class BuddyControlBlock {
     private:
         static constexpr uint64_t INVALID_INBCB_INDEX = ~0;
-        static constexpr uint8_t DESINGED_MAX_SUPPORT_ORDER = 24;
+        static constexpr uint8_t DESINGED_MAX_SUPPORT_ORDER = 25;
         static constexpr uint8_t PER_ORDER_CACHE_SUGGEST_COUNT = 8;
         using cache_order_suggest_t = uint64_t[PER_ORDER_CACHE_SUGGEST_COUNT];
-        
-        bool is_splited_bitmap_valid;
+
         uint8_t max_supprt_order;
-        phyaddr_t base; // base 至少是 4KB 对齐的，可以不是 1<<(MAX_SUPPORT_ORDER+12) 对齐的，只会影响外部获得的地址
+        phyaddr_t base;
         KURD_t default_kurd();
         KURD_t default_success();
         KURD_t default_error();
         KURD_t default_fatal();
 
-        cache_order_suggest_t suggest_order_free_page_index[DESINGED_MAX_SUPPORT_ORDER]; // 每个 order 多条缓存，基于 BCB 开始地址的索引
+        // ── BCB 级缓存（在底座之上） ──
+        cache_order_suggest_t suggest_order_free_page_index[DESINGED_MAX_SUPPORT_ORDER];
         uint8_t suggest_order_cache_cursor[DESINGED_MAX_SUPPORT_ORDER];
         void cache_insert(uint8_t order, uint64_t idx);
         bool cache_pick(uint8_t order, uint64_t& out_idx);
-        KURD_t conanico_free(
-            uint64_t in_bcb_idx,
-            uint8_t order
-        );
-        void free_page_without_merge( // 需要事件码
-            uint64_t in_bcb_idx,
-            uint8_t order
-        );
 
-        class mixed_bitmap_v2 : bitmap_t {
-            uint8_t out_order = 0;
-        public:
-            using bitmap_t::bit_set;
-            using bitmap_t::bit_get;
-            mixed_bitmap_v2() = default;
-            void online(vaddr_t bitmap_va, uint8_t out_order);
-            void offline();
-            uint64_t scan_free_block(uint8_t& order);
-            // <order, offset> 安全位操作
-            void bit_set0(uint64_t offset, uint8_t order);
-            void bit_set1(uint64_t offset, uint8_t order);
-            bool bit_get(uint64_t offset, uint8_t order);
-        };
-        mixed_bitmap_v2 bcb_bitmap; // heap-encoded 二叉树位图 (内嵌, 无需 new)
-        // order_bases 已删除: 位置编码 order, 不需要该数组
+        // ── v4 伙伴系统底座 ──
+        BuddyControlBlock_foundation fnd;
 
         struct BCB_statistics {
-            uint64_t free_count[DESINGED_MAX_SUPPORT_ORDER];
             uint64_t suggest_hit[DESINGED_MAX_SUPPORT_ORDER];
             uint64_t suggest_miss[DESINGED_MAX_SUPPORT_ORDER];
             uint64_t alloc_times_success;
             uint64_t free_times_success;
             uint64_t alloc_times_fail;
             uint64_t scan_count;
-            uint64_t fold_count_success;
-            uint64_t fold_count_fail;
             uint64_t split_count;
         } statistics;
 
-        KURD_t split_page(
-            uint64_t splited_idx,
-            uint8_t splited_order,
-            uint8_t target_order
-        );
         static uint8_t size_to_order(uint64_t size);
-        bool is_reclusive_fold_success(uint64_t idx, uint8_t order); // true 成功，false 失败，是对这个 order 之下的所有二叉树进行折叠
         bool is_addr_belong_to_this_BCB_no_lock(phyaddr_t addr);
         void print_basic_info_no_lock();
         void print_bitmap_info_no_lock();
@@ -230,10 +200,10 @@ public:
         friend all_pages_arr;
         void print_basic_info();
         void print_bitmap_info();
-        void print_all_statistics();  // 新增：打印全部统计信息
+        void print_all_statistics();
         void print_bitmap_order_info_compress(uint8_t order);
         void print_bitmap_order_interval_compress(uint8_t order, uint64_t base, uint64_t length);
-        KURD_t free_pages_flush(); // 强制扫描位图校准 free_count[DESINGED_MAX_SUPPORT_ORDER] 数据结构
+        KURD_t free_pages_flush();  // → fnd.btree_validation()
         BuddyControlBlock(
             phyaddr_t base,
             uint8_t max_support_order
@@ -247,14 +217,10 @@ public:
         );
         phyaddr_t get_base();
         uint8_t get_order();
-        void top_fold();
         KURD_t free_buddy_way(
             phyaddr_t base,
             uint64_t size
         );
-#ifdef REPALY_MODE
-        KURD_t replay_validate_tree(const char* tag);
-#endif
         bool is_addr_belong_to_this_BCB(phyaddr_t addr);
         bool can_alloc(uint8_t order);
         spintrylock_cpp_t lock;
