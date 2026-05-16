@@ -136,15 +136,12 @@ void BuddyControlBlock_foundation::init(vaddr_t bitmap_va, uint8_t max_order_val
     const uint64_t total_bits = (3ull << max_order);
     const uint64_t u64_count  = (total_bits + 63) >> 6;
 
-    bitmap                  = reinterpret_cast<uint64_t*>(bitmap_va);
-    bitmap_size_in_64bit_units = u64_count;
-    byte_bitmap_base        = reinterpret_cast<uint8_t*>(bitmap);
-
+    bitmap = reinterpret_cast<uint64_t*>(bitmap_va);
     ksetmem_8(bitmap, 0, u64_count * sizeof(uint64_t));
 
     node_write(1, NODE_FREE);
 
-    for (uint8_t i = 0; i < DESINGED_MAX_SUPPORT_ORDER; i++)
+    for (uint8_t i = 0; i < ORDER_COUNT; i++)
         free_count[i] = 0;
     free_count[max_order] = 1;
 
@@ -696,7 +693,7 @@ KURD_t BuddyControlBlock_foundation::btree_validation()
     fatal.event_code = TREE_VALIDATION;
 
     // 阶段一：清零临时计数
-    uint64_t count[DESINGED_MAX_SUPPORT_ORDER] = {0};
+    uint64_t count[ORDER_COUNT] = {0};
 
     // 阶段二：完整树遍历校验 + 计数
     if (!validate_subtree(1, max_order, count)) {

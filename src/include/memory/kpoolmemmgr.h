@@ -1,6 +1,5 @@
 #pragma once
 #include "stdint.h"
-#include "util/bitmap.h"
 #include "util/BuddyControlBlock_foundation.h"
 #include "memmodule_err_definitions.h"
 #include "abi/boot.h"

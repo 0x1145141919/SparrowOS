@@ -1,7 +1,6 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-#include "util/bitmap.h"
 #include "abi/os_error_definitions.h"
 
 // vaddr_t — 内核虚拟地址类型，在 memory_base.h 中定义
@@ -48,9 +47,9 @@ namespace infrastructure_location_code{
 // 详细设计见 Docs/Memory/BCB_foundation_v4draft.txt
 // ════════════════════════════════════════════════════════════════
 
-class BuddyControlBlock_foundation : protected bitmap_t {
+class BuddyControlBlock_foundation {
 public:
-    static constexpr uint8_t  DESINGED_MAX_SUPPORT_ORDER = 64;
+    static constexpr uint8_t  ORDER_COUNT = 65;
     static constexpr uint64_t INVALID_OFFSET = ~0ULL;
     static constexpr uint8_t  ERROR_MARK = 0x40;  // base_order 错误编码起始
 
@@ -63,8 +62,11 @@ public:
     };
 
 private:
+    // ─── 位图存储 ───
+    uint64_t* bitmap                        = nullptr;
+
     uint8_t  max_order;                                           // N
-    uint64_t free_count[DESINGED_MAX_SUPPORT_ORDER];             // 各 order 空闲块数
+    uint64_t free_count[ORDER_COUNT];             // 各 order 空闲块数
 
     // ─── 底层位图访问 ───
     uint8_t  node_read(uint64_t heap_idx) const;
@@ -116,7 +118,7 @@ public:
 
     // order_exist_check: O(1) free_count 预判
     bool order_exist_check(uint8_t order) const {
-        return (order < DESINGED_MAX_SUPPORT_ORDER &&
+        return (order < ORDER_COUNT &&
                 free_count[order] > 0);
     }
 
@@ -133,7 +135,7 @@ public:
 
     // 获取 raw free_count（调试）
     uint64_t get_free_count(uint8_t order) const {
-        return (order < DESINGED_MAX_SUPPORT_ORDER)
+        return (order < ORDER_COUNT)
                ? free_count[order] : 0;
     }
     uint8_t get_max_order() const { return max_order; }

@@ -4,7 +4,6 @@
 #include "memory/memory_base.h"
 #include "util/lock.h"
 #include "util/Ktemplats.h"
-#include "util/bitmap.h"
 #include "util/BuddyControlBlock_foundation.h"
 #include "memory/all_pages_arr.h"
 class KspacePageTable;
