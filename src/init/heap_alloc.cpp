@@ -92,7 +92,6 @@ int INIT_HCB::HCB_bitmap::Init()
     bitmap_size_in_byte=FIRST_STATIC_HEAP_SIZE/128;
 #endif
     bitmap_size_in_64bit_units=bitmap_size_in_byte/8;
-    byte_bitmap_base=(uint8_t*)this->bitmap;
     ksetmem_8(this->bitmap, 0, bitmap_size_in_byte);
     bitmap_used_bit=0;
     return OS_SUCCESS;
@@ -142,7 +141,7 @@ int INIT_HCB::HCB_bitmap::continual_avaliable_bits_search(uint64_t bit_count, ui
 
         if ((current_bit_idx & 0x3F) == 0) {
             uint64_t* to_scan_u64 = reinterpret_cast<uint64_t*>(
-                byte_bitmap_base + (current_bit_idx >> 3));
+                reinterpret_cast<uint8_t*>(bitmap) + (current_bit_idx >> 3));
 
             if (seg_value) {
                 if (*to_scan_u64 == U64_FULL_UNIT) {
@@ -195,7 +194,7 @@ int INIT_HCB::HCB_bitmap::continual_avaliable_bytes_search(uint64_t byte_count, 
     }
     const uint64_t total_bytes = bitmap_size_in_64bit_units * 8;
     uint64_t seg_base_byte_idx = 0;
-    bool seg_value = !!byte_bitmap_base[0];
+    bool seg_value = !!reinterpret_cast<uint8_t*>(bitmap)[0];
     uint64_t seg_length = 1;
 
     while (seg_base_byte_idx + seg_length < total_bytes) {
@@ -203,7 +202,7 @@ int INIT_HCB::HCB_bitmap::continual_avaliable_bytes_search(uint64_t byte_count, 
 
         if ((current_byte_idx & 0x7) == 0) {
             uint64_t* to_scan_u64 = reinterpret_cast<uint64_t*>(
-                byte_bitmap_base + current_byte_idx);
+                reinterpret_cast<uint8_t*>(bitmap) + current_byte_idx);
 
             if (seg_value) {
                 if (*to_scan_u64 == U64_FULL_UNIT) {
@@ -222,7 +221,7 @@ int INIT_HCB::HCB_bitmap::continual_avaliable_bytes_search(uint64_t byte_count, 
             }
         }
 
-        bool new_value = !!byte_bitmap_base[current_byte_idx];
+        bool new_value = !!reinterpret_cast<uint8_t*>(bitmap)[current_byte_idx];
 
         if (seg_value == new_value) {
             seg_length++;

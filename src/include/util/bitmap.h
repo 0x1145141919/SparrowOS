@@ -13,9 +13,6 @@ class bitmap_t {
     spinlock_cpp_t used_bit_count_lock;
     uint64_t*bitmap;
     uint64_t bitmap_size_in_64bit_units;
-
-
-    uint8_t* byte_bitmap_base;
     //byte,bit扫描的时候使用的指针，需要在构造函数里面初始化
     static constexpr uint64_t U64_FULL_UNIT = 0xFFFFFFFFFFFFFFFF;
     static constexpr uint8_t BYTE_FULL = 0xFF;

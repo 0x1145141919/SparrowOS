@@ -78,7 +78,7 @@ void bitmap_t::bytes_set(uint64_t start_byte_idx, uint64_t byte_count, bool valu
     
     // 处理起始部分，直到下一个8字节(64位)边界
     while((start_byte_idx < end_byte_idx) && ((start_byte_idx & 0x7) != 0)) {
-        byte_bitmap_base[start_byte_idx] = to_fill_value;
+        reinterpret_cast<uint8_t*>(bitmap)[start_byte_idx] = to_fill_value;
         start_byte_idx++;
     }
     
@@ -96,7 +96,7 @@ void bitmap_t::bytes_set(uint64_t start_byte_idx, uint64_t byte_count, bool valu
         
         // 处理最后不足8字节的部分
         while(start_byte_idx < end_byte_idx) {
-            byte_bitmap_base[start_byte_idx] = to_fill_value;
+            reinterpret_cast<uint8_t*>(bitmap)[start_byte_idx] = to_fill_value;
             start_byte_idx++;
         }
     }
