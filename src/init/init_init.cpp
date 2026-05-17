@@ -9,6 +9,7 @@
 #include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/boot.h"          // x86_specify_init_to_kernel_info
 #include "firmware/gSTResloveAPIs.h"
 #include "init/initramfs_lookup.h"      // initramfs_lookup, RSDP_struct, ACPI_20_TABLE_GUID
@@ -470,7 +471,18 @@ static void phase_3b_load_intervals(kernel_mmu* kmmu, BootInfoHeader* header) {
         }
     }
     g_arch_info.XSDT_base = g_xsdt_base;
-
+    {
+        uint64_t size_of_all_processor_GSs=header->logical_processor_count*sizeof(uint64_t)*PER_PROCESSOR_GS_SLOTS_MAX;
+        uint64_t pgs_count=alignup_and_shift_right(size_of_all_processor_GSs,12);
+        g_arch_info.conjunc_GSs.pbase=page_allocator::available_meminterval_probe_keep(pgs_count,12);
+        g_arch_info.conjunc_GSs.vbase=va_alloc_up(size_of_all_processor_GSs,12);
+        g_arch_info.conjunc_GSs.size=PER_PROCESSOR_GS_SLOTS_MAX;
+        vinterval v;
+        v.vbase=g_arch_info.conjunc_GSs.vbase;
+        v.size=align_up(g_arch_info.conjunc_GSs.size,0x1000);
+        v.phybase=g_arch_info.conjunc_GSs.pbase;
+        kmmu->map(v,KSPACE_RW_ACCESS);
+    }
     bsp_kout << "[Phase3b] done: " << g_extra_vm_count << " extra VM entries" << kendl;
 }
 
