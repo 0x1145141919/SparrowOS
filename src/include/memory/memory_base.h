@@ -138,12 +138,6 @@ constexpr pgaccess KSPACE_RW_UC_ACCESS={
     .is_global=1,
     .cache_strategy=UC
 };
-struct vphypair_t
-{//三个参数至少4k对齐
-    vaddr_t vaddr;
-    phyaddr_t paddr;
-    uint32_t size;
-};
 
 struct VM_DESC
 {
@@ -162,7 +156,6 @@ struct VM_DESC
     uint8_t committed_full:1;   // 物理页是否完全已经分配（lazy allocation 用）
     uint8_t is_vaddr_alloced:1;    // 虚拟地址是否由地址空间管理器分配（否则为固定映射）
     uint8_t is_out_bound_protective:1; // 是否有越界保护区,只有is_vaddr_alloced为1的bit此位才有意义，
-    uint64_t SEG_SIZE_ONLY_UES_IN_BASIC_SEG;
 };
 // v3: 砍掉 is_longtime, is_crucial_variable, vaddraquire, align_log2
 // 仅保留 force_first_linekd_heap 和 is_when_realloc_force_new_addr
@@ -223,10 +216,15 @@ struct loaded_VM_interval {
     pgaccess access;
 };
 struct vm_interval{
-    vaddr_t vbase;
-    phyaddr_t pbase;
-    uint64_t size;
+    uint64_t vpn;   // Virtual Page Number: (vaddr >> 12)，低 52bit 为页框号，高 12bit 可做 tag
+    uint64_t ppn;   // Physical Page Number: (paddr >> 12)，低 52bit 为页框号，高 12bit 可做 tag
+    uint64_t npages;// Number of 4KB pages in this interval
     pgaccess access;
+
+    // 右对齐提取低 52bit 后左移还原为字节地址
+    vaddr_t   vaddr()    const { return static_cast<vaddr_t>((vpn & 0x000FFFFFFFFFFFFFULL) << 12); }
+    phyaddr_t paddr()    const { return static_cast<phyaddr_t>((ppn & 0x000FFFFFFFFFFFFFULL) << 12); }
+    uint64_t  byte_cnt() const { return npages << 12; }
 };
 struct vm_interval_payload{
     vm_interval interval;

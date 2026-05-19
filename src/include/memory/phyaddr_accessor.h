@@ -6,8 +6,8 @@ class PhyAddrAccessor {
     friend KspacePageTable;
     friend all_pages_arr;
     static phyaddr_t init_pgtb_root;
-    static VM_DESC BASIC_DESC;
-    static VM_DESC cache_tb[CACHE_VMDESC_MAX];
+    static vm_interval BASIC_DESC;
+    static vm_interval cache_tb[CACHE_VMDESC_MAX];
     public:
     #ifdef USER_MODE
     PhyAddrAccessor();
