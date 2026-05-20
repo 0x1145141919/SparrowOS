@@ -19,7 +19,7 @@ NVMe_Controller::cmd_submit_and_process(
 {
     sq_complex& sq = sqs[qid];
     cq_complex& cq = cqs[sq.belonged_cqid];
-    auto* sq_ring = (NVMe::command::submit_command_common*)sq.sq_ring.vbase;
+    auto* sq_ring = (NVMe::command::submit_command_common*)sq.sq_ring.vbase();
     spinlock_cpp_t& lock = cq.wait_queue.lock;
 
     uint16_t cid;
@@ -67,7 +67,7 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
         cq.is_first_time = false;
     }
 
-    auto* cq_ring = (NVMe::command::complete_command_common*)cq.cq_ring.vbase;
+    auto* cq_ring = (NVMe::command::complete_command_common*)cq.cq_ring.vbase();
     uint16_t processed = 0;
     uint16_t cursor = cq.head_idx;
 
@@ -178,7 +178,7 @@ void NVMe_Controller::aer_submit(uint16_t aer_index, KURD_t& kurd)
     cmd.fiedls.opcode = NVMe::command::admin_opcode::ASYNCHRONOUS_EVENT_REQUEST;
     cmd.fiedls.cid    = cid;
 
-    auto* sq_ring = (NVMe::command::submit_command_common*)sqs[0].sq_ring.vbase;
+    auto* sq_ring = (NVMe::command::submit_command_common*)sqs[0].sq_ring.vbase();
     sq_ring[cid] = cmd;
     sq_ring[cid].fiedls.cid = cid;
 

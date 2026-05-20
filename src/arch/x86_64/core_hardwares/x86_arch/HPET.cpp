@@ -6,8 +6,8 @@
 HPET_driver_only_read_time_stamp*readonly_timer=nullptr;
 HPET_driver_only_read_time_stamp::HPET_driver_only_read_time_stamp(vm_interval* entry)
 {
-    phy_reg_base=entry->pbase;
-    virt_reg_base=entry->vbase;
+    phy_reg_base=entry->pbase();
+    virt_reg_base=entry->vbase();
     hpet_timer_period_fs=atomic_read32_rmb((void*)(virt_reg_base+HPET::regs::offset_General_Capabilities_and_ID+4));
 }
 KURD_t HPET_driver_only_read_time_stamp::default_kurd()
@@ -21,35 +21,6 @@ KURD_t HPET_driver_only_read_time_stamp::default_success()
     kurd.level=level_code::INFO;
     return kurd;
 }
-HPET_driver_only_read_time_stamp::~HPET_driver_only_read_time_stamp()
-{
-    KURD_t status = KURD_t();
-    pgaccess access=KspacePageTable::PG_RW;
-    access.cache_strategy=UC;
-    int result= kspace_vm_table->remove(virt_reg_base);
-    if(result!=OS_SUCCESS){
-        return;
-    }
-    vm_interval interval={
-        .vbase=virt_reg_base,
-        .pbase=phy_reg_base,
-        .size=4096,
-        .access=access
-    };
-    status=KspacePageTable::disable_VMentry(interval);
-    if(error_kurd(status)){
-        //
-        return;
-    }
-    uint64_t gen_config_reg=atomic_read64_rmb((void*)(virt_reg_base+HPET::regs::offset_General_Config));
-    gen_config_reg &= ~HPET::regs::GCONFIG_ENABLE_BIT;
-    atomic_write64_rdbk((void*)(virt_reg_base+HPET::regs::offset_General_Config), gen_config_reg);
-    phy_reg_base = 0;
-    virt_reg_base = 0;
-    hpet_timer_period_fs = 0;
-    comparator_count = 0;   
-}
-
 uint64_t HPET_driver_only_read_time_stamp::get_time_stamp_in_mius()
 {
     uint64_t tmp_count=atomic_read64_rmb((void*)(virt_reg_base+HPET::regs::offset_main_counter_value));

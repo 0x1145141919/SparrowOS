@@ -122,11 +122,10 @@ extern "C" int userspace_compatible_phymem_direct_map_disable()
 #endif
 }
 
-vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
+extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval)
 {
     using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_MAP_PADDR_RESULTS;
-    KURD_t success,fail;
-    success=KURD_t(result_code::SUCCESS,
+    KURD_t success=KURD_t(result_code::SUCCESS,
             0,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
@@ -134,7 +133,7 @@ vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
             level_code::INFO,
             err_domain::CORE_MODULE
         );
-    fail=KURD_t(result_code::FAIL,
+    KURD_t fail=KURD_t(result_code::FAIL,
             0,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
@@ -143,124 +142,108 @@ vaddr_t phyaddr_direct_map(vm_interval*interval, KURD_t *kurd_out)
             err_domain::CORE_MODULE
         );
 
-#ifdef USER_MODE
-    if(interval==nullptr||kurd_out==nullptr||
-       interval->size==0||(interval->size&0xFFF)||
-       (interval->pbase&0xFFF)){
-        if (kurd_out) {
-            fail.reason=FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
-            *kurd_out=fail;
-        }
-        return 0;
-    }
-    if (g_userspace_devmem_fd < 0) {
-        fail.reason=FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
-        *kurd_out=fail;
-        return 0;
+    if (!interval.is_kernel_address() || interval.npages == 0) {
+        fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+        return fail;
     }
 
-    int prot = 0;
-    if (interval->access.is_readable) prot |= PROT_READ;
-    if (interval->access.is_writeable) prot |= PROT_WRITE;
+    interrupt_guard g;
+    spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
-    static constexpr uint64_t kHugePageSize = 0x200000; // 2MB
-    const uint64_t aligned_pbase = align_down(interval->pbase, kHugePageSize);
-    const uint64_t in_page_offset = interval->pbase - aligned_pbase;
-    const uint64_t mmap_len = align_up(in_page_offset + interval->size, kHugePageSize);
-
-    void* mapped = mmap(nullptr,
-                        mmap_len,
-                        prot,
-                        MAP_SHARED,
-                        g_userspace_devmem_fd,
-                        static_cast<off_t>(aligned_pbase));
-    if (mapped == MAP_FAILED) {
-        fail.reason=FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
-        *kurd_out=fail;
-        return 0;
+    VM_DESC new_desc = {
+        .start = interval.vbase(),
+        .end = interval.vbase() + interval.byte_cnt(),
+        .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
+        .phys_start = interval.pbase(),
+        .access = interval.access,
+        .committed_full = true,
+        .is_vaddr_alloced = false,
+    };
+    int res = kspace_vm_table->insert(new_desc);
+    if (res != OS_SUCCESS) {
+        fail.reason = FAIL_REASONS::REASON_CODE_INSERT_VM_DESC_FAIL;
+        return fail;
     }
-
-    void* user_vaddr = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(mapped) + in_page_offset);
-    int add_status = userspace_direct_map_record_add(user_vaddr, mapped, mmap_len);
-    if (add_status != OS_SUCCESS) {
-        (void)munmap(mapped, mmap_len);
-        fail.reason=FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
-        *kurd_out=fail;
-        return 0;
+    KURD_t enable_kurd = KspacePageTable::enable_VMentry(interval);
+    if (error_kurd(enable_kurd)) {
+        (void)kspace_vm_table->remove(interval.vbase());
+        fail.reason = FAIL_REASONS::REASON_CODE_ENABLE_VM_ENTRY_FAIL;
+        return fail;
     }
-    interval->vbase = reinterpret_cast<vaddr_t>(user_vaddr);
-    *kurd_out = success;
-    return interval->vbase;
-#elif defined(KERNEL_MODE)
-    if(interval==nullptr||kurd_out==nullptr||
-       interval->size==0||(interval->size&0xFFF)||
-       (interval->pbase&0xFFF)){
-        fail.reason=FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
-        if(kurd_out)*kurd_out=fail;
+    return success;
+}
+
+extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* kurd)
+{
+    using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_MAP_PADDR_RESULTS;
+    KURD_t success=KURD_t(result_code::SUCCESS,
+            0,
+            module_code::MEMORY,
+            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
+            level_code::INFO,
+            err_domain::CORE_MODULE
+        );
+    KURD_t fail=KURD_t(result_code::FAIL,
+            0,
+            module_code::MEMORY,
+            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
+            level_code::ERROR,
+            err_domain::CORE_MODULE
+        );
+
+    if (kurd == nullptr) return 0;
+    if (interval.vpn != 0 || interval.ppn == 0 || interval.npages == 0) {
+        fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+        *kurd = fail;
         return 0;
     }
 
     interrupt_guard g;
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
-    vaddr_t vbase;
-    bool was_vaddr_zero = (interval->vbase == 0);
-    if (!was_vaddr_zero) {
-        // 固定 VA 模式：调用方指定了虚拟地址
-        vbase = interval->vbase;
-        if (vbase < 0xFFFF800000000000ULL) {
-            fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
-            *kurd_out = fail;
-            return 0;
-        }
-        if (vbase & 0xFFF) {
-            fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
-            *kurd_out = fail;
-            return 0;
-        }
-    } else {
-        // 动态分配模式：从内核 VM 表分配 VA
-        vbase = kspace_vm_table->alloc_available_space(interval->size, interval->pbase % 0x40000000);
-        if (vbase == 0) {
-            fail.reason = FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
-            *kurd_out = fail;
-            return 0;
-        }
+    vaddr_t vbase = kspace_vm_table->alloc_available_space(
+        interval.byte_cnt(), interval.pbase() % 0x40000000);
+    if (vbase == 0) {
+        fail.reason = FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
+        *kurd = fail;
+        return 0;
     }
-    interval->vbase=vbase;
-    VM_DESC new_desc={
-        .start=vbase,
-        .end=vbase+interval->size,
-        .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=interval->pbase,
-        .access=interval->access,
-        .committed_full=true,
-        .is_vaddr_alloced=was_vaddr_zero,
+
+    vm_interval mapped = {
+        .vpn    = vbase >> 12,
+        .ppn    = interval.ppn,
+        .npages = interval.npages,
+        .access = interval.access,
     };
-    int res=kspace_vm_table->insert(new_desc);
-    if(res!=OS_SUCCESS){
-        fail.reason=FAIL_REASONS::REASON_CODE_INSERT_VM_DESC_FAIL;
-        *kurd_out=fail;
+    VM_DESC new_desc = {
+        .start = vbase,
+        .end = vbase + interval.byte_cnt(),
+        .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
+        .phys_start = interval.pbase(),
+        .access = interval.access,
+        .committed_full = true,
+        .is_vaddr_alloced = true,
+    };
+    int res = kspace_vm_table->insert(new_desc);
+    if (res != OS_SUCCESS) {
+        fail.reason = FAIL_REASONS::REASON_CODE_INSERT_VM_DESC_FAIL;
+        *kurd = fail;
         return 0;
     }
-    KURD_t enable_kurd=KspacePageTable::enable_VMentry(*interval);
-    if(error_kurd(enable_kurd)){
-        (void)kspace_vm_table->remove(vbase); // 回滚RB树插入
-        fail.reason=FAIL_REASONS::REASON_CODE_ENABLE_VM_ENTRY_FAIL;
-        *kurd_out=fail;
+    KURD_t enable_kurd = KspacePageTable::enable_VMentry(mapped);
+    if (error_kurd(enable_kurd)) {
+        (void)kspace_vm_table->remove(vbase);
+        fail.reason = FAIL_REASONS::REASON_CODE_ENABLE_VM_ENTRY_FAIL;
+        *kurd = fail;
         return 0;
     }
-    interval->vbase=vbase;
-    *kurd_out=success;
+    *kurd = success;
     return vbase;
-#else
-    (void)interval;
-    if(kurd_out)*kurd_out=fail;
-    return 0;
-#endif
 }
 
-extern "C" KURD_t phyaddr_direct_unmap(vm_interval *interval,uint64_t size)
+extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 {
     using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_UNMAP_PADDR_RESULTS;
     KURD_t success=KURD_t(result_code::SUCCESS,
@@ -279,57 +262,23 @@ extern "C" KURD_t phyaddr_direct_unmap(vm_interval *interval,uint64_t size)
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
-#ifdef USER_MODE
-    (void)size;
-    if (interval==nullptr || interval->vbase==0) {
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
-        return fail;
-    }
-    userspace_direct_map_record_t* rec = userspace_direct_map_record_find(reinterpret_cast<void*>(interval->vbase));
-    if (rec == nullptr || rec->mmap_base == nullptr || rec->mmap_len == 0) {
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
-        return fail;
-    }
-    if (munmap(rec->mmap_base, rec->mmap_len) != 0) {
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
-        return fail;
-    }
-    userspace_direct_map_record_clear(rec);
-    interval->vbase = 0;
-    return success;
-#elif defined(KERNEL_MODE)
-    if(interval==nullptr || interval->vbase==0){
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
-        return fail;
-    }
-    const uint64_t unmap_size = (size==0)?interval->size:size;
-    if(unmap_size==0 || (unmap_size&0xFFF)){
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
+
+    if (!interval.is_kernel_address()) {
+        fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
         return fail;
     }
 
-    vm_interval unmap_interval={
-        .vbase=interval->vbase,
-        .pbase=interval->pbase,
-        .size=unmap_size,
-        .access=interval->access
-    };
     interrupt_guard g;
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    int result= kspace_vm_table->remove(interval->vbase);
-    if(result!=0){
-        fail.reason=FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
+
+    int result = kspace_vm_table->remove(interval.vbase());
+    if (result != 0) {
+        fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
         return fail;
     }
-    KURD_t status = KspacePageTable::disable_VMentry(unmap_interval);
+    KURD_t status = KspacePageTable::disable_VMentry(interval);
     if (error_kurd(status)) return status;
-    interval->vbase = 0;
     return success;
-#else
-    (void)interval;
-    (void)size;
-    return fail;
-#endif
 }
 void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2) {
 #ifdef USER_MODE
@@ -407,9 +356,9 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
         return nullptr;
     }
     vm_interval interval={
-        .vbase=vbase,
-        .pbase=result,
-        .size=_4kbpgscount*0x1000,
+        .vpn=vbase>>12,
+        .ppn=result>>12,
+        .npages=_4kbpgscount,
         .access=KspacePageTable::PG_RW
     };
     *kurd_out=KspacePageTable::enable_VMentry(interval);
@@ -495,9 +444,9 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
     vm_interval interval={
-        .vbase=vbase,
-        .pbase=result,
-        .size=real_alloc_phypages*0x1000,
+        .vpn=vbase>>12,
+        .ppn=result>>12,
+        .npages=real_alloc_phypages,
         .access=KspacePageTable::PG_RW
     };
     *kurd_out=KspacePageTable::enable_VMentry(interval);
@@ -546,9 +495,9 @@ KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount){
     }
     status=FreePagesAllocator::free(pbase,_4kbpgscount*0x1000);
     vm_interval interval={
-        .vbase=(vaddr_t)vbase,
-        .pbase=pbase,
-        .size=_4kbpgscount*0x1000,
+        .vpn=reinterpret_cast<vaddr_t>(vbase)>>12,
+        .ppn=pbase>>12,
+        .npages=_4kbpgscount,
         .access=KspacePageTable::PG_RW
     };
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);

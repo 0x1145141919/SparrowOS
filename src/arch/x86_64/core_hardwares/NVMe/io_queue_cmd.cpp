@@ -111,9 +111,9 @@ KURD_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
 
     // ---- 5. 成功：记录 ring 信息 ----
     cqs[qid].cq_ring = {
-        .vbase  = (vaddr_t)cq_ring_va,
-        .pbase  = cq_ring_pa,
-        .size   = cq_bytes,
+        .vpn  = reinterpret_cast<vaddr_t>(cq_ring_va) >> 12,
+        .ppn  = cq_ring_pa >> 12,
+        .npages   = cq_bytes >> 12,
         .access = KSPACE_RW_UC_ACCESS };
 
     return KURD_t(
@@ -183,9 +183,9 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
 
     // ---- 5. 成功：记录 ring 信息 ----
     sqs[qid].sq_ring = {
-        .vbase  = (vaddr_t)sq_ring_va,
-        .pbase  = sq_ring_pa,
-        .size   = sq_bytes,
+        .vpn  = reinterpret_cast<vaddr_t>(sq_ring_va) >> 12,
+        .ppn  = sq_ring_pa >> 12,
+        .npages   = sq_bytes >> 12,
         .access = KSPACE_RW_UC_ACCESS };
 
     return KURD_t(
@@ -243,10 +243,10 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
     bool admin_ok = !NVMe::status::is_error(cqe.fields.status);
 
     // ---- 3. 释放资源（无论 Admin 命令成功与否）----
-    if (sqs[qid].sq_ring.vbase) {
-        __wrapped_pgs_vfree((void*)sqs[qid].sq_ring.vbase,
-                             sqs[qid].sq_ring.size / 4096);
-        sqs[qid].sq_ring.vbase = 0;
+    if (sqs[qid].sq_ring.vpn != 0) {
+        __wrapped_pgs_vfree(reinterpret_cast<void*>(sqs[qid].sq_ring.vbase()),
+                             sqs[qid].sq_ring.npages);
+        sqs[qid].sq_ring.vpn = 0;
     }
     delete sqs[qid].sq_bitmap;
     delete[] sqs[qid].block_tokens;
@@ -271,7 +271,7 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
 // ============================================================
 KURD_t NVMe_Controller::delete_io_cq(uint16_t qid, KURD_t& kurd)
 {
-    if (cqs[qid].cq_ring.vbase == 0)
+    if (cqs[qid].cq_ring.vpn == 0)
         return KURD_t(
             result_code::SUCCESS, 0,
             module_code::DEVICE, DEVICES_locs::NVMe,
@@ -285,10 +285,10 @@ KURD_t NVMe_Controller::delete_io_cq(uint16_t qid, KURD_t& kurd)
     bool admin_ok = !NVMe::status::is_error(cqe.fields.status);
 
     // ---- 2. 释放 ring ----
-    if (cqs[qid].cq_ring.vbase) {
-        __wrapped_pgs_vfree((void*)cqs[qid].cq_ring.vbase,
-                             cqs[qid].cq_ring.size / 4096);
-        cqs[qid].cq_ring.vbase = 0;
+    if (cqs[qid].cq_ring.vpn != 0) {
+        __wrapped_pgs_vfree(reinterpret_cast<void*>(cqs[qid].cq_ring.vbase()),
+                             cqs[qid].cq_ring.npages);
+        cqs[qid].cq_ring.vpn = 0;
     }
 
     // ---- 3. 释放 MSI-X 向量 ----
@@ -376,7 +376,7 @@ KURD_t NVMe_Controller::io_queue_free(KURD_t& kurd)
 
     // ---- 2. 删除所有 I/O CQ ----
     for (uint16_t qid = 1; qid < cq_count; qid++) {
-        if (cqs[qid].cq_ring.vbase == 0) continue;
+        if (cqs[qid].cq_ring.vpn == 0) continue;
         KURD_t cq_kurd;
         KURD_t dr = delete_io_cq(qid, cq_kurd);
         if (error_kurd(dr)) {

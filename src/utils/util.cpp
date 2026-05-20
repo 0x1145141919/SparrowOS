@@ -242,6 +242,148 @@ bool is_addr_kernel_address(void *addr)
 {
     return (uint64_t)addr >= (uint64_t)&base_kernel_address;
 }
+seg_to_pages_info_pakage_t vm_interval::to_pages_info() const
+{
+    constexpr uint64_t _4KB_SIZE = 0x1000;
+    constexpr uint64_t _2MB_SIZE = 1ULL << 21;
+    constexpr uint64_t _1GB_SIZE = 1ULL << 30;
+
+    seg_to_pages_info_pakage_t result;
+    result.clear();
+
+    vaddr_t va_start = vbase();
+    vaddr_t va_end   = va_start + byte_cnt();
+    phyaddr_t pa_start = pbase();
+
+    if (va_start >= va_end) return result;  // 空区间
+
+    // 计算同余等级
+    if (va_start % _1GB_SIZE == pa_start % _1GB_SIZE) {
+        result.congruence_level = congruence_level_1gb;
+    } else if (va_start % _2MB_SIZE == pa_start % _2MB_SIZE) {
+        result.congruence_level = congruence_level_2mb;
+    } else {
+        result.congruence_level = congruence_level_4kb;
+    }
+
+    auto paddr_of = [va_start, pa_start](vaddr_t v) -> phyaddr_t {
+        return pa_start + v - va_start;
+    };
+    auto mine = [](uint64_t a, uint64_t b) -> uint64_t { return a < b ? a : b; };
+    auto maxe = [](uint64_t a, uint64_t b) -> uint64_t { return a > b ? a : b; };
+
+    switch (result.congruence_level) {
+    case congruence_level_1gb: {
+        vaddr_t _1gb_begin = align_up(va_start, _1GB_SIZE);
+        vaddr_t _1gb_end   = align_down(va_end, _1GB_SIZE);
+
+        if (_1gb_end > _1gb_begin) {
+            result.entryies[0] = {
+                .vbase = _1gb_begin,
+                .phybase = paddr_of(_1gb_begin),
+                .page_size_in_byte = _1GB_SIZE,
+                .num_of_pages = (_1gb_end - _1gb_begin) / _1GB_SIZE,
+            };
+
+            vaddr_t _2mb_begin = align_up(va_start, _2MB_SIZE);
+            vaddr_t _2mb_end   = align_down(va_end, _2MB_SIZE);
+
+            if (_2mb_begin < _1gb_begin) {
+                result.entryies[1] = {
+                    .vbase = _2mb_begin,
+                    .phybase = paddr_of(_2mb_begin),
+                    .page_size_in_byte = _2MB_SIZE,
+                    .num_of_pages = (mine(_2mb_end, _1gb_begin) - _2mb_begin) / _2MB_SIZE,
+                };
+            }
+            if (_1gb_end < _2mb_end) {
+                result.entryies[2] = {
+                    .vbase = _1gb_end,
+                    .phybase = paddr_of(_1gb_end),
+                    .page_size_in_byte = _2MB_SIZE,
+                    .num_of_pages = (_2mb_end - maxe(_1gb_end, _2mb_begin)) / _2MB_SIZE,
+                };
+            }
+
+            if (va_start < _2mb_begin) {
+                result.entryies[3] = {
+                    .vbase = va_start,
+                    .phybase = pa_start,
+                    .page_size_in_byte = _4KB_SIZE,
+                    .num_of_pages = (_2mb_begin - va_start) / _4KB_SIZE,
+                };
+            }
+            if (_2mb_end < va_end) {
+                result.entryies[4] = {
+                    .vbase = _2mb_end,
+                    .phybase = paddr_of(_2mb_end),
+                    .page_size_in_byte = _4KB_SIZE,
+                    .num_of_pages = (va_end - _2mb_end) / _4KB_SIZE,
+                };
+            }
+            break;
+        }
+    }
+        [[fallthrough]];
+
+    case congruence_level_2mb: {
+        vaddr_t _2mb_begin = align_up(va_start, _2MB_SIZE);
+        vaddr_t _2mb_end   = align_down(va_end, _2MB_SIZE);
+
+        if (_2mb_begin < _2mb_end) {
+            result.entryies[0] = {
+                .vbase = _2mb_begin,
+                .phybase = paddr_of(_2mb_begin),
+                .page_size_in_byte = _2MB_SIZE,
+                .num_of_pages = (_2mb_end - _2mb_begin) / _2MB_SIZE,
+            };
+
+            if (va_start < _2mb_begin) {
+                result.entryies[1] = {
+                    .vbase = va_start,
+                    .phybase = pa_start,
+                    .page_size_in_byte = _4KB_SIZE,
+                    .num_of_pages = (_2mb_begin - va_start) / _4KB_SIZE,
+                };
+            }
+            if (_2mb_end < va_end) {
+                result.entryies[2] = {
+                    .vbase = _2mb_end,
+                    .phybase = paddr_of(_2mb_end),
+                    .page_size_in_byte = _4KB_SIZE,
+                    .num_of_pages = (va_end - _2mb_end) / _4KB_SIZE,
+                };
+            }
+            break;
+        }
+    }
+        [[fallthrough]];
+
+    case congruence_level_4kb: {
+        result.entryies[0] = {
+            .vbase = va_start,
+            .phybase = pa_start,
+            .page_size_in_byte = _4KB_SIZE,
+            .num_of_pages = (va_end - va_start) / _4KB_SIZE,
+        };
+        break;
+    }
+    }
+
+    return result;
+}
+
+int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, vm_interval interval)
+{
+    VM_DESC tmp = {
+        .start = interval.vbase(),
+        .end = interval.vbase() + interval.byte_cnt(),
+        .map_type = VM_DESC::MAP_NONE,
+        .phys_start = interval.pbase(),
+    };
+    return vm_interval_to_pages_info(result, tmp);
+}
+
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, VM_DESC vmentry)
 {
     constexpr uint32_t _4KB_SIZE=0x1000;

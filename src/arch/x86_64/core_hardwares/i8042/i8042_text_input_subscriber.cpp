@@ -289,12 +289,12 @@ static void init_readonly_view()
         (vaddr_t)text_input_ring, ring_phybase);
     if (success_all_kurd(kurd)) {
         vm_interval view{
-            .vbase  = 0,
-            .pbase  = ring_phybase,
-            .size   = sizeof(text_input_ring),
+            .vpn    = 0,
+            .ppn    = ring_phybase >> 12,
+            .npages = (sizeof(text_input_ring) + 0xFFF) >> 12,
             .access = KspacePageTable::PG_R
         };
-        vaddr_t vbase = phyaddr_direct_map(&view, &kurd);
+        vaddr_t vbase = Kspace_pinterval_alloc_and_map(view, &kurd);
         if (vbase != 0 && success_all_kurd(kurd)) {
             text_input_ring_readonly_view = (const text_input_event*)vbase;
         }

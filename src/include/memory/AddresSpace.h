@@ -214,8 +214,8 @@ class AddressSpace//到时候进程管理器可以用这个类创建，但是内
     KURD_t   default_fatal();
     public:
     AddressSpace();
-    KURD_t enable_VM_desc(VM_DESC desc);
-    KURD_t disable_VM_desc(VM_DESC desc);
+    KURD_t enable_low_half_vm_interval(vm_interval interval);
+    KURD_t disable_low_half_vm_interval(vm_interval interval);
     struct tlb_invalidate_flags{
         uint64_t hardware_addresspace_id;
         uint16_t if_not_currunt_space:1;
@@ -223,7 +223,6 @@ class AddressSpace//到时候进程管理器可以用这个类创建，但是内
     };
     KURD_t invalidate_tlb_of_VM_desc(VM_DESC desc,tlb_invalidate_flags flags);
     KURD_t second_stage_init();//new完之后马上最快的速度调用此接口，并且接受返回值进行分析
-    KURD_t build_identity_map_ONLY_IN_gKERNELSPACE();//uefi运行时服务依赖于这个构建的恒等映射
     uint64_t get_occupyied_size(){
         return occupyied_size;
     }
@@ -373,6 +372,7 @@ static KURD_t v_to_phyaddrtraslation(vaddr_t vaddr,phyaddr_t& result);
 extern shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
 extern spinlock_cpp_t kspace_pagetable_modify_lock;//此锁的用途在于保证“修改vm区间红黑树+修改页表结构”的原子性
 extern "C" int userspace_compatible_phymem_direct_map_enable();
-extern "C" vaddr_t phyaddr_direct_map(vm_interval*interval,KURD_t* kurd_out);
-extern "C" KURD_t phyaddr_direct_unmap(vm_interval *interval,uint64_t size);
+extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* kurd);
+extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval);
+extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval);
 extern "C" int userspace_compatible_phymem_direct_map_disable();

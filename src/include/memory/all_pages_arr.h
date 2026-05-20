@@ -85,6 +85,7 @@ class all_pages_arr{
     static phyinterval_t*mem_map_intervals;
     static uint64_t mem_map_intervals_count;
     public:
+
     struct free_segs_t{
         uint64_t count;
         struct entry_t{ 

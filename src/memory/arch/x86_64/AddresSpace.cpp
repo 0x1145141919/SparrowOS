@@ -100,7 +100,7 @@ AddressSpace::AddressSpace()
 {
 }
 
-KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)    
+KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)    
 {
     constexpr uint16_t ILLEAGLE_PAGES_COUNT=0x1;
     constexpr uint16_t PAGES_COUNT_AND_BASE_OUT_OF_RANGE=0x2;
@@ -116,23 +116,25 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
    success.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
    fail.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
    fatal.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
+    vaddr_t curr_vaddr = interval.vbase();
+    phyaddr_t curr_paddr = interval.pbase();
+    vaddr_t end_vaddr = interval.vbase() + interval.byte_cnt();
    bool is_reach_va_bottom=false;
-   if(desc.start<ADDR_VM_BOTTOM){
-    uint32_t gap=ADDR_VM_BOTTOM-desc.start;
-    desc.start=ADDR_VM_BOTTOM;
-    desc.phys_start+=gap;
+   if(curr_vaddr<ADDR_VM_BOTTOM){
+    uint32_t gap=ADDR_VM_BOTTOM-curr_vaddr;
+    curr_vaddr=ADDR_VM_BOTTOM;
+    curr_paddr+=gap;
     is_reach_va_bottom=true;
    }
    if(
-        desc.start>=desc.end||
-        desc.end>(pglv_4_or_5?PAGE_LV4_USERSPACE_SIZE:PAGE_LV5_USERSPACE_SIZE)||
-        desc.start%_4KB_SIZE||
-        desc.end%_4KB_SIZE||
-        desc.end%_4KB_SIZE
+        curr_vaddr>=end_vaddr||
+        end_vaddr>(pglv_4_or_5?PAGE_LV4_USERSPACE_SIZE:PAGE_LV5_USERSPACE_SIZE)||
+        curr_vaddr%_4KB_SIZE||
+        end_vaddr%_4KB_SIZE
     ){
     fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
     return fail;}
-    pgaccess desc_access=desc.access;
+    pgaccess desc_access=interval.access;
     cache_table_idx_struct_t atompages_cache_table_idx=cache_strategy_to_idx(desc_access.cache_strategy);
     phyaddr_t pml4tb_phyaddr_base=pml4_phybase;
     
@@ -187,7 +189,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         
         
         if(count==0||count>512){
-            bsp_kout<<"AddressSpace::enable_VM_desc::_4lv_pte_4KB_entries_set:invalid count"<<kendl;
+            bsp_kout<<"AddressSpace::enable_low_half_vm_interval::_4lv_pte_4KB_entries_set:invalid count"<<kendl;
             return ILLEAGLE_PAGES_COUNT;
         }
         if(phybase%_4KB_SIZE||vaddr_base%_4KB_SIZE){
@@ -198,7 +200,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         uint16_t pde_index=(vaddr_base>>21)&((1<<9)-1);
         uint16_t pte_index=(vaddr_base>>12)&((1<<9)-1);
         if(pte_index+count>512){
-            bsp_kout<<"AddressSpace::enable_VM_desc::_4lv_pte_4KB_entries_set:cross page directory boundary not allowed"<<kendl;
+            bsp_kout<<"AddressSpace::enable_low_half_vm_interval::_4lv_pte_4KB_entries_set:cross page directory boundary not allowed"<<kendl;
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }//这里权限问题待解决
         
@@ -287,7 +289,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
     ](phyaddr_t phybase, vaddr_t vaddr_base, uint16_t count) -> uint16_t {
         
         if (count == 0 || count > 512) {
-            bsp_kout<< "AddressSpace::enable_VM_desc::_4lv_pde_2MB_entries_set:cross invalid count" << kendl;
+            bsp_kout<< "AddressSpace::enable_low_half_vm_interval::_4lv_pde_2MB_entries_set:cross invalid count" << kendl;
             return ILLEAGLE_PAGES_COUNT;
         }
         constexpr uint32_t _2MB_SIZE = 0x200000;
@@ -300,7 +302,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         uint16_t pde_index   = (vaddr_base >> 21) & 0x1FF;
 
         if (pde_index + count > 512) {
-            bsp_kout<< "AddressSpace::enable_VM_desc::_4lv_pde_2MB_entries_set:cross page directory boundary not allowed" << kendl;
+            bsp_kout<< "AddressSpace::enable_low_half_vm_interval::_4lv_pde_2MB_entries_set:cross page directory boundary not allowed" << kendl;
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }
 
@@ -369,7 +371,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         TRY_TO_GET_SUB_ENTRY_FOT_BIG_ATOM_PAGE_ENTRY,desc_access,atompages_cache_table_idx, get_sub_tb,pml4tb_phyaddr_base](
         phyaddr_t phybase, vaddr_t vaddr_base, uint64_t count) -> uint16_t {
         if (count == 0 || count > 512) {
-            bsp_kout<< "AddressSpace::enable_VM_desc::_4lv_pdpte_1GB_entries_set:invalid pages count" << kendl;
+            bsp_kout<< "AddressSpace::enable_low_half_vm_interval::_4lv_pdpte_1GB_entries_set:invalid pages count" << kendl;
             return ILLEAGLE_PAGES_COUNT;
         }
         constexpr uint64_t _1GB_SIZE = 0x40000000ULL;
@@ -381,7 +383,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         uint16_t pdpte_index = (vaddr_base >> 30) & 0x1FF;
 
         if (pdpte_index + count > 512) {
-            bsp_kout<< "AddressSpace::enable_VM_desc::_4lv_pdpte_1GB_entries_set:cross page directory boundary not allowed" << kendl;
+            bsp_kout<< "AddressSpace::enable_low_half_vm_interval::_4lv_pdpte_1GB_entries_set:cross page directory boundary not allowed" << kendl;
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }
 
@@ -421,8 +423,8 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
         return 0;
     };
     //这里才是正式逻辑
-    seg_to_pages_info_pakage_t package;
-    int status = vm_interval_to_pages_info(package, desc);
+    seg_to_pages_info_pakage_t package=interval.to_pages_info();
+    int status;
     if(status!=OS_SUCCESS){
         fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY_CANT_SPLIT;
         return fail;
@@ -500,7 +502,7 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
                 goto page_size_invalid;
             }
         }
-        occupyied_size+=(desc.end-desc.start);
+        occupyied_size+=(end_vaddr - curr_vaddr);
         goto success;
     }else{
         fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
@@ -535,22 +537,20 @@ KURD_t AddressSpace::enable_VM_desc(VM_DESC desc)
  * 再复杂就得考虑独立成一个EVENT,从用完即弃的匿名函数升格为一般函数
  * 我提倡对于uint64_t里面位图编码的方式，
  */
-KURD_t AddressSpace::disable_VM_desc(VM_DESC desc)
+KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
 {
-    // 参数校验（与 enable_VM_desc 保持一致）
+    // 参数校验（与 enable_low_half_vm_interval 保持一致）
     KURD_t success=default_success();
     KURD_t fail=default_fail();
     KURD_t fatal=default_fatal();
     success.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
     fail.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
     fatal.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
+    vaddr_t end_vaddr = interval.vbase() + interval.byte_cnt();
     if(
-        desc.start>=desc.end||
-        desc.end>(pglv_4_or_5?PAGE_LV4_USERSPACE_SIZE:PAGE_LV5_USERSPACE_SIZE)||
-        desc.start%_4KB_SIZE||
-        desc.end%_4KB_SIZE||
-        desc.phys_start<16*_4KB_SIZE||
-        desc.end%_4KB_SIZE
+        interval.vbase()>=end_vaddr||
+        end_vaddr>(pglv_4_or_5?PAGE_LV4_USERSPACE_SIZE:PAGE_LV5_USERSPACE_SIZE)||
+        interval.pbase()<16*_4KB_SIZE
     ){fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
     return fail;}
     uint64_t currunt_roottb_phyaddr=0;
@@ -679,7 +679,7 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     phyaddr_t phybase, vaddr_t vaddr_base, uint16_t count) -> pages_clear_error_status
 {
     if (count == 0 || count > 512) {
-        bsp_kout<<"AddressSpace::disable_VM_desc: out of range"<<kendl;
+        bsp_kout<<"AddressSpace::disable_low_half_vm_interval: out of range"<<kendl;
         return COUNT_OUT_OF_RANGE;
     }
     constexpr uint32_t _2MB_SIZE = 0x200000;
@@ -770,7 +770,7 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
 auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     phyaddr_t phybase, vaddr_t vaddr_base, uint64_t count) -> pages_clear_error_status {
     if (count == 0 || count > 512) {
-        bsp_kout<<"AddressSpace::disable_VM_desc::_4lv_pdpte_1GB_entries_clear: invalid count"<<kendl;
+        bsp_kout<<"AddressSpace::disable_low_half_vm_interval::_4lv_pdpte_1GB_entries_clear: invalid count"<<kendl;
         return COUNT_OUT_OF_RANGE;
     }
     constexpr uint64_t _1GB_SIZE = 0x40000000ULL;
@@ -828,8 +828,8 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
 
 
     // 主流程
-    seg_to_pages_info_pakage_t package;
-    int status = vm_interval_to_pages_info(package, desc);
+    seg_to_pages_info_pakage_t package=interval.to_pages_info();
+    int status;
     pages_clear_error_status clear_status;
     if (status != OS_SUCCESS) {
         fail.reason = MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::DISABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
@@ -934,7 +934,7 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
         default:
             goto page_size_invalid;
         }
-        occupyied_size-=(desc.end-desc.start);
+        occupyied_size-=interval.byte_cnt();
         //tod:广播所有核心重新
         goto success;
     } else {
@@ -1079,31 +1079,4 @@ KURD_t AddressSpace::second_stage_init()
     KURD_t success=default_success();
     success.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INIT;
     return success;
-}
-KURD_t AddressSpace::build_identity_map_ONLY_IN_gKERNELSPACE()
-{
-    KURD_t fail=default_fail();
-    if(this!=gKernelSpace){
-        fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::BUILD_INDENTITY_MAP_ONLY_ON_gKERNELSPACE::FAIL_REASONS::REASON_CODE_NOT_gKERNELSPACE;
-        return fail;
-    }
-    VM_DESC identity_desc={
-        .start=0x4000,
-        .end=0x1000000000,
-        .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=0x4000,
-        .access={
-            .is_kernel=1,
-            .is_writeable=1,
-            .is_readable=1,
-            .is_executable=1,
-            .is_global=0,
-            .cache_strategy=WB,
-        },
-        .committed_full=0,
-        .is_vaddr_alloced=0,
-        .is_out_bound_protective=0,
-        .SEG_SIZE_ONLY_UES_IN_BASIC_SEG=0,
-    };
-    return enable_VM_desc(identity_desc);
 }

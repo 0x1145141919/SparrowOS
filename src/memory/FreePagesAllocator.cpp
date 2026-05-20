@@ -304,8 +304,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     }
     BCBS = reinterpret_cast<BuddyControlBlock*>(bcb_storage);
 
-    const uint64_t bitmap_pool_base = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->vbase : 0;
-    const uint64_t bitmap_pool_size = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->size : 0;
+    const uint64_t bitmap_pool_base = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->vbase() : 0;
+    const uint64_t bitmap_pool_size = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->byte_cnt() : 0;
     uint64_t bitmap_cursor = bitmap_pool_base;
     uint64_t bitmap_end = bitmap_pool_base + bitmap_pool_size;
 

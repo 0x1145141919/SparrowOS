@@ -174,30 +174,14 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
     fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
     
-    // basic alignment checks (4KB)
-    if (interval.vbase % _4KB_SIZE || interval.size % _4KB_SIZE || interval.pbase % _4KB_SIZE) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
-        return fail;
-    }
-
-    if (interval.size == 0) {
+    if (interval.npages == 0) {
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
         return fail;
     }
     GMlock.lock();
     // 1) Split segment into page-sized runs
-    VM_DESC vmentry = {
-        .start = interval.vbase,
-        .end = interval.vbase + interval.size,
-        .map_type = VM_DESC::MAP_PHYSICAL,
-        .phys_start = interval.pbase,
-        .access = interval.access,
-        .committed_full = true,
-        .is_vaddr_alloced = false,
-        .is_out_bound_protective = false,
-    };
     seg_to_pages_info_pakage_t pkg;
-    vm_interval_to_pages_info(pkg, vmentry);
+    vm_interval_to_pages_info(pkg, interval);
     // Helper lambda: given page size (p), call the appropriate setter in chunks
     KURD_t rc=KURD_t();
     // 2) Iterate over pkg.entryies and dispatch
@@ -323,30 +307,14 @@ KURD_t KspacePageTable::disable_VMentry(const vm_interval& interval)
     fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
 
-    // basic alignment checks (4KB)
-   if (interval.vbase % _4KB_SIZE || interval.size % _4KB_SIZE || interval.pbase % _4KB_SIZE) {
-        fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
-       return fail;
-    }
-
-   if (interval.size == 0) {
+   if (interval.npages == 0) {
         fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
        return fail;
     }
     spinlock_interrupt_about_guard guard(GMlock);
     // 1) Split segment into page-sized runs
     seg_to_pages_info_pakage_t pkg;
-    VM_DESC vmentry = {
-        .start = interval.vbase,
-        .end = interval.vbase + interval.size,
-        .map_type = VM_DESC::MAP_PHYSICAL,
-        .phys_start = interval.pbase,
-        .access = interval.access,
-        .committed_full = true,
-        .is_vaddr_alloced = false,
-        .is_out_bound_protective = false,
-    };
-   vm_interval_to_pages_info(pkg, vmentry);
+    vm_interval_to_pages_info(pkg, interval);
     
     // 2) Iterate over pkg.entryies and dispatch based on congruence level
    KURD_t rc=KURD_t();

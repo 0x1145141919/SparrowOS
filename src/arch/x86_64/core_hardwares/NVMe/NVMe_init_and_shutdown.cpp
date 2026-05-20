@@ -96,7 +96,7 @@ bool NVMe_Controller::wait_for_ready(head_regs_t* regs, bool target,
 // ============================================================
 KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
 {
-    uint32_t hmpre_4k = *(uint32_t*)(admin_buffer.vbase + 0x110);
+    uint32_t hmpre_4k = *(uint32_t*)(admin_buffer.vbase() + 0x110);
     if (hmpre_4k == 0) {
         bsp_kout << "[NVMe] HMB not recommended" << kendl;
         return KURD_t(
@@ -164,9 +164,9 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
         return kurd;
     }
 
-    hmb_buffer.vbase  = (vaddr_t)buf;
-    hmb_buffer.pbase  = buf_pa;
-    hmb_buffer.size   = (uint64_t)page_count * 4096;
+    hmb_buffer.vpn  = reinterpret_cast<vaddr_t>(buf) >> 12;
+    hmb_buffer.ppn  = buf_pa >> 12;
+    hmb_buffer.npages = (uint64_t)page_count;
     hmb_buffer.access = KSPACE_RW_UC_ACCESS;
 
     bsp_kout << "[NVMe] HMB enabled: " << (uint32_t)page_count
@@ -183,7 +183,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
 // ============================================================
 KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
 {
-    if (hmb_buffer.vbase == 0)
+    if (hmb_buffer.vbase() == 0)
         return KURD_t(
             result_code::SUCCESS, 0,
             module_code::DEVICE, DEVICES_locs::NVMe,
@@ -195,7 +195,7 @@ KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
     set_features_cmd(NVMe::features::FID_HOST_MEMORY_BUFFER,
                      dis.raw, 0, kurd);
 
-    __wrapped_pgs_vfree((void*)hmb_buffer.vbase, hmb_buffer.size / 4096);
+    __wrapped_pgs_vfree((void*)hmb_buffer.vbase(), hmb_buffer.byte_cnt() / 4096);
     hmb_buffer = {};
 
     bsp_kout << "[NVMe] HMB freed" << kendl;
@@ -281,11 +281,11 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // ---- 6. 填充 sqs[0] / cqs[0] ----
     sqs[0].sq_ring = {
-        .vbase = (vaddr_t)asq_va, .pbase = asq_pa,
-        .size = asq_bytes, .access = KSPACE_RW_UC_ACCESS };
+        .vpn = reinterpret_cast<vaddr_t>(asq_va) >> 12, .ppn = asq_pa >> 12,
+        .npages = asq_bytes >> 12, .access = KSPACE_RW_UC_ACCESS };
     cqs[0].cq_ring = {
-        .vbase = (vaddr_t)acq_va, .pbase = acq_pa,
-        .size = acq_bytes, .access = KSPACE_RW_UC_ACCESS };
+        .vpn = reinterpret_cast<vaddr_t>(acq_va) >> 12, .ppn = acq_pa >> 12,
+        .npages = acq_bytes >> 12, .access = KSPACE_RW_UC_ACCESS };
     cqs[0].num_of_entries = DEFAULT_ADMIN_QUEUE_ENTRIES;
 
     bsp_kout << "[NVMe] Controller CAP=";
@@ -296,19 +296,19 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // ---- 7. Identify Controller ----
     // 使用 pre_init 中分配的 admin_buffer（1 页，4096 字节）
-    if (admin_buffer.vbase == 0) {
+    if (admin_buffer.vpn == 0) {
         bsp_kout << "[NVMe] admin_buffer not allocated" << kendl;
         return kurd;
     }
     bsp_kout << "[NVMe] identify_ctrl..." << kendl;
-    NVMe::identify_ctrl_t* id_ctrl = (NVMe::identify_ctrl_t*)admin_buffer.vbase;
+    NVMe::identify_ctrl_t* id_ctrl = reinterpret_cast<NVMe::identify_ctrl_t*>(admin_buffer.vbase());
     // ---- 8. MSI-X 分配 ----
     kurd = msix_vec_alloc(fast_get_processor_id(), 0);
     if (error_kurd(kurd)) {
         bsp_kout << "[NVMe] msix_vec_alloc for admin vector failed" << kendl;
         return kurd;
     }
-    kurd = identify_ctrl(admin_buffer.pbase, kurd);
+    kurd = identify_ctrl(admin_buffer.pbase(), kurd);
     if (error_kurd(kurd)) return make_fail(identify_ctrl_fail);
 
     bsp_kout << "[NVMe] VID=0x";
@@ -335,20 +335,20 @@ KURD_t NVMe_Controller::second_stage_init()
     NS_count = nn;
 
     for (uint32_t ns = 1; ns <= nn; ns++) {
-        ksetmem_8((void*)admin_buffer.vbase, 0, 4096*4);
+        ksetmem_8(reinterpret_cast<void*>(admin_buffer.vbase()), 0, 4096*4);
         // admin_buffer.pbase 在 pre_init 中已固定，无需重复查询
 
         bsp_kout << "[NVMe] identify_ns ns=" << (uint32_t)ns << kendl;
-        kurd = identify_ns(ns, admin_buffer.pbase, kurd);
+        kurd = identify_ns(ns, admin_buffer.pbase(), kurd);
         if (error_kurd(kurd)) {
             bsp_kout << "[NVMe] ns=" << (uint32_t)ns << " failed, skip" << kendl;
             continue;
         }
 
-        NVMe::identify_ns_nvm_t* ns_id = (NVMe::identify_ns_nvm_t*)admin_buffer.vbase;
+        NVMe::identify_ns_nvm_t* ns_id = reinterpret_cast<NVMe::identify_ns_nvm_t*>(admin_buffer.vbase());
         uint64_t nsze  = ns_id->nsze;
         uint8_t  flbas = ns_id->flbas;
-        uint32_t lfmt  = *(uint32_t*)((uint8_t*)admin_buffer.vbase + 128 + (flbas & 0x0F) * 4);
+        uint32_t lfmt  = *(uint32_t*)(reinterpret_cast<uint8_t*>(admin_buffer.vbase()) + 128 + (flbas & 0x0F) * 4);
         uint32_t ss    = 1u << ((lfmt >> 16) & 0xFF);
 
         NSs[ns - 1].sector_size   = ss;
@@ -433,14 +433,14 @@ KURD_t NVMe_Controller::pre_init()
             __sync_synchronize();
             if (bar_size > 0 && bar_base != 0) {
                 vm_interval bar_interval = {
-                    .vbase = 0, .pbase = bar_base, .size = bar_size,
+                    .vpn = 0, .ppn = bar_base >> 12, .npages = bar_size >> 12,
                     .access = KSPACE_RW_UC_ACCESS };
                 KURD_t kurd;
-                vaddr_t mapped_vbase = phyaddr_direct_map(&bar_interval, &kurd);
+                vaddr_t mapped_vbase = Kspace_pinterval_alloc_and_map(bar_interval, &kurd);
                 if (!error_kurd(kurd)) {
-                    bar_intervals[bar_idx].vbase = mapped_vbase;
-                    bar_intervals[bar_idx].pbase = bar_base;
-                    bar_intervals[bar_idx].size = bar_size;
+                    bar_intervals[bar_idx].vpn = mapped_vbase >> 12;
+                    bar_intervals[bar_idx].ppn = bar_base >> 12;
+                    bar_intervals[bar_idx].npages = bar_size >> 12;
                     bar_intervals[bar_idx].access = KSPACE_RW_UC_ACCESS;
                 } else return kurd;
             }
@@ -458,14 +458,14 @@ KURD_t NVMe_Controller::pre_init()
             __sync_synchronize();
             if (bar_size > 0 && base != 0) {
                 vm_interval bar_interval = {
-                    .vbase = 0, .pbase = base, .size = bar_size,
+                    .vpn = 0, .ppn = base >> 12, .npages = bar_size >> 12,
                     .access = KSPACE_RW_UC_ACCESS };
                 KURD_t kurd;
-                vaddr_t mapped_vbase = phyaddr_direct_map(&bar_interval, &kurd);
+                vaddr_t mapped_vbase = Kspace_pinterval_alloc_and_map(bar_interval, &kurd);
                 if (!error_kurd(kurd)) {
-                    bar_intervals[bar_idx].vbase = mapped_vbase;
-                    bar_intervals[bar_idx].pbase = base;
-                    bar_intervals[bar_idx].size = bar_size;
+                    bar_intervals[bar_idx].vpn = mapped_vbase >> 12;
+                    bar_intervals[bar_idx].ppn = base >> 12;
+                    bar_intervals[bar_idx].npages = bar_size >> 12;
                     bar_intervals[bar_idx].access = KSPACE_RW_UC_ACCESS;
                 } else return kurd;
             }
@@ -505,12 +505,12 @@ KURD_t NVMe_Controller::pre_init()
                 uint32_t pba_bir  = msix_cap->pba_offset & 0x7;
                 uint32_t pba_offset = msix_cap->pba_offset & ~0x7;
 
-                if (table_bir < 6 && bar_intervals[table_bir].vbase != 0)
-                    this->msix_table = (MSIX_entry_t*)(bar_intervals[table_bir].vbase + table_offset);
+                if (table_bir < 6 && bar_intervals[table_bir].vpn != 0)
+                    this->msix_table = reinterpret_cast<MSIX_entry_t*>(bar_intervals[table_bir].vbase() + table_offset);
 
                 if (this->max_msix_vectors > 0) {
                     this->msix_pending_bits_array =
-                        (uint64_t*)(bar_intervals[pba_bir].vbase + pba_offset);
+                        reinterpret_cast<uint64_t*>(bar_intervals[pba_bir].vbase() + pba_offset);
                     for (uint32_t i = 0; i < this->max_msix_vectors; i++)
                         this->msix_table[i].vector_control |= 1u;
                     asm volatile("mfence" ::: "memory");
@@ -532,16 +532,16 @@ KURD_t NVMe_Controller::pre_init()
             phyaddr_t buf_pa = 0;
             kurd2 = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)buf, buf_pa);
             if (!error_kurd(kurd2)) {
-                admin_buffer.vbase  = (vaddr_t)buf;
-                admin_buffer.pbase  = buf_pa;
-                admin_buffer.size   = 4096*4;
+                admin_buffer.vpn  = reinterpret_cast<vaddr_t>(buf) >> 12;
+                admin_buffer.ppn  = buf_pa >> 12;
+                admin_buffer.npages   = 4;
                 admin_buffer.access = KSPACE_RW_ACCESS;
             }
         }
     }
 
-    head_regs = (head_regs_t*)bar_intervals[0].vbase;
-    doorbells = (uint32_t*)(bar_intervals[0].vbase + 0x1000);
+    head_regs = reinterpret_cast<head_regs_t*>(bar_intervals[0].vbase());
+    doorbells = reinterpret_cast<uint32_t*>(bar_intervals[0].vbase() + 0x1000);
     NVMe::cap_reg_t cap{ .value = head_regs->cap };
     doorbell_stride_u32 = 1u << cap.field.DSTRD;
     return KURD_t();
@@ -600,23 +600,23 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
 
     // ---- 控制器已停止，以下安全释放主机端资源 ----
     // Free Admin queue ring
-    if (sqs[0].sq_ring.vbase) {
-        __wrapped_pgs_vfree((void*)sqs[0].sq_ring.vbase,
-                             sqs[0].sq_ring.size / 4096);
-        sqs[0].sq_ring.vbase = 0;
+    if (sqs[0].sq_ring.vpn != 0) {
+        __wrapped_pgs_vfree(reinterpret_cast<void*>(sqs[0].sq_ring.vbase()),
+                             sqs[0].sq_ring.npages);
+        sqs[0].sq_ring.vpn = 0;
     }
-    if (cqs[0].cq_ring.vbase) {
-        __wrapped_pgs_vfree((void*)cqs[0].cq_ring.vbase,
-                             cqs[0].cq_ring.size / 4096);
-        cqs[0].cq_ring.vbase = 0;
+    if (cqs[0].cq_ring.vpn != 0) {
+        __wrapped_pgs_vfree(reinterpret_cast<void*>(cqs[0].cq_ring.vbase()),
+                             cqs[0].cq_ring.npages);
+        cqs[0].cq_ring.vpn = 0;
     }
 
     // Free admin buffer
-    if (admin_buffer.vbase) {
-        __wrapped_pgs_vfree((void*)admin_buffer.vbase, 4);
-        admin_buffer.vbase = 0;
-        admin_buffer.pbase = 0;
-        admin_buffer.size  = 0;
+    if (admin_buffer.vpn != 0) {
+        __wrapped_pgs_vfree(reinterpret_cast<void*>(admin_buffer.vbase()), 4);
+        admin_buffer.vpn = 0;
+        admin_buffer.ppn = 0;
+        admin_buffer.npages = 0;
     }
 
     // Free MSI-X vectors + mask table entries

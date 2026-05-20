@@ -271,7 +271,7 @@ static int split_vinterval_to_pages(seg_to_pages_info_pakage_t& result, const vi
 /**
  * @brief 建立虚拟地址到物理地址的映射（仅支持x86_64 PGLV4）
  * 
- * 仿照 AddressSpace::enable_VM_desc 的实现逻辑，
+ * 仿照 AddressSpace::enable_low_half_vm_interval 的实现逻辑，
  * 先按同余等级拆分区间（优先大页），再逐级建立映射。
  * 
  * 映射策略:

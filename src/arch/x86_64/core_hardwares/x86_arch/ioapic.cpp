@@ -11,8 +11,8 @@ uint32_t legacy_rotate_interrupt_alloc_id;
 ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entry)
 {
     KURD_t kurd;
-    ioapic_regs_interval.pbase=entry->regbase_addr;
-    ioapic_regs_interval.size=0x1000;
+    ioapic_regs_interval.ppn=entry->regbase_addr>>12;
+    ioapic_regs_interval.npages=1;
     ioapic_regs_interval.access={
         .is_kernel=true,
         .is_writeable=true,
@@ -21,7 +21,10 @@ ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entr
         .is_global=true,
         .cache_strategy=UC
     };
-    head=(regs_head*)phyaddr_direct_map(&ioapic_regs_interval,&kurd);
+    ioapic_regs_interval.vpn=0;
+    vaddr_t ioapic_vaddr = Kspace_pinterval_alloc_and_map(ioapic_regs_interval, &kurd);
+    head=reinterpret_cast<regs_head*>(ioapic_vaddr);
+    ioapic_regs_interval.vpn = ioapic_vaddr >> 12;
     //belonged_dmar=dmar::dmar_table[dmar::special_locations[dmar::ioapic_idx].dmar_id];
     if(error_kurd(kurd)){
         panic_info_inshort info={

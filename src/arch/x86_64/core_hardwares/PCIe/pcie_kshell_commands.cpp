@@ -22,7 +22,7 @@ static inline volatile void* ecam_addr(ecam_node_t* node, uint8_t bus,
     uint64_t off = (bus  - node->start_bus_num) * 32 * 8 * 0x1000
                  + dev  * 8 * 0x1000
                  + func * 0x1000;
-    return reinterpret_cast<volatile void*>(node->vminterval.vbase + off);
+    return reinterpret_cast<volatile void*>(node->vminterval.vbase() + off);
 }
 
 /// Read 16-bit from config space
@@ -202,7 +202,7 @@ KURD_t cmd_pcie_segs(const line_t* line) {
         bsp_kout << "  seg=" << (uint32_t)node.seg_group_number
                  << "  buses " << (uint32_t)node.start_bus_num
                  << " - " << (uint32_t)(node.start_bus_num + node.bus_count - 1)
-                 << "  ECAM vaddr=0x" << HEX << node.vminterval.vbase << DEC
+                 << "  ECAM vaddr=0x" << HEX << node.vminterval.vbase() << DEC
                  << kendl;
     }
     return make_ok();

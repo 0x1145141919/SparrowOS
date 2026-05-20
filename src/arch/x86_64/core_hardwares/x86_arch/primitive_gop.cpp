@@ -58,7 +58,7 @@ KURD_t GfxPrim::Init(GlobalBasicGraphicInfoType *metainf, vm_interval interval)
     s_info.pitch_pixels = metainf->PixelsPerScanLine;
     s_info.fb_bytes=metainf->FrameBufferSize;
     s_info.backbuffer = nullptr;
-    s_info.fb_vaddr=interval.vbase;
+    s_info.fb_vaddr=interval.vbase();
     s_info.fb_paddr=metainf->FrameBufferBase;
     KURD_t success=default_success();
     success.event_code=COREHARDWARES_LOCATIONS::GOP_PRIMITIVE_DRIVERS_EVENTS::INIT;

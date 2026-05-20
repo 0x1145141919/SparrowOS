@@ -222,15 +222,42 @@ struct vm_interval{
     pgaccess access;
 
     // 右对齐提取低 52bit 后左移还原为字节地址
-    vaddr_t   vaddr()    const { return static_cast<vaddr_t>((vpn & 0x000FFFFFFFFFFFFFULL) << 12); }
-    phyaddr_t paddr()    const { return static_cast<phyaddr_t>((ppn & 0x000FFFFFFFFFFFFFULL) << 12); }
+    vaddr_t   vbase()    const { return static_cast<vaddr_t>((vpn & 0x000FFFFFFFFFFFFFULL) << 12); }
+    phyaddr_t pbase()    const { return static_cast<phyaddr_t>((ppn & 0x000FFFFFFFFFFFFFULL) << 12); }
     uint64_t  byte_cnt() const { return npages << 12; }
+
+    bool is_kernel_address() const {
+        extern bool is_addr_kernel_address(void* addr);
+        vaddr_t s = vbase();
+        vaddr_t e = s + byte_cnt();
+        return e > s &&
+               is_addr_kernel_address(reinterpret_cast<void*>(s)) &&
+               is_addr_kernel_address(reinterpret_cast<void*>(e - 1));
+    }
+
+    bool vaddr_belong(vaddr_t addr) const {
+        vaddr_t s = vbase();
+        return addr >= s && addr < s + byte_cnt();
+    }
+
+    bool paddr_belong(phyaddr_t addr) const {
+        phyaddr_t s = pbase();
+        return addr >= s && addr < s + byte_cnt();
+    }
+
+    /**
+     * @brief 根据 vaddr()+byte_cnt() 虚拟区间与 paddr()+byte_cnt() 物理区间的同余等级，
+     *        拆分为 seg_to_pages_info_pakage_t（含 1GB/2MB/4KB 分块），
+     *        供 enable_VMentry/disable_VMentry 内部 TLB 自适应拆分使用。
+     */
+    seg_to_pages_info_pakage_t to_pages_info() const;
 };
 struct vm_interval_payload{
     vm_interval interval;
     uint64_t is_fixed_property:1;
 };
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, VM_DESC vmentry);
+int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, vm_interval interval);
 extern loaded_VM_interval* VM_intervals;
 extern uint64_t VM_intervals_count;
 extern phymem_segment *phymem_segments;

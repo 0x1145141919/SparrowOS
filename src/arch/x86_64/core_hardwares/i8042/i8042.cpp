@@ -321,13 +321,13 @@ void i8042_interrupt_enable(){
     );
     if(success_all_kurd(ring_phy_kurd)){
         vm_interval ro_view_interval{
-            .vbase = 0,
-            .pbase = ring_phybase,
-            .size = sizeof(i8042_event_ring),
+            .vpn = 0,
+            .ppn = ring_phybase >> 12,
+            .npages = (sizeof(i8042_event_ring) + 0xFFF) >> 12,
             .access = KspacePageTable::PG_R
         };
         KURD_t ro_map_kurd;
-        vaddr_t ro_vbase = phyaddr_direct_map(&ro_view_interval, &ro_map_kurd);
+        vaddr_t ro_vbase = Kspace_pinterval_alloc_and_map(ro_view_interval, &ro_map_kurd);
         if(ro_vbase != 0 && success_all_kurd(ro_map_kurd)){
             i8042_event_ring_readonly_view = (const ps_2_keyboard_event*)ro_vbase;
         }

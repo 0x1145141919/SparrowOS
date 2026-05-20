@@ -99,7 +99,7 @@ static volatile void* find_ecam_by_bdf(uint16_t seg, uint8_t bus,
         uint64_t off = (bus - node.start_bus_num) * 32 * 8 * 0x1000
                      + dev  * 8 * 0x1000
                      + func * 0x1000;
-        return (volatile void*)(node.vminterval.vbase + off);
+        return (volatile void*)(node.vminterval.vbase() + off);
     }
     return nullptr;
 }

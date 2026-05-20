@@ -105,8 +105,8 @@ KURD_t all_pages_arr::Init(vm_interval* pages_arr_interval)
     if(!pages_arr_interval){
         return set_fatal_result_level(KURD_t());
     }
-    mem_map=(page*)pages_arr_interval->vbase;
-    mem_map_entry_count=pages_arr_interval->size/sizeof(page);
+    mem_map=(page*)pages_arr_interval->vbase();
+    mem_map_entry_count=pages_arr_interval->byte_cnt()/sizeof(page);
     for(int i=0;i<physegs_count;i++)
     {
         if(segs[i].type==PHY_MEM_TYPE::freeSystemRam){

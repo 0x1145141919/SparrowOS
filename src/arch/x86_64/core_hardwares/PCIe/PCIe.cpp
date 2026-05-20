@@ -335,7 +335,7 @@ void pcie_bus_scan(ecam_node_t* node, uint8_t bus_num, uint32_t depth)
     if(node == nullptr) return;
     if(bus_num < node->start_bus_num || bus_num >= node->start_bus_num + node->bus_count) return;
     
-    vaddr_t vbase = node->vminterval.vbase + ((bus_num - node->start_bus_num) * (ECAM_size << (func_bit_width + device_bit_num)));
+    vaddr_t vbase = node->vminterval.vbase() + ((bus_num - node->start_bus_num) * (ECAM_size << (func_bit_width + device_bit_num)));
     
     for(uint8_t device = 0; device < 32; device++) {
         for(uint8_t func = 0; func < 8; func++) {
@@ -476,18 +476,17 @@ ecams_container_t::ecams_container_t(MCFG_Table* mcfg){
         node.start_bus_num = e.StartBusNumber;
         node.bus_count = e.EndBusNumber - e.StartBusNumber + 1;
 
-        // 每个 bus 的 ECAM 配置空间固定 1MB（32 devices * 8 funcs * 4KB）
-        node.vminterval.pbase = e.BaseAddress;
-        node.vminterval.size = static_cast<uint64_t>(node.bus_count) * 0x100000ULL;
+        node.vminterval.ppn = e.BaseAddress >> 12;
+        node.vminterval.npages = (static_cast<uint64_t>(node.bus_count) * 0x100000ULL) >> 12;
         node.vminterval.access = ecam_mem_access;
-        node.vminterval.vbase = 0;
+        node.vminterval.vpn = 0;
 
         KURD_t kurd = KURD_t();
-        vaddr_t vbase = phyaddr_direct_map(&node.vminterval, &kurd);
+        vaddr_t vbase = Kspace_pinterval_alloc_and_map(node.vminterval, &kurd);
         if (vbase == 0 || error_kurd(kurd)) {
             continue;
         }
-        node.vminterval.vbase = vbase;
+        node.vminterval.vpn = vbase >> 12;
         (void)this->push_back(node);
     }
 }

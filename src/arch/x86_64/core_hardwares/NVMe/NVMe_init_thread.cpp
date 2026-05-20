@@ -41,7 +41,7 @@ static uint32_t scan_pcie_nvme_count()
                     uint64_t off = (uint64_t)(bus - seg.start_bus_num) * 32 * 8 * 0x1000
                                  + (uint64_t)dev * 8 * 0x1000
                                  + (uint64_t)func * 0x1000;
-                    volatile auto* cfg = (volatile uint8_t*)(seg.vminterval.vbase + off);
+                    volatile auto* cfg = (volatile uint8_t*)(seg.vminterval.vbase() + off);
 
                     uint16_t vendor = *(volatile uint16_t*)(cfg + 0x00);
                     if (vendor == 0xFFFF) {
@@ -314,7 +314,7 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
                         uint64_t off = (uint64_t)(bus - seg_ecam.start_bus_num) * 32 * 8 * 0x1000
                                      + (uint64_t)dev * 8 * 0x1000
                                      + (uint64_t)func * 0x1000;
-                        volatile auto* cfg = (volatile uint8_t*)(seg_ecam.vminterval.vbase + off);
+                        volatile auto* cfg = (volatile uint8_t*)(seg_ecam.vminterval.vbase() + off);
 
                         uint16_t vendor = *(volatile uint16_t*)(cfg + 0x00);
                         if (vendor == 0xFFFF) {
@@ -327,7 +327,7 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
                         if (base_cls == PCI_BASE_CLASS_MASS_STORAGE &&
                             sub_cls == PCI_SUB_CLASS_NVM)
                         {
-                            vaddr_t ecam_va = seg_ecam.vminterval.vbase + off;
+                            vaddr_t ecam_va = seg_ecam.vminterval.vbase() + off;
                             node_array[index].pcie_seg  = seg_ecam.seg_group_number;
                             node_array[index].pcie_bus  = bus;
                             node_array[index].pcie_dev  = dev;

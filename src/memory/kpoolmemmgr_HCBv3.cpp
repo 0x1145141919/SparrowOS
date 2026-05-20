@@ -142,9 +142,9 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
     }
 
     vm_interval interval = {
-        .vbase = data_va,
-        .pbase = data_pbase,
-        .size  = size,
+        .vpn = data_va >> 12,
+        .ppn = data_pbase >> 12,
+        .npages = size >> 12,
         .access = KspacePageTable::PG_RW,
     };
     {
@@ -175,9 +175,9 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
     }
 
     vm_interval bm_interval = {
-        .vbase = bitmap_va,
-        .pbase = bitmap_pbase,
-        .size  = alloc_size,
+        .vpn = bitmap_va >> 12,
+        .ppn = bitmap_pbase >> 12,
+        .npages = alloc_size >> 12,
         .access = KspacePageTable::PG_RW,
     };
     {
@@ -222,18 +222,11 @@ KURD_t kpoolmemmgr_t::HCB_v3::offline()
     // 归还 bitmap 物理页
     if (bitmap_pbase != 0 && bitmap_allocated_size != 0) {
         vm_interval bm_interval = {
-            .vbase = (vaddr_t)(uint64_t)&fnd,
-            .pbase = bitmap_pbase,    // 近似 — 实际 bitmap 基址由 init 记录
-            .size  = bitmap_allocated_size,
+            .vpn = reinterpret_cast<vaddr_t>(&fnd) >> 12,
+            .ppn = bitmap_pbase >> 12,
+            .npages = bitmap_allocated_size >> 12,
             .access = KspacePageTable::PG_RW,
         };
-        // 实际 bitmap 的 VA 在初始化时传入，fnd 内部保存 bitmap 指针
-        // 我们需要 bitmap 的真实 VA，通过 reinterpret_cast 获得
-        // 但 fnd 的 bitmap 是 protected 成员，无法直接访问
-        // 从 vbase_ 偏移推算或直接使用 bitmap 页的 VA
-        // 实际 bitmap VA 由 caller 提供并保存在 fnd.init() 中设置的 bitmap 指针
-        // 由于 protected 无法访问，使用旧的 bcb_bitmap 方式来管理
-        // 改用 bitmap_va 参数记录 —— 此处简化，因为 TEST_MODE 不走此路径
         KURD_t kurd = KspacePageTable::disable_VMentry(bm_interval);
         if (error_kurd(kurd)) return kurd;
         kurd = FreePagesAllocator::free(bitmap_pbase, bitmap_allocated_size);
@@ -244,9 +237,9 @@ KURD_t kpoolmemmgr_t::HCB_v3::offline()
     // 归还 data 区域物理页
     if (data_pbase != 0) {
         vm_interval interval = {
-            .vbase = vbase_,
-            .pbase = data_pbase,
-            .size  = total_size_,
+            .vpn = vbase_ >> 12,
+            .ppn = data_pbase >> 12,
+            .npages = total_size_ >> 12,
             .access = KspacePageTable::PG_RW,
         };
         KURD_t kurd = KspacePageTable::disable_VMentry(interval);

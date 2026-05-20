@@ -383,7 +383,123 @@ kernel.elf 的 FreePageAllocator
 
 ---
 
-## 9. 与 v1 的向后兼容性
+## 9. 阶段上下文交付范式
+
+### 9.1 动机
+
+`init_init.cpp` 初期使用文件级 static 全局变量在各阶段之间传递数据：
+
+```cpp
+// ⚠️ 旧范式：隐式依赖，编译器不检查
+static phyaddr_t  g_kimg_pbase;
+static vaddr_t    g_entry_vaddr;
+vm_interval g_kIMG_self_window;
+// phase_3a 写 → phase_3b 读，但无显式契约
+```
+
+问题：
+1. 全局变量的生产/消费关系靠注释和约定，重构时容易遗漏
+2. 无法通过类型系统检查阶段间的数据依赖
+3. 新增阶段时不知道该读/写哪些变量
+
+### 9.2 规范
+
+每个阶段定义为**返回一个上下文结构体**，该结构体包含本阶段的所有产物。
+后续阶段通过参数显式获取需要的上下文。
+
+```cpp
+// ✅ 新范式：每个阶段产出显式上下文
+// 上下文定义
+struct ctx_early_mem {
+    phyaddr_t xsdt_base;
+    phyaddr_t ramfs_base;
+    uint64_t  ramfs_size;
+};
+
+struct ctx_kernel_loaded {
+    kernel_mmu*   kmmu;
+    phyaddr_t     kimg_pbase;
+    uint64_t      kimg_file_size;
+    vm_interval   kIMG_self_window;
+    vm_interval   kBSS_interval;
+    vaddr_t       entry_vaddr;
+    uint64_t      kernel_vaddr_top;
+};
+
+struct ctx_intervals {
+    vm_interval           FPA_bitmaps;
+    vm_interval           log_buffer;
+    vm_interval           kernel_entry_stack;
+    movable_file_entry_t  symtable_file;
+    movable_file_entry_t  initramfs_file;
+    vm_interval           identity_map_window;
+    vaddr_t               pages_arr_vbase;
+    loaded_VM_interval*   extra_vm_arr;
+    uint64_t              extra_vm_count;
+    x86_specify_init_to_kernel_info arch_info;
+};
+```
+
+阶段函数签名：
+
+```cpp
+// Phase 1：I/O + 堆（纯副作用，无产出）
+void          phase_1(BootInfoHeader*);
+
+// Phase 2：内存早期初始化
+ctx_early_mem phase_2(BootInfoHeader*);
+
+// Phase 2.5：initramfs 高位搬迁（修改 ctx_early_mem.ramfs_base/size）
+void          phase_25_relocate_initramfs(BootInfoHeader*, ctx_early_mem*);
+
+// Phase 3a：kernel.elf 基础加载
+ctx_kernel_loaded phase_3a(const ctx_early_mem*);
+
+// Phase 3b：恒等映射 + 各类区间分配
+ctx_intervals     phase_3b(const ctx_kernel_loaded*, BootInfoHeader*);
+
+// Phase 4：构建 init_to_kernel_header
+phyaddr_t         phase_4(const ctx_kernel_loaded*, const ctx_intervals*,
+                          BootInfoHeader*);
+
+// Phase 4.5：自裁 + CR3 切换 + shift_kernel（终止性，无返回）
+void              phase_45(const ctx_kernel_loaded*, const ctx_intervals*,
+                           phyaddr_t info_pbase);
+```
+
+`init()` 主流程：
+
+```cpp
+extern "C" void init(BootInfoHeader* header) {
+    phase_1(header);
+    auto em  = phase_2(header);
+    phase_25_relocate_initramfs(header, &em);
+    auto kl  = phase_3a(&em);
+    auto iv  = phase_3b(&kl, header);
+    auto pkt = phase_4(&kl, &iv, header);
+    phase_45(&kl, &iv, pkt);
+}
+```
+
+### 9.3 规则
+
+1. **每个 phase 函数要么返回一个上下文，要么是纯副作用。** 全局变量（`g_va_alloc_base` 等极少数例外）全部消除。
+2. **上下文按值传递**（小结构体），或 const 指针（大结构体如 `ctx_kernel_loaded`）。
+3. **阶段的消费品必须来自前序阶段的上下文**，不允许隐式读取未经过参数传递的全局变量。
+4. **上下文字段的类型随 `vm_interval` 升级同步更新**。例如 `symtable_file` 从 `vm_interval` 变为 `movable_file_entry_t` 时，只需修改 `ctx_intervals` 中的字段类型，编译器会标出所有使用点。
+
+### 9.4 收益
+
+| 维度 | 全局变量范式 | 上下文交付范式 |
+|------|------------|--------------|
+| 依赖检查 | 人工审查 | 编译器保证 |
+| 重构效率 | 全文搜索 → 人工确认 | 改字段类型 → 编译器报错 |
+| 新增阶段 | 不知道该用哪些变量 | 上下文签名为文档 |
+| 测试 | 无法 mock | 可构造上下文实例注入 |
+
+---
+
+## 10. 与 v1 的向后兼容性
 
 - v2 `init_to_kernel_header` 与 v1 `init_to_kernel_info` **完全不兼容**
 - 结构体字段、布局、语义全部改变
