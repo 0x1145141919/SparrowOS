@@ -106,7 +106,11 @@ bool FreePagesAllocator::BuddyControlBlock::cache_pick(uint8_t order, uint64_t& 
 bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
 {
     if (dirty_count != 0) return false;
-    return fnd.order_exist_check(order);
+    // 检查 >= order 的任意阶是否有空闲块（允许从高阶分裂）
+    for (uint8_t o = order; o <= max_supprt_order; o++) {
+        if (fnd.order_exist_check(o)) return true;
+    }
+    return false;
 }
 
 // ================================================================

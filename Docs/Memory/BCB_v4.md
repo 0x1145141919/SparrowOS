@@ -95,6 +95,35 @@ BCB_v4:
     └─ statistics (不含 free_count)
 ```
 
+## 2026-05-24 修复
+
+### can_alloc 精确阶检查 → 范围扫描
+
+**问题：** `can_alloc(order)` 只检查 `free_count[order] > 0`，但 BCB 初始时只有
+`free_count[max_order]=1`，低阶全 0。第一个 alloc（need_order=0）对所有 BCB 调用
+`can_alloc(0)` 均返回 false，导致每个 BCB 被永久标记→`NO_AVALIABLE_BCB`。
+
+```diff
+ bool can_alloc(uint8_t order)
+ {
+     if (dirty_count != 0) return false;
+-    return fnd.order_exist_check(order);
++    for (uint8_t o = order; o <= max_supprt_order; o++) {
++        if (fnd.order_exist_check(o)) return true;
++    }
++    return false;
+ }
+```
+
+受影响的源文件：`src/memory/FreePagesAllocator_BCB.cpp`。
+
+### FPA::Init 新增 BCB 信息打印
+
+在 BCBS 构造完成后逐块打印每个 BCB 的索引、基址、order、管辖上界，
+便于调试时排查 BCB 覆盖范围。
+
+受影响的源文件：`src/memory/FreePagesAllocator.cpp`。
+
 ## 测试验证
 
 | 测试 | 结果 |

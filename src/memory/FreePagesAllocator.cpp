@@ -349,6 +349,20 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
         return fatal;
     }
 
+    bsp_kout << "[FPA::Init] BCB count=" << (uint64_t)BCB_count << kendl;
+    for (uint64_t bcb_i = 0; bcb_i < BCB_count; bcb_i++) {
+        BuddyControlBlock& b = BCBS[bcb_i];
+        uint8_t  order = b.get_max_order();
+        uint64_t span = (order < 52) ? (1ULL << (order + 12)) : 0;
+        phyaddr_t end  = (span > 0) ? (b.get_base() + span - 1) : b.get_base();
+        bsp_kout << "  BCB[" << (uint64_t)bcb_i << "] "
+                 << "base=0x" << HEX << (uint64_t)b.get_base()
+                 << " order=" << DEC << (uint64_t)order
+                 << " (" <<(void*)(1ULL << (order + 12))  << "bytes)"
+                 << " end=0x" << HEX << (uint64_t)end
+                 << DEC << kendl;
+    }
+
     uint64_t processor_count = fpa_get_cpu_count();
     statistics_arr = new fpa_stats[processor_count];
     processors_preffered_bcb_idx = new uint64_t[processor_count];
