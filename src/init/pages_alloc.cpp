@@ -1,6 +1,6 @@
 #include "init/pages_alloc.h"
 #include "util/OS_utils.h"
-#include "init/heap_alloc.h"
+#include "init/init_heap_v3.h"
 #include "util/kout.h"
 // 静态成员定义
 Ktemplats::list_doubly<EFI_MEMORY_DESCRIPTORX64>* basic_allocator::memory_map = nullptr;

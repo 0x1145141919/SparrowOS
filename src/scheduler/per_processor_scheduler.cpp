@@ -44,7 +44,7 @@ KURD_t task_pool::enable_subtable(uint32_t high_idx)
     if(entry.sub==nullptr||error_kurd(kurd)){
         return kurd;
     }
-    new(&entry.sub->used_bitmap) huge_bitmap(sub_table_entry_count);
+    new(&entry.sub->used_bitmap) used_slot_bitmap(sub_table_entry_count);
     kurd=entry.sub->used_bitmap.second_stage_init();
     if(error_kurd(kurd)){
         return kurd;
@@ -72,7 +72,7 @@ KURD_t task_pool::try_disable_subtable(uint32_t high_idx)
         }
     }
     entry.last_max_slot_version=max;
-    entry.sub->used_bitmap.~huge_bitmap();
+    entry.sub->used_bitmap.~used_slot_bitmap();
     kurd=__wrapped_pgs_vfree(entry.sub,(sizeof(task_pool::subtable)+4095)>>12);
     entry.sub=nullptr;
     return kurd;
@@ -278,8 +278,8 @@ per_processor_scheduler::per_processor_scheduler()
     }
     // Idle task must not be enqueued into ready_queue.
     kthread_context* idle_ctx = new kthread_context();
-    idle_ctx->regs.iret_complex.cs = x64_local_processor::K_cs_idx<<3;
-    idle_ctx->regs.iret_complex.ss = x64_local_processor::K_ds_ss_idx<<3;
+    idle_ctx->regs.iret_complex.cs = K_cs_idx<<3;
+    idle_ctx->regs.iret_complex.ss = K_ds_ss_idx<<3;
     idle_ctx->regs.iret_complex.rip = (uint64_t)secure_hlt_wrapper;
     idle_ctx->regs.rsi = 0;
     idle_ctx->regs.rdi = 0;

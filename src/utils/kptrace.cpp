@@ -13,8 +13,8 @@ uint32_t ksymmanager::entry_count;
 uint32_t ksymmanager::entry_size;
 int ksymmanager::Init(vm_interval* entry,uint64_t file_size)
 {
-    phybase = entry->pbase;
-    virtbase = entry->vbase;
+    phybase = entry->pbase();
+    virtbase = entry->vbase();
     symbol_table = (symbol_entry*)virtbase;
     entry_size = file_size;
     entry_count = entry_size/sizeof(symbol_entry);

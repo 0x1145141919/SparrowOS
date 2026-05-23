@@ -38,7 +38,6 @@ extern ap_init
 extern bsp_init_gdt_entries
 extern bsp_init_gdt_descriptor
 extern bsp_init_idt_entries
-extern bsp_init_idtr
 extern ap_init_patch_idt_rm
 extern ap_init_patch_idt_pe
 extern ap_init_patch_idt_lm
@@ -46,6 +45,14 @@ extern idt_table_rm
 extern idt_descriptor_rm
 extern idt_descriptor_pe
 extern global_idtr
+extern ap_bootstrap_init
+
+
+global g_gs_by_apicid
+global gs_complex_load_gdt_tss
+global gs_complex_load_get_rsp0_bottom 
+global x2apic_core_init
+
 global realmode_enter_checkpoint
 
 global pemode_enter_checkpoint
@@ -127,27 +134,27 @@ bits 32
 
 .ap_start_64:
 bits 64
+
     mov rax, cr0
     or rax, (1<<5)|(1<<16)
     mov cr0, rax
+
     mov rax, cr4
     or rax, 0x668
     mov cr4, rax
-    mov rsp, init_stack_end
-    mov rax, wrmsr_func
-    mov rdi, 0xC0000101
-    mov rsi, ap_tmp_gs_slots
-    call rax
+    
+    mov rax, ap_bootstrap_init
+    call rax                                                             
+    mov rsp, rax                  ; 切到 hdstacks 硬件栈   
+    mov rax, global_idtr                                                                 
+    lidt [rax]            ; 加载 IDT（仍在 ASM 侧，保持可见性）      
+
     mov rax, wrmsr_func
     mov rdi, 0x277
     mov rsi, 0x0407050600070106
     call rax
-    mov rax, global_idtr
-    lidt [rax]
-    mov rdi, [assigned_processor_id]
-    mov [gs:8], rdi
+
     mov rax, ap_init
-    
     call rax
     ; 添加跳转指令，防止执行下面的数据部分
     
@@ -220,14 +227,6 @@ _kernel_Init:
     mov rax, cr0
     or rax, (1<<16)
     mov cr0, rax
-    mov rax, bsp_init_gdt_descriptor
-    lgdt [rax]
-    mov rax, 0x8
-    push rax
-    mov rax, .jump_kernel
-    push rax
-    retfq
-.jump_kernel:
     mov rax, ap_init_patch_idt_pe
     call rax
     mov rax, wrmsr_func
@@ -248,20 +247,7 @@ secure_hlt:
 ; 2) use struct offset to load tss.rsp0
 ; 3) switch to rsp0 and halt with interrupts enabled
 ap_final_work:
-    cli
-
-    ; reserve 256 bytes first, then align stack for C ABI call
-    sub rsp, 256
-    mov rdx, rsp
-    and rdx, -16
-    mov rsp, rdx
-    mov rax, get_current_processor_rsp0
-    call rax
-    test rax, rax
-    jz .ap_final_halt_loop
-    mov rsp, rax
     sti 
-.ap_final_halt_loop:
     hlt
-    jmp .ap_final_halt_loop
+    jmp ap_final_work
 ;todo 这里改成跳入一个extern "C" 入口 ap_norm_start

@@ -80,7 +80,7 @@ miusecond_time_stamp_t ktime::get_microsecond_stamp( )
     if(is_tsc_reliable){
         return (rdtsc()/FS_per_mius)*tsc_fs_per_cycle;
     }else{
-        return readonly_timer->get_time_stamp_in_mius();
+        return readonly_timer->get_time_stamp_in_us();
     }
 }
 uint64_t ktime::get_nanosecond_stamp()

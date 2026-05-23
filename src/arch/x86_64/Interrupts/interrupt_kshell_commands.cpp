@@ -10,12 +10,13 @@
 #include "util/kptrace.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/abi/GS_complex.h"
 
 using namespace kio;
 
 extern soft_interrupt_func_t soft_interrupt_functions[256];
-extern hard_interrupt_func_t *all_processors_interrupt_functions;
 extern uint32_t logical_processor_count;
+extern vm_interval conjucnt_GSs;
 
 static KURD_t cmd_ok(uint8_t evt) {
     return {result_code::SUCCESS, 0, module_code::INFRA,
@@ -88,8 +89,8 @@ KURD_t cmd_out_int_spec(const line_t* line) {
             return ok;
         }
 
-        hard_interrupt_func_t* slice =
-            &all_processors_interrupt_functions[pid * 256];
+        gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + pid * GS_COMPLEX_STRIDE);
+        hard_interrupt_func_t* slice = cx->dispatch;
 
         if (line->token_count >= 3) {
             /* preciser: pid + vec */
@@ -130,7 +131,8 @@ KURD_t cmd_out_int_spec(const line_t* line) {
     uint32_t pc = logical_processor_count;
     for (uint32_t p = 0; p < pc; p++) {
         bsp_kout << "=== hard-interrupt table for processor " << p << " ===" << kendl;
-        hard_interrupt_func_t* slice = &all_processors_interrupt_functions[p * 256];
+        gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + p * GS_COMPLEX_STRIDE);
+        hard_interrupt_func_t* slice = cx->dispatch;
         bool any = false;
         for (uint16_t v = 32; v <= 255; v++) {
             if (slice[v]) {

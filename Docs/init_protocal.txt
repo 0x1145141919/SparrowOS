@@ -216,12 +216,11 @@ kernel_load(pak)
 **ELF 解析**：
 - 验证 ELF 魔数
 - 遍历 program headers，统计 `PT_LOAD` 段数量
-- 按 `VM_INTERVAL_ALLOC_FACTOR = 3` 倍预留槽位
 
 **段加载流程**（对每个 PT_LOAD 段）：
 
 1. **解析权限**：从 `p_flags` 提取 `x/w/r`
-2. **PA 随机化**：若 `param.pa_random` 为真，通过 `basic_allocator::pages_alloc` 分配符合对齐要求的物理地址
+2. **PA 随机化**：若 `p_flags&0x100` 为真，通过分配keep端内存，反之则是指定物理地址加载
 3. **VA 加载**：使用 `p_vaddr`（恒等映射，不随机化）
 4. **复制内容**：将 `p_filesz` 字节从文件复制到目标物理地址
 5. **BSS 清零**：若 `p_memsz > p_filesz`，将剩余部分清零
@@ -231,6 +230,7 @@ kernel_load(pak)
 - 内核代码段/数据段严格按 ELF 声明的虚拟地址加载
 - 不进行 VA 随机化（因为内核入口点需要固定）
 - 映射权限与 ELF 声明的 flags 一致
+- `p_flags&0x100` 为真的段修改原始映像的pbase字段，以便后续重建mmu时直接根据物理地址映射到虚拟地址
 
 ### 4.6 加载匿名内存区域
 

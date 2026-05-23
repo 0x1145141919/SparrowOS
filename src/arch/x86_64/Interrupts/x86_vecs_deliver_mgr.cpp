@@ -7,14 +7,15 @@
 #include "memory/all_pages_arr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/GS_complex.h"
 #include "panic.h"
 
-extern logical_idt template_idt[256];
-extern IDTEntry global_idt[256];
-extern hard_interrupt_func_t *all_processors_interrupt_functions;
-extern soft_interrupt_func_t soft_interrupt_functions[256];
+logical_idt template_idt[256];
+IDTEntry global_idt[256];
+soft_interrupt_func_t soft_interrupt_functions[256];
 extern void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec);
 extern uint32_t logical_processor_count;
+extern vm_interval conjucnt_GSs;
 
 static spinlock_cpp_t dispatch_lock;
 
@@ -68,7 +69,7 @@ static int parse_vec_delivery_name(const char *name)
 /* ===================================================================
  * Init
  * =================================================================== */
-KURD_t idt_vec_dispatch_mgr::Init(uint32_t logical_processor_count)
+KURD_t idt_vec_dispatch_mgr::Init()
 {
     KURD_t success_k = idt_mgr_default_success();
     KURD_t fatal_k   = idt_mgr_default_fatal();
@@ -77,20 +78,12 @@ KURD_t idt_vec_dispatch_mgr::Init(uint32_t logical_processor_count)
 
     using namespace Interrupt_module::idt_mgr_events::init_results;
 
-    /* allocate per-processor interrupt func tables */
-    KURD_t alloc_kurd;
-    uint64_t total_entries = (uint64_t)logical_processor_count * 256;
-    uint64_t bytes         = total_entries * sizeof(hard_interrupt_func_t);
-    uint64_t pages         = bytes / 4096 + 1;
-
-    all_processors_interrupt_functions =
-        (hard_interrupt_func_t *)__wrapped_pgs_valloc(&alloc_kurd, pages,
-                                                       page_state_t::kernel_pinned, 12);
-    if (error_kurd(alloc_kurd)) {
-        bsp_kout << now << "[idt_vec_dispatch_mgr] per-processor funcs alloc failed" << kendl;
-        return alloc_kurd;
+    /* dispatch 表已预分配在 conjunc_GSs (gs_complex_t::dispatch)，仅需清零 */
+    vaddr_t gs_vbase = conjucnt_GSs.vbase();
+    for (uint32_t p = 0; p < logical_processor_count; p++) {
+        gs_complex_t* cx = (gs_complex_t*)(gs_vbase + p * GS_COMPLEX_STRIDE);
+        ksetmem_8(cx->dispatch, 0, sizeof(cx->dispatch));
     }
-    ksetmem_8(all_processors_interrupt_functions, 0, bytes);
 
     /* resolve vec_delivery symbols */
     uint32_t sym_count = ksymmanager::get_entry_count();
@@ -207,8 +200,8 @@ uint8_t idt_vec_dispatch_mgr::alloc_vec(hard_interrupt_func_t func,
         return 0;
     }
 
-    hard_interrupt_func_t *slice =
-        &all_processors_interrupt_functions[processor_id * 256];
+    gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
+    hard_interrupt_func_t* slice = cx->dispatch;
 
     dispatch_lock.lock();
     uint8_t vec = 32;
@@ -251,8 +244,8 @@ KURD_t idt_vec_dispatch_mgr::free_vec(uint8_t vec, uint32_t processor_id)
         return fail_k;
     }
 
-    hard_interrupt_func_t *slice =
-        &all_processors_interrupt_functions[processor_id * 256];
+    gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
+    hard_interrupt_func_t* slice = cx->dispatch;
 
     dispatch_lock.lock();
     if (slice[vec] == nullptr) {
@@ -292,8 +285,8 @@ hard_interrupt_func_t *idt_vec_dispatch_mgr::get_vec(uint8_t vec,
         return nullptr;
     }
 
-    hard_interrupt_func_t *entry =
-        &all_processors_interrupt_functions[processor_id * 256 + vec];
+    gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
+    hard_interrupt_func_t *entry = &cx->dispatch[vec];
 
     if (*entry == nullptr) {
         kurd = fail_k;
@@ -355,20 +348,14 @@ extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec)
         soft_interrupt_functions[vec](frame, vec);
         return;
     }
-
-    /* per-processor hardware */
-    hard_interrupt_func_t *table =
-        (hard_interrupt_func_t *)read_gs_u64(PROCESSOR_INTERRUPT_FUNCS_TABLE_GS_INDEX);
-    if (table) {
-        if (table[vec]) {
-            table[vec](frame, vec, pid);
-            x2apic::x2apic_driver::write_eoi();
-            return;
-        }
-        bsp_kout << now << "[all_vec_delivery] WARNING: no handler for vec "
-                 << (uint32_t)vec << " on processor " << pid << kendl;
-    } else {
-        bsp_kout << now << "[all_vec_delivery] WARNING: no func table for processor "
-                 << pid << kendl;
+    //这里可以直接rdmsr获取gs基址作为gs_complex
+    /* per-processor hardware — 从 gs_complex_t::dispatch 直接取 */
+    gs_complex_t* self = (gs_complex_t*)(conjucnt_GSs.vbase() + pid * GS_COMPLEX_STRIDE);
+    if (self->dispatch[vec]) {
+        self->dispatch[vec](frame, vec, pid);
+        x2apic::x2apic_driver::write_eoi();
+        return;
     }
+    bsp_kout << now << "[all_vec_delivery] WARNING: no handler for vec "
+             << (uint32_t)vec << " on processor " << pid << kendl;
 }

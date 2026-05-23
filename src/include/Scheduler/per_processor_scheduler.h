@@ -256,6 +256,30 @@ struct task_in_pool{
     task*task_ptr;
     uint32_t slot_version;
 };
+// 专用 huge_bitmap 派生：固定 0=空闲, 1=已占用 语义 + 计数跟踪
+// 用于 subtable 的槽位分配跟踪，替代已被移除的 bitmap_t 线性扫描语义
+class used_slot_bitmap : public huge_bitmap {
+    uint64_t m_used_count = 0;
+    spinlock_cpp_t m_count_lock;
+public:
+    used_slot_bitmap(uint64_t bits) : huge_bitmap(bits) {}
+
+    void used_bit_count_add(uint64_t n) {
+        m_count_lock.lock();
+        m_used_count += n;
+        m_count_lock.unlock();
+    }
+
+    void used_bit_count_sub(uint64_t n) {
+        m_count_lock.lock();
+        if (n >= m_used_count) m_used_count = 0;
+        else m_used_count -= n;
+        m_count_lock.unlock();
+    }
+
+    uint64_t used_count() const { return m_used_count; }
+};
+
 class tid_wait_queue:Ktemplats::list_doubly<uint64_t>{
     
     public:
@@ -281,7 +305,7 @@ class task_pool{
     static constexpr uint32_t root_table_entry_count=1<<16;
     static constexpr uint32_t sub_table_entry_count=1<<16;
     struct subtable{
-        huge_bitmap used_bitmap;
+        used_slot_bitmap used_bitmap;
         task_in_pool task_table[sub_table_entry_count];
     };
     struct root_entry

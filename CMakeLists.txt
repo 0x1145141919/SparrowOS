@@ -161,11 +161,11 @@ add_executable(kernel.elf
 add_executable(init.elf
     src/init/init_init.cpp
     src/init/kernel_mmu.cpp
-    src/init/kernel_load.cpp
     src/init/init_entry.asm
     src/init/Interrupts/Sysdef_exception_entries.asm
     src/init/Interrupts/exceptions_handler.cpp
-    src/init/heap_alloc.cpp
+    src/init/init_heap_v3.cpp
+    src/utils/BuddyControlBlock_foundation.cpp
     src/init/core_hardwares/init_gop.cpp
     src/init/core_hardwares/PortDriver.cpp
     src/init/util/textConsole.cpp
@@ -175,9 +175,10 @@ add_executable(init.elf
     src/init/panic.cpp
     src/init/util/kout.cpp
     src/utils/util.cpp
-    src/init/util/bitmap.cpp
     src/utils/lock.cpp
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
+    src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp
+    src/arch/x86_64/Processor/runtime_processor_regist.asm
     src/os_error_definitions.cpp
     src/init/info_fill.cpp
     src/init/mem_loads.cpp

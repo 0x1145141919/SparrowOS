@@ -174,14 +174,15 @@ KURD_t cmd_pread(const line_t* line) {
 
 
     // 通过临时只读映射读取物理地址
-    vm_interval iv;
-    iv.vbase = 0;
-    iv.pbase = pa & ~0xFFFULL;
-    iv.size  = 0x2000;
-    iv.access = KspacePageTable::PG_R;
-
+    pgaccess rd_acc = {1,0,1,0,1,WB};  // kernel, R, no X
+    vm_interval iv = {
+        .vpn = 0,
+        .ppn = (pa & ~0xFFFULL) >> 12,
+        .npages = 2,
+        .access = rd_acc
+    };
     KURD_t map_kurd;
-    vaddr_t mapped = phyaddr_direct_map(&iv, &map_kurd);
+    vaddr_t mapped = Kspace_pinterval_alloc_and_map(iv, &map_kurd);
     if (mapped == 0 || error_kurd(map_kurd)) {
         bsp_kout << "[ERROR] Failed to map physical address" << kendl;
         return map_kurd;
@@ -194,11 +195,13 @@ KURD_t cmd_pread(const line_t* line) {
         value |= ((uint64_t)src[i]) << (i * 8);
     }
 
-    vm_interval unmap_iv;
-    unmap_iv.vbase = mapped;
-    unmap_iv.pbase = iv.pbase;
-    unmap_iv.size  = iv.size;
-    KURD_t unmap_kurd = phyaddr_direct_unmap(&unmap_iv, iv.size);
+    vm_interval unmap_iv = {
+        .vpn = mapped >> 12,
+        .ppn = iv.ppn,
+        .npages = 2,
+        .access = rd_acc
+    };
+    KURD_t unmap_kurd = Kspace_phyaddr_direct_unmap(unmap_iv);
 
     bsp_kout << "[pread] phyaddr=0x" << HEX << pa << DEC << " (size=" << size << "): ";
     if (fmt == HEX) {
@@ -244,14 +247,15 @@ KURD_t cmd_pwrite(const line_t* line) {
         }
     }
 
-    vm_interval iv;
-    iv.vbase = 0;
-    iv.pbase = pa & ~0xFFFULL;
-    iv.size  = 0x2000;
-    iv.access = KspacePageTable::PG_RW;
-
+    pgaccess rw_acc = {1,1,1,0,1,WB};  // kernel, RW, no X
+    vm_interval iv = {
+        .vpn = 0,
+        .ppn = (pa & ~0xFFFULL) >> 12,
+        .npages = 2,
+        .access = rw_acc
+    };
     KURD_t mk;
-    vaddr_t mapped = phyaddr_direct_map(&iv, &mk);
+    vaddr_t mapped = Kspace_pinterval_alloc_and_map(iv, &mk);
     if (mapped == 0 || error_kurd(mk)) {
         bsp_kout << "[ERROR] Failed to map physical address" << kendl;
         return mk;
@@ -263,11 +267,13 @@ KURD_t cmd_pwrite(const line_t* line) {
         dst[i] = (uint8_t)((value >> (i * 8)) & 0xFF);
     }
 
-    vm_interval um;
-    um.vbase = mapped;
-    um.pbase = iv.pbase;
-    um.size  = iv.size;
-    KURD_t umk = phyaddr_direct_unmap(&um, iv.size);
+    vm_interval um = {
+        .vpn = mapped >> 12,
+        .ppn = iv.ppn,
+        .npages = 2,
+        .access = rw_acc
+    };
+    KURD_t umk = Kspace_phyaddr_direct_unmap(um);
 
     bsp_kout << "[pwrite] Wrote 0x" << HEX << value << DEC
              << " to phyaddr=0x" << HEX << pa << DEC
@@ -306,21 +312,20 @@ KURD_t cmd_pmap(const line_t* line) {
         else if (tok_eq(a, "RWX")) access = KspacePageTable::PG_RWX;
     }
 
-    vm_interval iv;
-    iv.vbase = va;
-    iv.pbase = pa;
-    iv.size  = size;
-    iv.access = access;
-
-    KURD_t mk;
-    vaddr_t mapped = phyaddr_direct_map(&iv, &mk);
-    if (mapped == 0 || error_kurd(mk)) {
+    vm_interval iv = {
+        .vpn = va >> 12,
+        .ppn = pa >> 12,
+        .npages = size >> 12,
+        .access = access
+    };
+    KURD_t mk = Kspace_phyaddr_direct_map(iv);
+    if (error_kurd(mk)) {
         bsp_kout << "[ERROR] pmap failed" << kendl;
         return mk;
     }
 
     bsp_kout << "[pmap] phyaddr=0x" << HEX << pa << DEC
-             << " → vaddr=0x" << HEX << mapped << DEC
+             << " → vaddr=0x" << HEX << va << DEC
              << " size=" << size << kendl;
     return mk;
 }
@@ -339,13 +344,14 @@ KURD_t cmd_punmap(const line_t* line) {
         return KURD_t{};
     }
 
-    vm_interval iv;
-    iv.vbase = va;
-    iv.pbase = 0;
-    iv.size  = size;
-    iv.access = KspacePageTable::PG_R;
-
-    KURD_t kr = phyaddr_direct_unmap(&iv, size);
+    pgaccess rd_acc = {1,0,1,0,1,WB};
+    vm_interval iv = {
+        .vpn = va >> 12,
+        .ppn = 0,
+        .npages = size >> 12,
+        .access = rd_acc
+    };
+    KURD_t kr = Kspace_phyaddr_direct_unmap(iv);
     if (error_kurd(kr)) {
         bsp_kout << "[ERROR] punmap failed (reason=" << kr.reason << ")" << kendl;
         return kr;
@@ -371,14 +377,15 @@ KURD_t cmd_dmap(const line_t* line) {
         return KURD_t{};
     }
 
-    vm_interval iv;
-    iv.vbase = 0;
-    iv.pbase = pa;
-    iv.size  = size;
-    iv.access = KspacePageTable::PG_RW;
-
+    pgaccess rw_acc = {1,1,1,0,1,WB};
+    vm_interval iv = {
+        .vpn = 0,
+        .ppn = pa >> 12,
+        .npages = size >> 12,
+        .access = rw_acc
+    };
     KURD_t mk;
-    vaddr_t mapped = phyaddr_direct_map(&iv, &mk);
+    vaddr_t mapped = Kspace_pinterval_alloc_and_map(iv, &mk);
     if (mapped == 0 || error_kurd(mk)) {
         bsp_kout << "[ERROR] dmap failed" << kendl;
         return mk;

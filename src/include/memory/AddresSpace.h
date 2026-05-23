@@ -227,6 +227,9 @@ class AddressSpace//到时候进程管理器可以用这个类创建，但是内
         return occupyied_size;
     }
     phyaddr_t vaddr_to_paddr(vaddr_t vaddr,KURD_t&kurd);
+    phyaddr_t get_root_table_phybase(){
+        return pml4_phybase;
+    }
     void unsafe_load_pml4_to_cr3(uint16_t pcid);//这个接口会直接把当前页表加载到cr3寄存器
     ~AddressSpace();//如果cr3还装载这这个页表，删除会在堆里释放根表，虽然不会马上报错但是极度危险，最好别这么干
 };

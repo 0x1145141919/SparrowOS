@@ -2,24 +2,13 @@
 #include "init/page_allocator.h"
 #include "init/load_kernel.h"
 #include "init/pages_alloc.h"
+#include "init/init_phase_ctx.h"
 #include "init/util/kout.h"
 #include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "arch/x86_64/boot.h"
 #include "memory/memory_base.h"
-
-// ============================================================================
-// 跨函数全局变量 (init_init.cpp 中定义)
-// ============================================================================
-extern vm_interval g_kIMG_self_window;
-extern vm_interval g_kBSS_interval;
-extern vm_interval g_FPA_bitmaps;
-extern vm_interval g_log_buffer;
-extern vm_interval g_kernel_entry_stack;
-extern vm_interval g_symtable_file;
-extern vm_interval g_initramfs_file;
-extern vm_interval g_identity_map_window;
 
 // ============================================================================
 // 辅助: 调试打印
@@ -61,9 +50,7 @@ static void dump_header(const init_to_kernel_header* h, phyaddr_t pkt_base) {
              << "  pt_offset=0x" << h->pass_through_devices_offset << kendl;
     bsp_kout << "  logical_processor_count=" << h->logical_processor_count << kendl;
     bsp_kout << "  arch_specify_offset=0x" << h->arch_specify_offset << kendl;
-    bsp_kout << "  identity_map_window: pbase=0x" << h->identity_map_window.pbase
-             << " vbase=0x" << h->identity_map_window.vbase
-             << " size=0x" << h->identity_map_window.size << kendl;
+
 
     // memory_map
     if (h->memory_map_offset) {
@@ -93,28 +80,24 @@ static void dump_header(const init_to_kernel_header* h, phyaddr_t pkt_base) {
 // ============================================================================
 //
 // 输入:
-//   pkt_pbase  — 信息包的物理基址（已通过 page_allocator 分配，4KB 对齐）
+//   pkt_pbase  — 信息包的物理基址
 //   pkt_pages  — 信息包总页数
-//   kmmu       — kernel_mmu 实例
 //   header     — BootInfoHeader（UEFI 传递）
-//   vm_arr     — 已填好的 loaded_VM_interval 数组
-//   vm_count   — 数组条目数
-//   seg_view   — phymem_segment 视图（basic_allocator 的纯净视图）
+//   kl         — Phase 3a 上下文（kIMG_self_window, entry 等）
+//   iv         — Phase 3b 上下文（各驱动区间列表）
+//   seg_view   — phymem_segment 视图
 //   seg_count  — 视图条目数
-//   arch       — x86 架构特定信息包
 //
 // 输出: pkt_pbase 处填充完整的 header + payload，pages_arr 除外
 //
 phyaddr_t build_init_to_kernel_header(
     phyaddr_t                pkt_pbase,
     uint64_t                 pkt_pages,
-    kernel_mmu*              kmmu,
     BootInfoHeader*          header,
-    loaded_VM_interval*      extra_vm_arr,
-    uint64_t                 extra_vm_count,
+    const ctx_kernel_loaded* kl,
+    const ctx_intervals*     iv,
     phymem_segment*          seg_view,
-    uint64_t                 seg_count,
-    x86_specify_init_to_kernel_info* arch)
+    uint64_t                 seg_count)
 {
     uint8_t* base = reinterpret_cast<uint8_t*>(pkt_pbase);
 
@@ -130,8 +113,9 @@ phyaddr_t build_init_to_kernel_header(
     uint64_t hdr_sz      = sizeof(init_to_kernel_header);
     uint64_t hdr_off     = align_up(hdr_sz, 4096);       // header → 4KB 对齐
 
+    uint64_t extra_vm_count = iv->extra_vm_count;
     uint64_t map_sz      = seg_count * sizeof(phymem_segment);
-    uint64_t vm_sz       = extra_vm_count  * sizeof(loaded_VM_interval);
+    uint64_t vm_sz       = extra_vm_count * sizeof(loaded_VM_interval);
     uint64_t pt_sz       = header->pass_through_device_info_count * sizeof(pass_through_device_info);
     uint64_t arch_sz     = sizeof(x86_specify_init_to_kernel_info);
 
@@ -167,8 +151,8 @@ phyaddr_t build_init_to_kernel_header(
     init_to_kernel_header* h = reinterpret_cast<init_to_kernel_header*>(base);
     h->magic                         = 0x494E494B524E4C48ULL; // "INIKRNLH"
     h->self_pages_count              = pkt_pages;
-    h->kmmu_interval                 = {kmmu->get_self_alloc_interval().start,
-                                        kmmu->get_self_alloc_interval().size,
+    h->kmmu_interval                 = {kl->kmmu->get_self_alloc_interval().start,
+                                        kl->kmmu->get_self_alloc_interval().size,
                                         PHY_MEM_TYPE::OS_PGTB_SEGS};
     h->phymem_segment_count          = seg_count;
     h->memory_map_offset             = map_off;
@@ -178,17 +162,17 @@ phyaddr_t build_init_to_kernel_header(
     h->pass_through_devices_offset   = pt_off;
     h->logical_processor_count       = header->logical_processor_count;
 
-    // 一等字段直接由全局变量填入（Phase 3a/3b 已准备）
-    h->kIMG_self_window  = g_kIMG_self_window;
-    h->kBSS_interval     = g_kBSS_interval;
+    // 一等字段由 ctx 参数提供
+    h->kIMG_self_window  = kl->kIMG_self_window;
+    h->kIMG_self_size    = kl->kimg_file_size;
+    h->kBSS_interval     = {};  // 已归入 PT_LOAD 通用处理，kernel 应扫描程序头表
     h->pages_arr         = {0, 0, 0, {}};     // Phase 4.5 填入
-    h->FPA_bitmaps       = g_FPA_bitmaps;
-    h->log_buffer        = g_log_buffer;
-    h->kernel_entry_stack= g_kernel_entry_stack;
-    h->symtable_file     = g_symtable_file;
-    h->initramfs_file    = g_initramfs_file;
-    h->identity_map_window = g_identity_map_window;
-
+    h->FPA_bitmaps       = iv->FPA_bitmaps;
+    h->log_buffer        = iv->log_buffer;
+    h->kernel_entry_stack= {};  // 已废弃——Phase 4.5 跳转时用 BSP GS 复合体的 rsp0 栈
+    h->symtable_file     = iv->symtable_file;
+    h->initramfs_file    = iv->initramfs_file;
+    h->Kspace_phyaddr_access_window = iv->Kspace_phyaddr_access_window;
     h->arch_specify_offset = arch_off;
 
     // --- 填充 memory_map ---
@@ -197,10 +181,10 @@ phyaddr_t build_init_to_kernel_header(
         ksystemramcpy(seg_view, dst, map_sz);
     }
 
-    // --- 填充额外 VM_intervals (无 header 一等字段的条目) ---
-    if (vm_sz && extra_vm_arr) {
+    // --- 填充额外 VM_intervals ---
+    if (vm_sz && iv->extra_vm_arr) {
         loaded_VM_interval* dst = reinterpret_cast<loaded_VM_interval*>(base + vm_off);
-        ksystemramcpy(extra_vm_arr, dst, vm_sz);
+        ksystemramcpy(iv->extra_vm_arr, dst, vm_sz);
     }
 
     // --- 填充 pass_through_devices ---
@@ -236,10 +220,10 @@ phyaddr_t build_init_to_kernel_header(
     }
 
     // --- 填充 arch_specify ---
-    if (arch) {
+    {
         x86_specify_init_to_kernel_info* dst_arch =
             reinterpret_cast<x86_specify_init_to_kernel_info*>(base + arch_off);
-        ksystemramcpy(arch, dst_arch, sizeof(*arch));
+        ksystemramcpy((void*)&iv->arch_info, dst_arch, sizeof(iv->arch_info));
     }
 
     // --- 调试打印 ---

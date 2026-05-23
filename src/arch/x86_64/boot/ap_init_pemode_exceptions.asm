@@ -121,7 +121,7 @@ bits 32
     pe_handler_no_err  XM,            19
     pe_handler_no_err  VE,            20
     pe_handler_with_err CP,           21  ; CP 有错误码
-
+SECTION .text
 bits 64
 ap_init_patch_idt_pe:
     push rax

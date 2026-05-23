@@ -145,6 +145,31 @@ huge_bitmap::~huge_bitmap()
     #endif
 }
 
+Ktemplats::kernel_bitmap::kernel_bitmap(uint64_t bit_count)
+{
+    uint64_t u64_count = (bit_count + 63) >> 6;
+    bitmap_size_in_64bit_units = u64_count;
+
+    bitmap = new uint64_t[u64_count];
+
+    if (!bitmap) {
+        bitmap_size_in_64bit_units = 0;
+        return;
+    }
+
+    for (uint64_t i = 0; i < u64_count; ++i)
+        bitmap[i] = 0;
+}
+
+Ktemplats::kernel_bitmap::~kernel_bitmap()
+{
+    if (bitmap) {
+        delete[] bitmap;
+        bitmap = nullptr;
+    }
+    bitmap_size_in_64bit_units = 0;
+}
+
 bool bitmap_t::all_true()
 {
     // 遍历所有完整的 64 位单元

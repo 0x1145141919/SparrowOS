@@ -553,7 +553,7 @@ void kio::kout::Init()
     for(int i = 0; i < 256; i++){
         top_module_KURD_interpreter[i]=defalut_KURD_module_interpator;
     }
-    top_module_KURD_interpreter[module_code::MEMORY]=__print_memmodule_kurd;
+    //top_module_KURD_interpreter[module_code::MEMORY]=__print_memmodule_kurd;
     
     #ifdef KERNEL_MODE
     kout_backend dmesg_buffer_handlers={

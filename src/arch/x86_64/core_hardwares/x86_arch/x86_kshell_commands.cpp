@@ -483,7 +483,7 @@ KURD_t cmd_hpet(const line_t* line) {
         return ok;
     }
 
-    uint64_t ts = readonly_timer->get_time_stamp_in_mius();
+    uint64_t ts = readonly_timer->get_time_stamp_in_us();
     bsp_kout << "=== HPET ===" << kendl;
     bsp_kout << "  Timestamp: " << ts << " us (" << (ts/1000) << " ms)" << kendl;
     return ok;

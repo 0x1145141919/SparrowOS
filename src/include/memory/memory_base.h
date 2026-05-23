@@ -139,6 +139,46 @@ constexpr pgaccess KSPACE_RW_UC_ACCESS={
     .cache_strategy=UC
 };
 
+// 内核可读可执行（代码段）
+constexpr pgaccess KSPACE_RX_ACCESS={
+    .is_kernel=1,
+    .is_writeable=0,
+    .is_readable=1,
+    .is_executable=1,
+    .is_global=1,
+    .cache_strategy=WB
+};
+
+// 内核只读（rodata）
+constexpr pgaccess KSPACE_R_ACCESS={
+    .is_kernel=1,
+    .is_writeable=0,
+    .is_readable=1,
+    .is_executable=0,
+    .is_global=1,
+    .cache_strategy=WB
+};
+
+// 内核读写执行（身份映射），非全局 — boot 过渡期使用
+constexpr pgaccess KSPACE_RWX_NG_ACCESS={
+    .is_kernel=1,
+    .is_writeable=1,
+    .is_readable=1,
+    .is_executable=1,
+    .is_global=0,
+    .cache_strategy=WB
+};
+
+// 内核读写写结合（帧缓冲）
+constexpr pgaccess KSPACE_RW_WC_ACCESS={
+    .is_kernel=1,
+    .is_writeable=1,
+    .is_readable=1,
+    .is_executable=0,
+    .is_global=1,
+    .cache_strategy=WC
+};
+
 struct VM_DESC
 {
     vaddr_t start;    // inclusive

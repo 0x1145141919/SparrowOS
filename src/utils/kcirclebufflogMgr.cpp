@@ -12,9 +12,9 @@ spinrwlock_cpp_t DmesgRingBuffer::rwlock;
 void DmesgRingBuffer::Init(vm_interval*logbuffer)
 {
     rwlock.write_lock();
-    buff= (char*)logbuffer->vbase;
+    buff= (char*)logbuffer->vbase();
     tailIndex=0;
-    buffSize = logbuffer->size;
+    buffSize = logbuffer->byte_cnt();
     rwlock.write_unlock();
 }
 

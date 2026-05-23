@@ -1,263 +1,83 @@
-#include "arch/x86_64/Interrupt_system/loacl_processor.h"
-#include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
-#include "arch/x86_64/abi/msr_offsets_definitions.h"
+#include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
-#include "firmware/gSTResloveAPIs.h"
-#include "firmware/ACPI_APIC.h"
-#include "util/kout.h"
-#include "linker_symbols.h"
-#include "arch/x86_64/Interrupt_system/fixed_interrupt_vectors.h"
+#include "arch/x86_64/abi/msr_offsets_definitions.h"
 #include "util/arch/x86-64/cpuid_intel.h"
-#include "util/OS_utils.h"
-#include "memory/AddresSpace.h"
-#include "memory/all_pages_arr.h"
-#include "memory/phyaddr_accessor.h"
-#include "memory/FreePagesAllocator.h"
-#include "memory/kpoolmemmgr.h"
-#include "arch/x86_64/core_hardwares/lapic.h"
-#include "util/bitmap.h"
-#include "panic.h"
-#include <util/kptrace.h>
-#include <util/lock.h>
-#include "ktime.h"
+#include "util/kout.h"
+#include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 
-x64_local_processor *x86_smp_processors_container::local_processor_interrupt_mgr_array[x86_smp_processors_container::max_processor_count];
-constexpr TSSDescriptorEntry kspace_TSS_entry = {
-    .limit = sizeof(TSSentry) ,
-    .base0 = 0,
-    .base1 = 0,
-    .type = 0x9, // 64位可用TSS
-    .zero = 0,
-    .dpl = 0,
-    .p = 1,
-    .limit1 = (sizeof(TSSentry) - 1) >> 16,
-    .avl = 0,
-    .reserved = 0,
-    .g = 0, // 字节粒度
-    .base2 = 0,
-    .base3 = 0,
-    .reserved2 = 0
-};
 
-int x86_smp_processors_container::regist_core(uint32_t processor_id) 
+/* ── x2apic_core_init ──────────────────────────────────────────────
+ *
+ * 每个逻辑处理器在进入长模式后调用一次，启用 x2APIC 模式并返回本处理器的
+ * x2APIC ID。
+ *
+ * - BSP 已由 UEFI 固件启用 x2APIC，此函数可安全反复调用（检测已启用则跳过）
+ * - AP 在 ap_init 中被调用，启用 x2APIC 后可通过 IA32_X2APIC_ICR 收发 IPI
+ * - CR8 TPR 统一设为 1，允许接收优先级 ≥ 1 的中断
+ *
+ * 返回值：本处理器的 x2APIC ID（uint32_t），用作 g_gs_by_apicid 查表键。
+ *
+ * 移植自 master 版 x64_local_processor::x64_local_processor() 的 x2APIC
+ * 初始化时序。
+ *
+ * 注意：x2APIC ID 在 CPUID leaf 0xB EDX 中始终可读，不依赖 x2APIC 模式状态。
+ * 此处先在 MSR 层面确保硬件模式正确，再返回 ID。
+ */
+extern "C" x2apicid_t x2apic_core_init()
 {
-    uint64_t bsp_specify=rdmsr(msr::apic::IA32_APIC_BASE);
-    if(bsp_specify&(1<<8)){
-        local_processor_interrupt_mgr_array[0]=new x64_local_processor(0);
-        return OS_SUCCESS;
-    }else{
-        alloc_flags_t flags=default_flags;
-        flags.force_first_linekd_heap=true;
-        local_processor_interrupt_mgr_array[processor_id]=new(flags) x64_local_processor(processor_id);
-        return OS_SUCCESS;
-    }
-    return OS_RESOURCE_CONFILICT;
-
-}
-
-struct load_resources_struct{
-        GDTR* gdtr;
-        IDTR* idtr;
-        uint64_t K_CS_selector;
-        uint64_t K_DS_selector;
-        uint64_t TSS_selector;
-    };
-extern logical_idt template_idt[256];
-extern hard_interrupt_func_t*all_processors_interrupt_functions;
-extern "C" void runtime_processor_regist(load_resources_struct* resources);
-x64_local_processor::x64_local_processor(uint32_t alloced_id)
-{
-    x2apicid_t id=query_x2apicid();
-    this->apic_id=id;
-    this->processor_id=alloced_id;
-    gdt.entries[K_cs_idx]=kspace_CS_entry;
-    gdt.entries[K_ds_ss_idx]=kspace_DS_SS_entry;
-    gdt.entries[U_cs_idx]=userspace_CS_entry;
-    gdt.entries[U_ds_ss_idx]=userspace_DS_SS_entry;
-    gdt.tss_entry=kspace_TSS_entry;
-    TSSDescriptorEntry& tss_entry=gdt.tss_entry;
-    tss_entry.base0=static_cast<uint32_t>(reinterpret_cast<uint64_t>(&this->tss))&base0_mask;
-    tss_entry.base1=static_cast<uint32_t>(reinterpret_cast<uint64_t>(&this->tss)>>16)&base1_mask;
-    tss_entry.base2=static_cast<uint32_t>(reinterpret_cast<uint64_t>(&this->tss)>>24)&base2_mask;
-    tss_entry.base3=static_cast<uint32_t>(reinterpret_cast<uint64_t>(&this->tss)>>32)&base3_mask;
-    KURD_t kurd=KURD_t();
-    GDTR gdtr={
-        .limit=sizeof(gdt)-1,
-        .base=reinterpret_cast<uint64_t>(&gdt)        
-    };
-    uint16_t kcs_selector=K_cs_idx << 3;
-    auto tran_to_phy_IDT_ENTRY=[](logical_idt entry)->IDTEntry{
-        IDTEntry result={0};
-        result.offset_low=static_cast<uint16_t>(reinterpret_cast<uint64_t>(entry.handler)&0xFFFF);
-        result.offset_mid=static_cast<uint16_t>((reinterpret_cast<uint64_t>(entry.handler)>>16)&0xFFFF);
-        result.offset_high=static_cast<uint32_t>((reinterpret_cast<uint64_t>(entry.handler)>>32)&0xFFFFFFFF);
-        result.type=entry.type;
-        result.ist_index=entry.ist_index;
-        result.dpl=entry.dpl;
-        result.present=1;
-        result.segment_selector=K_cs_idx<<3;
-        return result;
-    };
-    uint16_t tss_selector = gdt_headcount << 3;
-    load_resources_struct resources={
-        .gdtr=&gdtr,
-        .idtr=0,
-        .K_CS_selector=K_cs_idx<<3,
-        .K_DS_selector=K_ds_ss_idx<<3,
-        .TSS_selector=tss_selector
-    };
-    wrmsr_func(msr::syscall::IA32_FS_BASE,(uint64_t)&fs_slot);
-    vaddr_t old_gs=rdmsr(msr::syscall::IA32_GS_BASE);
-    ksystemramcpy((uint64_t*)old_gs,gs_slot,sizeof(uint64_t)*GS_SLOT_MAX_ENTRY_COUNT);
-    runtime_processor_regist(&resources);
-    fs_slot[STACK_PROTECTOR_CANARY_IDX]=0xDEADBEEF;
-    gs_slot[PROCESSOR_SELF_RESOURCES_COMPELX_GS_INDEX]=(uint64_t)this;
-    gs_slot[PROCESSOR_ID_GS_INDEX]=static_cast<uint64_t>(this->processor_id);
-    gs_slot[PROCESSOR_INTERRUPT_FUNCS_TABLE_GS_INDEX]=(uint64_t)&all_processors_interrupt_functions[256*this->processor_id];
-    wrmsr_func(msr::syscall::IA32_GS_BASE,(uint64_t)&gs_slot);
-    wrmsr_func(msr::syscall::IA32_KERNEL_GS_BASE,(uint64_t)&gs_slot);
-    tss.rsp0=stack_alloc(&kurd,7);
-    tss.ist[0]=0;
-    tss.ist[1]=stack_alloc(&kurd,2);
-    tss.ist[2]=stack_alloc(&kurd,3);
-    tss.ist[3]=stack_alloc(&kurd,3);
-    tss.ist[4]=stack_alloc(&kurd,3);
-    tss.ist[5]=stack_alloc(&kurd,3);
-    if (!tss.rsp0 || !tss.ist[1] || !tss.ist[2] || !tss.ist[3]|| !tss.ist[4]||kurd.result!=result_code::SUCCESS) {
-        panic_info_inshort inshort={
-            .is_bug=true,
-            .is_policy=true,
-            .is_hw_fault=false,
-            .is_mem_corruption=false,
-            .is_escalated=false        
-        };
-        Panic::panic(default_panic_behaviors_flags,
-            "[x64_local_processor]stack remap failed\n",
-        nullptr,&inshort,kurd);
-    }
-    if(is_x2apic_supported()){
-        uint64_t ia32_apic_base=rdmsr(msr::apic::IA32_APIC_BASE);
-        ia32_apic_base|=(1<<11);
-        ia32_apic_base|=(1<<10);
-        uint64_t tpr = 1;
-        asm volatile("mov %0, %%cr8" : : "r"(tpr) : "memory");
-        wrmsr_func(msr::apic::IA32_APIC_BASE,ia32_apic_base);
-        wrmsr_func(msr::apic::IA32_X2APIC_SVR,0x1ff);
-    }else{
-        panic_info_inshort inshort={
-            .is_bug=false,
-            .is_policy=true,
-            .is_hw_fault=false,
-            .is_mem_corruption=false,
-            .is_escalated=false        
-            };
-        Panic::panic(default_panic_behaviors_flags,
-            "[x64_local_processor]x2apic not supported",nullptr,&inshort,KURD_t());
-    }
-}
-
-KURD_t x64_local_processor::default_kurd()
-{
-    return KURD_t(0,0,module_code::INTERRUPT,INTERRUPT_SUB_MODULES_LOCATIONS::LOCATION_CODE_PROCESSORS,0,0,err_domain::ARCH);
-}
-KURD_t x64_local_processor::default_success()
-{
-    KURD_t result=default_kurd();
-    result.level=level_code::INFO;
-    result.result=result_code::SUCCESS;
-    return result;
-}
-KURD_t x64_local_processor::default_fail()
-{
-    KURD_t result=default_kurd();
-    result=set_result_fail_and_error_level(result);
-    return result;
-}
-KURD_t x64_local_processor::default_fatal()
-{
-    KURD_t result=default_kurd();
-    result=set_fatal_result_level(result);
-    return result;
-}
-KURD_t x86_smp_processors_container::default_kurd()
-{
-    return KURD_t(0,0,module_code::INTERRUPT,INTERRUPT_SUB_MODULES_LOCATIONS::LOCATION_CODE_PROCESSORS,0,0,err_domain::ARCH);
-}
-KURD_t x86_smp_processors_container::default_success()
-{
-    KURD_t result=default_kurd();
-    result.level=level_code::INFO;
-    result.result=result_code::SUCCESS;
-    return result;
-}
-KURD_t x86_smp_processors_container::default_fail()
-{
-    KURD_t result=default_kurd();
-    result=set_result_fail_and_error_level(result);
-    return result;
-}
-KURD_t x86_smp_processors_container::default_fatal()
-{
-    KURD_t result=default_kurd();
-    result=set_fatal_result_level(result);
-    return result;
-}
-void x64_local_processor::GS_slot_write(uint32_t idx, uint64_t content)
-{
-    if(idx == 0 || idx >= GS_SLOT_MAX_ENTRY_COUNT){
-        return;
-    }
-    gs_slot[idx]=content;
-}
-
-uint64_t x64_local_processor::GS_slot_get(uint32_t idx)
-{
-    if(idx == 0 || idx >= GS_SLOT_MAX_ENTRY_COUNT){
+    // ── 硬件能力检查 ────────────────────────────────────────────────
+    if (!is_x2apic_supported()) {
+        bsp_kout << now << "[x2apic_core_init] x2APIC not supported on this processor"
+                 << kendl;
         return 0;
     }
-    return gs_slot[idx];
-}
 
-uint32_t x64_local_processor::get_apic_id()
-{
-    return apic_id;
+    uint64_t apic_base = rdmsr(msr::apic::IA32_APIC_BASE);
+    if (!(apic_base & (1ULL << 10))) {
+        // x2APIC 尚未启用（AP 路径）→ 启用
+        apic_base |= (1ULL << 11);   // APIC 全局使能
+        apic_base |= (1ULL << 10);   // x2APIC 模式
+        wrmsr_func(msr::apic::IA32_APIC_BASE, apic_base);
+
+        // Spurious Vector Register — 只在首次启用时写入
+        // 向量 0xFF, 位 8 = APIC software enable
+        wrmsr_func(msr::apic::IA32_X2APIC_SVR, (uint64_t)0x1FF);
+    }
+
+    // ── TPR: 允许优先级 ≥1 的中断 ───────────────────────────────────
+    uint64_t tpr = 1;
+    asm volatile("mov %0, %%cr8" : : "r"(tpr) : "memory");
+
+    /* 返回 x2APIC ID
+     *
+     * 在 x2APIC 模式下也可以读 IA32_X2APIC_ID (MSR 0x802)，
+     * 但 query_x2apicid() 用 CPUID 0xB，不依赖 MSR，且已在多处使用。 */
+    return query_x2apicid();
 }
-uint32_t x64_local_processor::get_processor_id()
+check_point longmode_enter_checkpoint;
+extern "C" uint64_t ap_bootstrap_init()
 {
-    return processor_id;
-}
-uint64_t x64_local_processor::get_tss_rsp0()
-{
-    return tss.rsp0;
-}
-extern "C" uint64_t get_current_processor_rsp0()
-{
-    x64_local_processor* curr = (x64_local_processor*)read_gs_u64(PROCESSOR_SELF_RESOURCES_COMPELX_GS_INDEX);
-    if (!curr) {
+    // ── 1. x2APIC 启用 + 获取 x2APIC ID ──────────────────────────────
+    x2apicid_t apicid = x2apic_core_init();
+
+    // ── 2. 查表获取本核 GS 复合体 ─────────────────────────────────────
+    gs_complex_t* self = g_gs_by_apicid[apicid];
+    if (!self) {
+        // 映射表条目为 nullptr → 表太小或 APIC ID 超出范围
         return 0;
     }
-    return curr->get_tss_rsp0();
-}
-x64_local_processor *x86_smp_processors_container::get_processor_mgr_by_processor_id(prcessor_id_t id)
-{
-    // 遍历local_processor_interrupt_mgr_array寻找对应的x64_local_processor*
-    for (uint32_t i = 0; i < max_processor_count; i++) {
-        x64_local_processor* processor = local_processor_interrupt_mgr_array[i];
-        if (processor != nullptr && processor->get_processor_id() == id) {
-            return processor;
-        }
-    }
-    return nullptr;
-}
 
-x64_local_processor* x86_smp_processors_container::get_processor_mgr_by_apic_id(x2apicid_t apic_id)
-{
-    // 遍历local_processor_interrupt_mgr_array寻找对应的x64_local_processor*
-    for (uint32_t i = 0; i < max_processor_count; i++) {
-        x64_local_processor* processor = local_processor_interrupt_mgr_array[i];
-        if (processor != nullptr && processor->get_apic_id() == apic_id) {
-            return processor;
-        }
-    }
-    return nullptr;
-}
+    // ── 3. GS_BASE → 真实 gs_complex_t（Phase 4.5 已填好所有内容） ──
+    wrmsr_func(msr::syscall::IA32_GS_BASE, (uint64_t)self);
+    wrmsr_func(msr::syscall::IA32_KERNEL_GS_BASE, (uint64_t)self);
+
+    // ── 4. 加载 GDT + TSS（GDT 条目、TSS 描述符、TSS 栈指针均已就绪） ─
+    gs_complex_load_gdt_tss(self);
+
+    // ── 5. Checkpoint: longmode enter ─────────────────────────────────
+    longmode_enter_checkpoint.success_word = ~self->slots[PROCESSOR_ID_GS_INDEX];
+    asm volatile("sfence");
+
+    // ── 6. 返回 hdstacks 中本核的 rsp0 栈底 ──────────────────────────
+    return self->tss.rsp0;
+} 

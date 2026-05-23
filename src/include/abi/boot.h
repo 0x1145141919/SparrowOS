@@ -114,7 +114,7 @@ struct init_to_kernel_header {//这个信息包的头也应该是使用available
     vm_interval kernel_entry_stack;//BSP初始化栈，使用available_meminterval_probe
     movable_file_entry_t symtable_file;//符号表文件，使用available_meminterval_probe
     movable_file_entry_t initramfs_file;//initramfs文件，使用available_meminterval_probe
-    vm_interval identity_map_window;//不但要[0,dram_top)进行va_alloc进行映射，而且要对于[16k,dram_top)进行WB+RWX的恒等映射
+    vm_interval Kspace_phyaddr_access_window;  // [0,dram_top) → Kspace VA 窗口
     uint64_t arch_specify_offset;//相较于头的偏移量
 };
 /**

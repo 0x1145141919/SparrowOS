@@ -39,7 +39,7 @@ namespace Interrupt_module{
 }
 class idt_vec_dispatch_mgr{
     public:
-    static KURD_t Init(uint32_t logical_processor_count);//在MM_READY段被BSP调用
+    static KURD_t Init();//在MM_READY段被BSP调用
     static uint8_t alloc_vec(hard_interrupt_func_t func,uint32_t processor_id,KURD_t&kurd);//用OS_utils.h里面的is_addr_kernel_address函数确认
     static KURD_t free_vec(uint8_t vec,uint32_t processor_id);
     static hard_interrupt_func_t* get_vec(uint8_t vec,uint32_t processor_id,KURD_t& kurd);

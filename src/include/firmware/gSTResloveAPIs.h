@@ -1,6 +1,5 @@
 #pragma once
 #include <stdint.h>
-#include <efi.h>
 #include "memory/memory_base.h"
 #include "abi/boot.h"
 //
@@ -21,19 +20,19 @@ struct RSDP_struct{
     //
     // ACPI 1.0 基本字段 (前20字节)
     //
-    CHAR8     Signature[8];          // 签名: "RSD PTR " (包含末尾空格)
-    UINT8     Checksum;              // 前20字节的校验和 (字节0-19，包含本字段，总和必须为0)
-    CHAR8     OemId[6];              // OEM提供的厂商识别字符串
-    UINT8     Revision;              // 结构版本号 (ACPI 1.0为0，当前为2)
-    UINT32    RsdtAddress;           // RSDT的32位物理地址
+    char     Signature[8];          // 签名: "RSD PTR " (包含末尾空格)
+    uint8_t     Checksum;              // 前20字节的校验和 (字节0-19，包含本字段，总和必须为0)
+    char     OemId[6];              // OEM提供的厂商识别字符串
+    uint8_t     Revision;              // 结构版本号 (ACPI 1.0为0，当前为2)
+    uint32_t    RsdtAddress;           // RSDT的32位物理地址
     
     //
     // ACPI 2.0+ 扩展字段
     //
-    UINT32    Length;                // 整个RSDP表的长度(字节)，从偏移0开始
-    UINT64    XsdtAddress;           // XSDT的64位物理地址
-    UINT8     ExtendedChecksum;      // 整个表的校验和(包含两个校验和字段)
-    UINT8     Reserved[3];           // 保留字段
+    uint32_t    Length;                // 整个RSDP表的长度(字节)，从偏移0开始
+    uint64_t    XsdtAddress;           // XSDT的64位物理地址
+    uint8_t     ExtendedChecksum;      // 整个表的校验和(包含两个校验和字段)
+    uint8_t     Reserved[3];           // 保留字段
 } __attribute__((packed));
 
 struct ACPI_Table_Header {
@@ -168,7 +167,9 @@ private:
     phyaddr_t acpi_seg_pbase;   
 public:
 
-    int Init(EFI_SYSTEM_TABLE* st);
+    // xsdt_pa: init.elf 已解析的 XSDT 物理基址（来自 em.xsdt_base / arch->XSDT_base）
+    // 内部负责映射 ACPI 段到内核 VA 空间
+    int Init(phyaddr_t xsdt_pa);
     void* get_acpi_table(char* signature);
 };
 extern acpimgr_t gAcpiVaddrSapceMgr;

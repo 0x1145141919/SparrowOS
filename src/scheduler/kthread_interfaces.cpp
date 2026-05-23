@@ -112,8 +112,8 @@ uint64_t create_kthread(void *(*entry)(void *), void *arg, KURD_t *out_kurd)
     context->regs.iret_complex.rip = (uint64_t)allthread_true_enter;
     context->regs.rsi = (uint64_t)arg;
     context->regs.rdi = (uint64_t)entry;
-    context->regs.iret_complex.cs = x64_local_processor::K_cs_idx<<3;
-    context->regs.iret_complex.ss = x64_local_processor::K_ds_ss_idx<<3;
+    context->regs.iret_complex.cs = K_cs_idx<<3;
+    context->regs.iret_complex.ss = K_ds_ss_idx<<3;
     context->stacksize = DEFAULT_STACK_SIZE;
     context->stack_bottom = (uint64_t)stack_alloc(out_kurd,DEFAULT_STACK_PG_COUNT);
     if(error_kurd(*out_kurd)){
