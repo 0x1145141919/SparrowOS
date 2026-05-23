@@ -24,7 +24,7 @@ SECTIONS {
     . = ap_bootstrap_base;
     .ap_bootstrap_text : {
         ap_bootstrap_begin = .;
-        *(.boottext)
+        *(.ap_bootstrap_text)
         . = ALIGN(4096);
         ap_bootstrap_end = .;
     } > init : ap_bootstrap_text
@@ -50,7 +50,7 @@ SECTIONS {
     .text_main : {
         text_begin = .;
          *(.text .text.*)
-         . = ALIGN(4096); 
+         . = ALIGN(2M);
          text_end = . ;
     } > VRAM :text_main
     .data : {
@@ -58,33 +58,40 @@ SECTIONS {
         *(.data .data.*)
          *(.got .got.*)
          *(.*array)
-         *(.note.*)
         *(COMMON)
         *(.gnu.property)
     . = ALIGN(4096); 
     _data_end = . ;
     } > VRAM :data
     .rodata : {
+        . = ALIGN(2M);
         _rodata_start = . ;
          *(.rodata .rodata.*)
          *(.eh_frame)
-    . = ALIGN(4096);
+    . = ALIGN(2M);
     _rodata_end = . ;
     } > VRAM :rodata
     . = ALIGN(4096);
     
  
     .bss :  {
+        . = ALIGN(2M);
         _bss_begin = .;
         *(.bss .bss.*)
         *(.lbss .lbss.*)
         _bss_end = .;
-        . = ALIGN(4096); 
+        . = ALIGN(2M);
     } > VRAM :bss
+
+    /* NOTE 段（PT_NOTE，非 PT_LOAD；但仍可经文件镜像访问）*/
+    .note : {
+        *(.note.gnu.build-id)
+        *(.note.*)
+    } > VRAM :notes
 }
 /* 定义段权限 */
 PHDRS {
-    ap_bootstrap_text PT_LOAD FLAGS(5);      /* PF_R | PF_X (RX) */
+    ap_bootstrap_text PT_LOAD FLAGS(5);
     ap_bootstrap_rodata PT_LOAD FLAGS(4);
     ap_bootstrap_data PT_LOAD FLAGS(6);
     ap_bootstrap_stack PT_LOAD FLAGS(6);
@@ -92,4 +99,5 @@ PHDRS {
     data PT_LOAD FLAGS(6 | 0x100);      /* PF_R | PF_W (RW) */   
     rodata PT_LOAD FLAGS(4 | 0x100);    /* PF_R (R) */
     bss PT_LOAD FLAGS(6 | 0x100);
+    notes PT_NOTE;
 }

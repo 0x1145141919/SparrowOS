@@ -661,7 +661,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     init_to_kernel_header* h = (init_to_kernel_header*)(uint64_t)info_pbase;
     h->pages_arr = {.vpn = iv->pages_arr_vbase >> 12, .ppn = mm_pb >> 12,
                     .npages = mm_npg, .access = KSPACE_RW_ACCESS};
-    kmmu->map({mm_pb, iv->pages_arr_vbase, mm_sz}, KSPACE_RW_ACCESS);
+    kmmu->map({mm_pb, iv->pages_arr_vbase, align_up(mm_sz, 4096)}, KSPACE_RW_ACCESS);
     bsp_kout << "[Phase4.5] pages_arr: paddr=" << (void*)(uint64_t)mm_pb
              << " vaddr=" << (void*)(uint64_t)iv->pages_arr_vbase
              << " size=0x" << (uint64_t)mm_sz << kendl;

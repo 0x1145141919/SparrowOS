@@ -58,7 +58,7 @@ int page_allocator::init() {
     }
 
     mem_map_page_count = total_pages;
-    mem_map_pbase      = free_min_paddr;
+    mem_map_pbase      = 0;   // 实际分配后更新
     mem_map_bytes      = mem_map_page_count * sizeof(page);
     mem_map_intervals_count = free_iv_count;
 
@@ -76,6 +76,7 @@ int page_allocator::init() {
         return -2;
     }
     mem_map = reinterpret_cast<page*>(static_cast<uintptr_t>(mem_map_phys));
+    mem_map_pbase = mem_map_phys;
     bsp_kout << "[page_allocator] mem_map at phys=0x" << mem_map_phys
              << " (" << mem_map_pages << " pages, " << mem_map_bytes << " bytes)" << kendl;
 
@@ -112,7 +113,29 @@ int page_allocator::init() {
                  << " baseidx=" << mem_map_intervals[free_iv_idx-1].baseidx_in_memmap << kendl;
     }
 
+    // ── 低 1MB 保留标记 ─────────────────────────────────────────────
+    // x86 平台 [0, 1MB) 包含实模式 IVT、BDA、EBDA、VGA ROM、BIOS 等，
+    // 必须标记为 reserved 禁止分配。
+    // 注：freeSystemRam 中的低 1MB 页已在步骤 5 的循环内预标记为 reserved；
+    //     此处做二次确认兜底。
+    for (uint64_t i = 0; i < mem_map_intervals_count; i++) {
+        auto& iv = mem_map_intervals[i];
+        if (iv.base >= 0x100000ULL) break;    // 后续区间 > 1MB，全部跳过
+        uint64_t iv_end = iv.base + (iv.numof4kbpgs << 12);
+        uint64_t mark_end = (iv_end < 0x100000ULL) ? iv_end : 0x100000ULL;
+        uint64_t pages_to_mark = (mark_end - iv.base) >> 12;
+        for (uint64_t j = 0; j < pages_to_mark; j++) {
+            uint64_t idx = iv.baseidx_in_memmap + j;
+            if (mem_map[idx].state == page_state_t::free) {
+                mem_map[idx].state = page_state_t::reserved;
+                free_pages--;
+            }
+        }
+    }
+
     // 6. 初始化扫描光标
+    //    保持端（scan_down_base）从 1MB 起跳，确保 mem_map 自身及各种
+    //    保持端分配不会落到低 1MB 保留区内。
     {
         const auto& last_iv = mem_map_intervals[mem_map_intervals_count - 1];
         scan_top_base = last_iv.base + (last_iv.numof4kbpgs << 12);
