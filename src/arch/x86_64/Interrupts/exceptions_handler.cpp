@@ -240,16 +240,18 @@ void Control_Protection_cpp_enter(x64_errcode_exception_frame *frame)
 {
     
 }
+void user_abi_cpp_enter(x64_standard_context* frame){
+
+}
 
 
-
-void ipi_cpp_enter(x64_standard_context *frame,uint8_t vec)
+void ipi_cpp_enter(x64_standard_context *frame)
 {
     global_ipi_handler();
     x2apic::x2apic_driver::write_eoi();   
 }
 
-void asm_panic_cpp_enter(x64_standard_context *frame,uint8_t vec)
+void asm_panic_cpp_enter(x64_standard_context *frame)
 {
     panic_info_inshort inshort={
             .is_bug=0,
@@ -262,7 +264,7 @@ void asm_panic_cpp_enter(x64_standard_context *frame,uint8_t vec)
     panic_frame(frame,&panic_context);
     Panic::panic(default_panic_behaviors_flags,"[ASM PANIC]",&panic_context,&inshort,raw_analyze(frame->rax));
 }
-void suprious_interrupt_cpp_enter(x64_standard_context *frame,uint8_t vec)
+void suprious_interrupt_cpp_enter(x64_standard_context *frame)
 {
     bsp_kout<<"[suprious_interrupt_cpp_enter] fake interrupt detected on processor "<<fast_get_processor_id()<<kendl;
 }

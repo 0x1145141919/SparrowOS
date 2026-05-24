@@ -463,7 +463,7 @@ uint64_t release_kthread(uint64_t tid)
     delete task_ptr;
     return kurd_get_raw(task_pool::release_tid(tid));
 }
-void kthread_call_cpp_enter(x64_standard_context *frame,uint8_t vec)
+void kthread_call_cpp_enter(x64_standard_context *frame)
 {
     switch(frame->rax){
         case kthread_call_num::exit:

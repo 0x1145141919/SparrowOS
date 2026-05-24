@@ -178,7 +178,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
         return fail;
     }
-    GMlock.lock();
+    spinlock_interrupt_about_guard l(GMlock);
     // 1) Split segment into page-sized runs
     seg_to_pages_info_pakage_t pkg;
     vm_interval_to_pages_info(pkg, interval);
@@ -195,7 +195,6 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
         // sanity check: vbase and base should be aligned to page size
         if ((e.vbase % psize) != 0 || (e.phybase % psize) != 0) {
             fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
-            GMlock.unlock();
             return fail;
         }
 
@@ -217,11 +216,10 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
             }
             default:
                 fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
-                GMlock.unlock();
                 return fatal; // unknown page size
         }
         if (rc.result != result_code::SUCCESS) {
-            GMlock.unlock();
+            
             return rc;
         }
     }
@@ -241,13 +239,21 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
 
         switch(e.page_size_in_byte) {
             case _2MB_SIZE: {
-                uint64_t count = e.num_of_pages;
-                for(uint64_t j=0;j<count;j++){
-                    rc = _4lv_pde_2MB_entries_set(e.phybase+j*_2MB_SIZE, e.vbase+j*_2MB_SIZE, 1, interval.access);
-                    if(rc.result!=result_code::SUCCESS){
-
-                    }
-                }break;
+                uint64_t remaining = e.num_of_pages;
+                uint64_t vaddr = e.vbase;
+                uint64_t phyaddr = e.phybase;
+                while (remaining > 0) {
+                    // 每个 PD 覆盖 1GB（512 个 2MB 大页），在 PD 边界处切割
+                    uint64_t pd_end = (vaddr / _1GB_SIZE + 1) * _1GB_SIZE;
+                    uint64_t max_pages_in_chunk = (pd_end - vaddr) / _2MB_SIZE;
+                    uint64_t chunk = (remaining < max_pages_in_chunk) ? remaining : max_pages_in_chunk;
+                    rc = _4lv_pde_2MB_entries_set(phyaddr, vaddr, (uint16_t)chunk, interval.access);
+                    if(rc.result != result_code::SUCCESS) return rc;
+                    vaddr  += chunk * _2MB_SIZE;
+                    phyaddr += chunk * _2MB_SIZE;
+                    remaining -= chunk;
+                }
+                break;
             }
             case _4KB_SIZE: {
                 uint16_t count = static_cast<uint16_t>(e.num_of_pages);
@@ -256,11 +262,11 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
             }
             default:
                 fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
-                GMlock.unlock();
+                
                 return fatal; // unknown page size
         }
         if (rc.result != result_code::SUCCESS) {
-            GMlock.unlock();
+            
             return rc;
         }
     }
@@ -269,25 +275,27 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
     case congruence_level_4kb:{
         for(int i = 0; i < 5; ++i){
             auto &e = pkg.entryies[i];
-            if(e.page_size_in_byte!=_4KB_SIZE){
+            if(e.page_size_in_byte != _4KB_SIZE) continue;
 
-            }else{
-                for(uint64_t j=0;j<e.num_of_pages;j++){
-                    rc = _4lv_pte_4KB_entries_set(e.phybase+j*_4KB_SIZE, e.vbase+j*_4KB_SIZE, 1, interval.access);
-                }
-                if(rc.result!=result_code::SUCCESS){
-                    GMlock.unlock();
-                    return rc;
-                }
+            uint64_t remaining = e.num_of_pages;
+            uint64_t vaddr = e.vbase;
+            uint64_t phyaddr = e.phybase;
+            while (remaining > 0) {
+                // 每个 PT 覆盖 2MB（512 个 PTE），在 PT 边界处切割
+                uint64_t pt_end = (vaddr / _2MB_SIZE + 1) * _2MB_SIZE;
+                uint64_t max_pages_in_chunk = (pt_end - vaddr) / _4KB_SIZE;
+                uint64_t chunk = (remaining < max_pages_in_chunk) ? remaining : max_pages_in_chunk;
+                rc = _4lv_pte_4KB_entries_set(phyaddr, vaddr, (uint16_t)chunk, interval.access);
+                if(rc.result != result_code::SUCCESS) return rc;
+                vaddr  += chunk * _4KB_SIZE;
+                phyaddr += chunk * _4KB_SIZE;
+                remaining -= chunk;
             }
         }
         break;
     }
     }
-
-    // Optionally mark vmentry as enabled (if VM_DESC has such a field)
-    // vmentry.enabled = true;  // uncomment if VM_DESC supports it
-    GMlock.unlock();
+    
     return success;
 }
 
@@ -486,7 +494,7 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation(vaddr_t vaddr, phyaddr_t &result)
  */
 vaddr_t kspace_vm_table_t::alloc_available_space(uint64_t size,uint32_t target_vaddroffset)
 {
-    lock.lock();
+    spinlock_interrupt_about_guard guard(lock);
     if(size==0||size%_4KB_SIZE||target_vaddroffset>=_1GB_SIZE||target_vaddroffset%_4KB_SIZE){
         lock.unlock();
         return 0;
@@ -563,7 +571,7 @@ vaddr_t kspace_vm_table_t::alloc_available_space(uint64_t size,uint32_t target_v
             Node*test_node=search_no_lock(test_end-1);
             if(test_node==nullptr){  // 整个区间都未被占用
                 this->last_alloc_end=test_end;  // 更新缓存
-                lock.unlock();
+
                 return cache_start;
             }
         }
@@ -577,7 +585,7 @@ vaddr_t kspace_vm_table_t::alloc_available_space(uint64_t size,uint32_t target_v
       uint64_t upper_top_avaliable=~upper_alloc_base+1;
         if(upper_top_avaliable>size){
             this->last_alloc_end=upper_alloc_base+size;  // 更新缓存
-            lock.unlock();
+
             return upper_alloc_base;
         }
     }
@@ -587,7 +595,7 @@ vaddr_t kspace_vm_table_t::alloc_available_space(uint64_t size,uint32_t target_v
     if(minnode==nullptr){  // 树为空，从头开始
        vaddr_t first_alloc=base_addr_modifier(0);
         this->last_alloc_end=first_alloc+size;  // 更新缓存
-        lock.unlock();
+
         return first_alloc;
     }
     
@@ -598,13 +606,13 @@ vaddr_t kspace_vm_table_t::alloc_available_space(uint64_t size,uint32_t target_v
       vaddr_t gap_end=front_node->data.start;
         if(gap_end>gap_start&&(gap_end-gap_start)>=size){
             this->last_alloc_end=gap_start+size;  // 更新缓存
-            lock.unlock();
+
             return gap_start;
         }
         backnode=front_node;
         front_node=successor(front_node);
     }while(front_node!=maxnode);
     
-    lock.unlock();
+
     return 0;  // 未找到足够的连续空间
 }

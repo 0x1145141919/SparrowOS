@@ -157,8 +157,12 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     memory_crumbs->count = 0;
     memory_crumbs->entries = nullptr;
 
+    bsp_kout << "[FPA::Init] free segments (from all_pages_arr): " << (uint64_t)free_segs->count << kendl;
     for (uint64_t i = 0; i < free_segs->count; ++i) {
         auto& seg = free_segs->entries[i];
+        bsp_kout << "  seg[" << (uint64_t)i << "] base=0x" << HEX << (uint64_t)seg.base
+                 << " size=0x" << seg.size
+                 << " end=0x" << (seg.base + seg.size) << DEC << kendl;
         g_all_avaliable_mem_accumulate += seg.size;
 
         uint64_t order_max = 0;
@@ -212,6 +216,9 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
             selected_candidates.push_back(plan);
         }
     }
+    bsp_kout << "[FPA::Init] candidates total=" << (uint64_t)candidate_count
+             << " crumbs(order<10)=" << (uint64_t)crumbs_count
+             << " selected=" << (uint64_t)selected_candidates.size() << kendl;
     memory_crumbs->count = crumbs_count;
     if (crumbs_count > 0) {
         memory_crumbs->entries = new all_pages_arr::free_segs_t::entry_t[crumbs_count];
@@ -250,6 +257,9 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
         if (thread_fit_order < min_bcb_order) {
             thread_fit_order = min_bcb_order;
         }
+        bsp_kout << "[FPA::Init] strategy=MATCH_THREAD cpu=" << (uint64_t)cpu_count
+                 << " per_thread_bytes=0x" << HEX << per_thread_bytes
+                 << " thread_fit_order=" << DEC << (uint64_t)thread_fit_order << kendl;
 
         for (auto it = selected_candidates.begin(); it != selected_candidates.end(); ++it) {
             const BCB_plan_entry plan = *it;
@@ -267,12 +277,14 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
             }
         }
     } else {
+        bsp_kout << "[FPA::Init] strategy=BEST_ALIGN_FIT (no split)" << kendl;
         for (auto it = selected_candidates.begin(); it != selected_candidates.end(); ++it) {
             construct_plan.push_back(*it);
         }
     }
 
     const uint64_t plan_count = construct_plan.size();
+    bsp_kout << "[FPA::Init] after strategy: plan_count=" << (uint64_t)plan_count << kendl;
     if (plan_count == 0) {
         return fatal;
     }
@@ -306,6 +318,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
 
     const uint64_t bitmap_pool_base = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->vbase() : 0;
     const uint64_t bitmap_pool_size = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->byte_cnt() : 0;
+    bsp_kout << "[FPA::Init] bitmap pool: base=0x" << HEX << bitmap_pool_base
+             << " size=0x" << bitmap_pool_size << DEC << kendl;
     uint64_t bitmap_cursor = bitmap_pool_base;
     uint64_t bitmap_end = bitmap_pool_base + bitmap_pool_size;
 
@@ -349,12 +363,14 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
         return fatal;
     }
 
+    uint64_t bcb_total_span = 0;
     bsp_kout << "[FPA::Init] BCB count=" << (uint64_t)BCB_count << kendl;
     for (uint64_t bcb_i = 0; bcb_i < BCB_count; bcb_i++) {
         BuddyControlBlock& b = BCBS[bcb_i];
         uint8_t  order = b.get_max_order();
         uint64_t span = (order < 52) ? (1ULL << (order + 12)) : 0;
         phyaddr_t end  = (span > 0) ? (b.get_base() + span - 1) : b.get_base();
+        bcb_total_span += span;
         bsp_kout << "  BCB[" << (uint64_t)bcb_i << "] "
                  << "base=0x" << HEX << (uint64_t)b.get_base()
                  << " order=" << DEC << (uint64_t)order
@@ -362,6 +378,11 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
                  << " end=0x" << HEX << (uint64_t)end
                  << DEC << kendl;
     }
+    bsp_kout << "[FPA::Init] summary: BCB total span=0x" << HEX << bcb_total_span
+             << " available=0x" << g_all_avaliable_mem_accumulate
+             << " waste=0x" << (g_all_avaliable_mem_accumulate > bcb_total_span
+                                 ? (g_all_avaliable_mem_accumulate - bcb_total_span) : 0)
+             << DEC << kendl;
 
     uint64_t processor_count = fpa_get_cpu_count();
     statistics_arr = new fpa_stats[processor_count];
@@ -839,4 +860,20 @@ void FreePagesAllocator::interval_clean(phymem_segment seg)
         --bcb.dirty_count;
         }
 }
+}
+void FreePagesAllocator::print_all_bcb_pollution_counts()
+{
+    if (BCBS == nullptr || BCB_count == 0) {
+        bsp_kout << "[FPA] BCBS is null or empty, no BCB to print" << kendl;
+        return;
+    }
+
+    bsp_kout << "[FPA] BCB pollution (dirty_count) report: " << (uint64_t)BCB_count << " BCBs" << kendl;
+    for (uint64_t i = 0; i < BCB_count; i++) {
+        BuddyControlBlock& bcb = BCBS[i];
+        bsp_kout << "  BCB[" << (uint64_t)i << "] "
+                 << "base=0x" << HEX << (uint64_t)bcb.get_base()
+                 << " dirty=" << DEC << (uint64_t)bcb.dirty_count
+                 << kendl;
+    }
 }

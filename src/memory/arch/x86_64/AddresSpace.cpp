@@ -424,13 +424,8 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
     };
     //这里才是正式逻辑
     seg_to_pages_info_pakage_t package=interval.to_pages_info();
-    int status;
-    if(status!=OS_SUCCESS){
-        fail.reason=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY_CANT_SPLIT;
-        return fail;
-    }
+    int status=OS_SUCCESS;
     uint16_t contain=0;
-
     if(pglv_4_or_5==PAGE_TBALE_LV::LV_4)
     {
         spinrwlock_interrupt_about_write_guard lock_guard(lock);

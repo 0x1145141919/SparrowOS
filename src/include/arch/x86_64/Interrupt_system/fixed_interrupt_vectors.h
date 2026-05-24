@@ -28,6 +28,7 @@ static constexpr uint8_t ASM_PANIC = 225;//只推荐用int ASM_PANIC触发
 static constexpr uint8_t KTHREAD_CALL = 226;
 static constexpr uint8_t IPI = 240;
 static constexpr uint8_t LAPIC_ERR = 241;
+static constexpr uint8_t USER_ABI_ENTER = 254;
 static constexpr uint8_t SUPRIOUS_INTERRUPT = 255;
 };
 /**

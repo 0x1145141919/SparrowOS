@@ -5,7 +5,7 @@
 #include "abi/os_error_definitions.h"
 #include "abi/arch_code.h"
 extern void (*global_ipi_handler)();
-typedef void (*soft_interrupt_func_t)(x64_standard_context* context, uint8_t vec);
+typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
 typedef void (*hard_interrupt_func_t)(x64_standard_context* context, uint8_t vec, uint32_t processor_id);
 /**
  * 中断管理器，管理着每个cpu的中断描述符表和本地apic

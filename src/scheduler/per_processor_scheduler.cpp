@@ -283,7 +283,7 @@ per_processor_scheduler::per_processor_scheduler()
     idle_ctx->regs.iret_complex.rip = (uint64_t)secure_hlt_wrapper;
     idle_ctx->regs.rsi = 0;
     idle_ctx->regs.rdi = 0;
-    idle_ctx->stacksize = 0x1000;
+    idle_ctx->stacksize = 0x2000;
     idle_ctx->stack_bottom = (uint64_t)stack_alloc(&kurd,1);
     idle_ctx->regs.iret_complex.rsp = idle_ctx->stack_bottom;
     idle_ctx->regs.iret_complex.rflags = INIT_DEFAULT_RFLAGS;
@@ -453,7 +453,7 @@ void per_processor_scheduler::sched()
                 } 
             }
         }
-        return idle;
+        return this->idle;
     }();
     to_run->task_lock.lock();
     to_run->set_running();

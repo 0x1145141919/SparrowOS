@@ -14,46 +14,30 @@ uint64_t all_pages_arr::mem_map_intervals_count;
 
 all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
 {
-    if (!mem_map || mem_map_entry_count == 0) {
+    if (!mem_map || mem_map_entry_count == 0 || mem_map_intervals_count == 0) {
         return nullptr;
     }
-    
-    // 辅助函数：将 mem_map 数组索引转换为物理地址
-    auto index_to_phyaddr = [](uint64_t memmap_idx) -> phyaddr_t {
-        for (uint64_t i = 0; i < mem_map_intervals_count; i++) {
-            auto& interval = mem_map_intervals[i];
-            if (memmap_idx >= interval.baseidx_in_memmap && 
-                memmap_idx < interval.baseidx_in_memmap + interval.numof4kbpgs) {
-                // 在该区间内，计算偏移量
-                uint64_t offset_in_interval = memmap_idx - interval.baseidx_in_memmap;
-                return interval.base + (offset_in_interval << 12);
-            }
-        }
-        // 索引无效，返回0（理论上不应该发生）
-        return 0;
-    };
-    
+
     auto is_free_4kb = [](const page& p) -> bool {
-        return 
-            p.state == page_state_t::free;
+        return p.state == page_state_t::free;
     };
 
+    // First pass: count free runs within each interval.
     uint64_t seg_count = 0;
-    bool in_run = false;
-    uint64_t run_start = 0;
-    for (uint64_t idx = 0; idx < mem_map_entry_count; ++idx) {
-        if (is_free_4kb(mem_map[idx])) {
-            if (!in_run) {
-                in_run = true;
-                run_start = idx;
+    for (uint64_t iv = 0; iv < mem_map_intervals_count; iv++) {
+        const auto& interval = mem_map_intervals[iv];
+        const uint64_t iv_end = interval.baseidx_in_memmap + interval.numof4kbpgs;
+        const uint64_t safe_end = (iv_end < mem_map_entry_count) ? iv_end : mem_map_entry_count;
+        bool in_run = false;
+        for (uint64_t idx = interval.baseidx_in_memmap; idx < safe_end; ++idx) {
+            if (is_free_4kb(mem_map[idx])) {
+                if (!in_run) in_run = true;
+            } else if (in_run) {
+                seg_count++;
+                in_run = false;
             }
-        } else if (in_run) {
-            seg_count++;
-            in_run = false;
         }
-    }
-    if (in_run) {
-        seg_count++;
+        if (in_run) seg_count++;
     }
 
     free_segs_t* result = new free_segs_t();
@@ -65,33 +49,37 @@ all_pages_arr::free_segs_t* all_pages_arr::free_segs_get()
 
     result->entries = new free_segs_t::entry_t[seg_count];
     uint64_t out_idx = 0;
-    in_run = false;
-    run_start = 0;
-    for (uint64_t idx = 0; idx < mem_map_entry_count; ++idx) {
-        if (is_free_4kb(mem_map[idx])) {
-            if (!in_run) {
-                in_run = true;
-                run_start = idx;
+    for (uint64_t iv = 0; iv < mem_map_intervals_count; iv++) {
+        const auto& interval = mem_map_intervals[iv];
+        const uint64_t iv_end = interval.baseidx_in_memmap + interval.numof4kbpgs;
+        // 防止区间跨越 mem_map 缓冲区尾部
+        const uint64_t safe_end = (iv_end < mem_map_entry_count) ? iv_end : mem_map_entry_count;
+        bool in_run = false;
+        uint64_t run_start_idx = 0;
+        for (uint64_t idx = interval.baseidx_in_memmap; idx < safe_end; ++idx) {
+            if (is_free_4kb(mem_map[idx])) {
+                if (!in_run) {
+                    in_run = true;
+                    run_start_idx = idx;
+                }
+            } else if (in_run) {
+                const uint64_t run_len = idx - run_start_idx;
+                const uint64_t offset = run_start_idx - interval.baseidx_in_memmap;
+                result->entries[out_idx++] = {
+                    .base = interval.base + (offset << 12),
+                    .size = run_len << 12
+                };
+                in_run = false;
             }
-        } else if (in_run) {
-            uint64_t run_len = idx - run_start;
-            // ✅ 修正：通过索引转换获取真实的物理地址
-            uint64_t phy_base = index_to_phyaddr(run_start);
+        }
+        if (in_run) {
+            const uint64_t run_len = safe_end - run_start_idx;
+            const uint64_t offset = run_start_idx - interval.baseidx_in_memmap;
             result->entries[out_idx++] = {
-                .base = phy_base,
+                .base = interval.base + (offset << 12),
                 .size = run_len << 12
             };
-            in_run = false;
         }
-    }
-    if (in_run) {
-        uint64_t run_len = mem_map_entry_count - run_start;
-        // ✅ 修正：通过索引转换获取真实的物理地址
-        uint64_t phy_base = index_to_phyaddr(run_start);
-        result->entries[out_idx++] = {
-            .base = phy_base,
-            .size = run_len << 12
-        };
     }
 
     return result;
@@ -107,6 +95,13 @@ KURD_t all_pages_arr::Init(vm_interval* pages_arr_interval)
     }
     mem_map=(page*)pages_arr_interval->vbase();
     mem_map_entry_count=pages_arr_interval->byte_cnt()/sizeof(page);
+
+    // 先清零重置（page_allocator::relinquish_mem_map 已将缓冲区清零）
+    // 此处确保所有页面初始为 reserved —— 然后只将 freeSystemRam 区间内的设为 free。
+    for (uint64_t i = 0; i < mem_map_entry_count; i++) {
+        mem_map[i].state = page_state_t::reserved;
+    }
+
     for(int i=0;i<physegs_count;i++)
     {
         if(segs[i].type==PHY_MEM_TYPE::freeSystemRam){
@@ -123,9 +118,27 @@ KURD_t all_pages_arr::Init(vm_interval* pages_arr_interval)
             mem_map_intervals[interval_idx].base = segs[i].start;
             mem_map_intervals[interval_idx].numof4kbpgs = segs[i].size >> 12;
             mem_map_intervals[interval_idx].baseidx_in_memmap = entry_base_idx;
+            // 将该区间内的全部页面标记为 free
+            for (uint64_t p = 0; p < mem_map_intervals[interval_idx].numof4kbpgs; p++) {
+                uint64_t idx = entry_base_idx + p;
+                if (idx < mem_map_entry_count) {
+                    mem_map[idx].state = page_state_t::free;
+                }
+            }
             entry_base_idx += mem_map_intervals[interval_idx].numof4kbpgs;
             interval_idx++;
         }
+    }
+    bsp_kout << "[all_pages_arr::Init] intervals=" << (uint64_t)mem_map_intervals_count
+             << " mem_map_entries=" << (uint64_t)mem_map_entry_count
+             << " total_free_pages=" << (uint64_t)entry_base_idx << kendl;
+    for (uint64_t i = 0; i < mem_map_intervals_count; i++) {
+        bsp_kout << "  iv[" << (uint64_t)i << "] base=0x" << HEX << mem_map_intervals[i].base
+                 << " pages=" << DEC << (uint64_t)mem_map_intervals[i].numof4kbpgs
+                 << " baseidx=" << (uint64_t)mem_map_intervals[i].baseidx_in_memmap
+                 << " end=0x" << HEX << (mem_map_intervals[i].base
+                     + ((uint64_t)mem_map_intervals[i].numof4kbpgs << 12))
+                 << DEC << kendl;
     }
     return KURD_t();
 }

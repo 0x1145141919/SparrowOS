@@ -116,7 +116,7 @@ KURD_t idt_vec_dispatch_mgr::Init()
             if (v != expect) break;
             template_idt[v].handler   = (void *)se->address;
             template_idt[v].type      = 0xE;
-            template_idt[v].ist_index = 5;
+            template_idt[v].ist_index = 0;
             template_idt[v].dpl       = 0;
             found++;
         }
@@ -128,7 +128,7 @@ KURD_t idt_vec_dispatch_mgr::Init()
             if (template_idt[v].handler != nullptr) continue;
             template_idt[v].handler   = (void *)table[i].address;
             template_idt[v].type      = 0xE;
-            template_idt[v].ist_index = 5;
+            template_idt[v].ist_index = 0;
             template_idt[v].dpl       = 0;
             found++;
         }
@@ -144,16 +144,16 @@ KURD_t idt_vec_dispatch_mgr::Init()
             &ctx, &info, fatal_k);
         return fatal_k;
     }
-
+    template_idt[ivec::USER_ABI_ENTER].dpl=3;
     template_idt_apply_region(32, 255);
 
     // 初始化软中断函数表
     ksetmem_8(soft_interrupt_functions, 0, sizeof(soft_interrupt_functions));
-    extern void kthread_call_cpp_enter(x64_standard_context *frame, uint8_t vec);
-    extern void ipi_cpp_enter(x64_standard_context *frame, uint8_t vec);
-    extern void asm_panic_cpp_enter(x64_standard_context *frame, uint8_t vec);
-    extern void suprious_interrupt_cpp_enter(x64_standard_context *frame, uint8_t vec);
-    
+    extern void kthread_call_cpp_enter(x64_standard_context *frame);
+    extern void ipi_cpp_enter(x64_standard_context *frame);
+    extern void asm_panic_cpp_enter(x64_standard_context *frame);
+    extern void suprious_interrupt_cpp_enter(x64_standard_context *frame);
+    extern void user_abi_cpp_enter(x64_standard_context *frame);
     soft_interrupt_functions[ivec::ASM_PANIC] = &asm_panic_cpp_enter;
     soft_interrupt_functions[ivec::IPI] = &ipi_cpp_enter;
     soft_interrupt_functions[ivec::KTHREAD_CALL] = &kthread_call_cpp_enter;
@@ -345,7 +345,7 @@ extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec)
 
     /* soft (global, synchronous) */
     if (soft_interrupt_functions[vec]) {
-        soft_interrupt_functions[vec](frame, vec);
+        soft_interrupt_functions[vec](frame);
         return;
     }
     //这里可以直接rdmsr获取gs基址作为gs_complex

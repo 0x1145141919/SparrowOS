@@ -33,7 +33,7 @@ void self_introspection_init() {
         if (ph.p_type == PT_LOAD &&
             ph.p_filesz == 0 && ph.p_memsz > 0) {
             vm_interval iv = {.vpn = ph.p_vaddr >> 12};
-            if (iv.is_kernel_address()) {
+            if (is_addr_kernel_address((void*)(iv.vpn<<12))) {
                 sg_bss_phdr = &ptbl[i];
                 bsp_kout << "[KImage] BSS phdr[" << i << "] v=0x" << ph.p_vaddr
                          << " p=0x" << ph.p_paddr

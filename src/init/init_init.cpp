@@ -36,7 +36,7 @@ extern "C" void init_jump_to_kernel(x64_standard_context* ctx);
 
 // 入口在 gs_complex_load_gdt_tss + iretq 中实现（替代 shift_kernel）
 // 初始 RFLAGS（与 create_kthread 一致）：IF=1, IOPL=0, 保留位 1
-static constexpr uint64_t KERNEL_INIT_RFLAGS = 0x202;
+static constexpr uint64_t KERNEL_INIT_RFLAGS = 0x002;
 
 // 全局 magic
 static constexpr uint64_t INIT_TO_KERNEL_MAGIC = 0x494E494B524E4C48ULL; // "INIKRNLH"
@@ -401,7 +401,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
     // ---- FPA_bitmaps (probe_keep) ----
     {
         uint64_t tp  = page_allocator::total_page_count();
-        uint64_t sz  = align_up(tp / 4, 4096);
+        uint64_t sz  = align_up((tp*3)>>3, 4096);//一个页框3bit的预算
         uint64_t npg = sz >> 12;
         phyaddr_t p  = page_allocator::available_meminterval_probe_keep(npg, 12);
         if (!p) { bsp_kout << "FPA OOM" << kendl; asm volatile("hlt"); }
@@ -483,16 +483,6 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t sz  = align_up(tp, 4096);
         iv.pages_arr_vbase = va_alloc_up(sz, 21);
         bsp_kout << "[Phase3b] pages_arr vaddr=" << (void*)(uint64_t)iv.pages_arr_vbase << kendl;
-    }
-
-    // ---- [0, dram_top) va_alloc 窗口 ----
-    {
-        phyaddr_t top = page_allocator::dram_top();
-        uint64_t  sz  = align_up(top, 0x40000000ULL);
-        vaddr_t   v   = va_alloc_up(sz, 30);
-        kmmu->map({0, v, sz}, KSPACE_RW_ACCESS);  // flat RW window, no X
-        bsp_kout << "[Phase3b] identity_va_window: [0," << (void*)top << ") at" << (void*)v << kendl;
-        (void)v;
     }
 
     // ---- x86 arch_specify ----
@@ -610,25 +600,24 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
             complex->stacks_ptr = (per_processor_hardware_stack_t*)(uint64_t)proc_pvir;
         }
     }
+    // ---- [0, dram_top) va_alloc 窗口 ----
+    {
+        phyaddr_t top = page_allocator::dram_top();
+        uint64_t  sz  = align_up(top, 0x40000000ULL);
+        vaddr_t   v   = va_alloc_up(sz, 30);
+        kmmu->map({0, v, sz}, KSPACE_RW_ACCESS);  // flat RW window, no X
+        bsp_kout << "[Phase3b] identity_va_window: [0," << (void*)top << ") at" << (void*)v << kendl;
+        iv.Kspace_phyaddr_access_window={
+            .vpn    = v >> 12,
+            .ppn    = 0,
+            .npages = sz >> 12,
+            .access = KSPACE_RW_ACCESS
+        };
+        (void)v;
+    }
     // ---- Kspace_phyaddr_access_window: [0, dram_top) → Kspace VA ----
     //     不是恒等映射！将整个物理地址区间映射到内核高位空间（1GB 对齐），
     //     供 kernel.elf 的 PhyAddrAccessor / 页表重建时访问任意物理地址。
-    {
-        phyaddr_t top = page_allocator::dram_top();
-        uint64_t  sz  = align_up(top, 0x40000000ULL);           // 1GB 对齐
-        uint64_t  npg = sz >> 12;
-        vaddr_t   vbase = va_alloc_up(sz, 30);                  // 1GB 对齐分配
-        pgaccess wb_rw_ng = KSPACE_RW_ACCESS;
-        kmmu->map({0, vbase, sz}, wb_rw_ng);
-        iv.Kspace_phyaddr_access_window = {
-            .vpn    = vbase >> 12,
-            .ppn    = 0,
-            .npages = npg,
-            .access = wb_rw_ng
-        };
-        bsp_kout << "[Phase3b] Kspace_phyaddr_access_window: vaddr="
-                 << (void*)(uint64_t)vbase << " size=0x" << sz << kendl;
-    }
     bsp_kout << "[Phase3b] done: " << iv.extra_vm_count << " extra VM entries" << kendl;
     return iv;
 }

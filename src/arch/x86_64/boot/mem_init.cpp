@@ -56,8 +56,6 @@ static KURD_t persist_elf_segments() {
 
 KURD_t pesisitent_properties_set(){
     KURD_t bsp_init_kurd;
-    bsp_init_kurd= all_pages_arr::simp_pages_set(kIMG_self_window.pbase(),kIMG_self_window.npages,page_state_t::kernel_persisit);
-    if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
     bsp_init_kurd=persist_elf_segments();  // 从 ELF 程序头表标记所有 PT_LOAD 段（含 BSS）
     if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
     bsp_init_kurd=all_pages_arr::simp_pages_set(pages_arr.pbase(),pages_arr.npages,page_state_t::kernel_persisit);
@@ -204,7 +202,6 @@ KURD_t kimg_affiliate_property_map1(){
     aff_entry list[] = {
         {&FPA_bitmaps,         "FPA_bitmaps"},
         {&pages_arr,           "pages_arr"},
-        {&log_buffer,          "log_buffer"},
         {&hpet_mmio,           "hpet_mmio"},
         {&gop_buffer,          "gop_buffer"},
         {&conjucnt_GSs,        "conjucnt_GSs"},
@@ -212,7 +209,7 @@ KURD_t kimg_affiliate_property_map1(){
     };
 
     for (auto& e : list) {
-        if (e.iv->npages == 0 || e.iv->ppn == 0) {
+        if (e.iv->npages == 0) {
             bsp_kout << "[kimg_affiliate_property_map1] skip " << e.name
                      << " (npages=0 or ppn=0)" << kendl;
             continue;
@@ -289,6 +286,7 @@ KURD_t properties_modify_stage1(){
     if (error_kurd(kurd)) return kurd;
 
     FreePagesAllocator::interval_clean(legacy_mmu_interval);
+    FreePagesAllocator::print_all_bcb_pollution_counts();
     return {result_code::SUCCESS, 0, module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, level_code::INFO, err_domain::CORE_MODULE};
@@ -362,13 +360,13 @@ KURD_t mem_init(){
             uint64_t  sz = align_up(ph->p_memsz, 4096);
 
             pgaccess acc = {1, (uint8_t)((ph->p_flags & PF_W) ? 1 : 0), 1,
-                            (uint8_t)((ph->p_flags & PF_X) ? 1 : 0), 1, WB};
+                            (uint8_t)((ph->p_flags & PF_X) ? 1 : 0), 0, WB};
             vm_interval seg = {.vpn = va >> 12, .ppn = pa >> 12,
                                .npages = sz >> 12, .access = acc};
             // 跳过已在 KImage_map_rebuild 处理的内核地址段
             if (seg.is_kernel_address()) continue;
 
-            KURD_t mk = Kspace_phyaddr_direct_map(seg);
+            KURD_t mk = gKernelSpace->enable_low_half_vm_interval(seg);
             if (error_kurd(mk)) {
                 bsp_kout << "[mem_init] non-kernel seg[" << i << "] map fail" << kendl;
             } else {
@@ -380,4 +378,5 @@ KURD_t mem_init(){
     assigned_cr3=gKernelSpace->get_root_table_phybase();
     __sync_synchronize();
     GlobalKernelStatus=kernel_state::MM_READY;
+    return KURD_t();
 }

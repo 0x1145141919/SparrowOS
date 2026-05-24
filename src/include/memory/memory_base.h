@@ -130,6 +130,14 @@ constexpr pgaccess KSPACE_RW_ACCESS={
     .is_global=1,
     .cache_strategy=WB
 };
+constexpr pgaccess KSPACE_RWX_ACCESS={
+    .is_kernel=1,
+    .is_writeable=1,
+    .is_readable=1,
+    .is_executable=1,
+    .is_global=1,
+    .cache_strategy=WB
+};
 constexpr pgaccess KSPACE_RW_UC_ACCESS={
     .is_kernel=1,
     .is_writeable=1,

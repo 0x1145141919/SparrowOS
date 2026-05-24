@@ -265,5 +265,7 @@ public:
     static constexpr uint64_t INVALID_ALLOC_BASE = ~0ULL;
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();
+    // 打印每个 BCB 的污染计数 (dirty_count)
+    static void print_all_bcb_pollution_counts();
 };
 extern spinlock_cpp_t FPA_modify;

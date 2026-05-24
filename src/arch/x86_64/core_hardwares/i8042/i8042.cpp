@@ -232,28 +232,39 @@ tid_wait_queue* i8042_scancode_buffer_subscriber_queue;
 tid_wait_queue* i8042_analyzed_buffer_subscriber_queue;
 led_status key_board_led;
 
-void wait_until_in_buff_clear(){
-    while(inb(0x64)&0x2);
+static bool wait_until_in_buff_clear(){
+    uint32_t i;
+    uint8_t  status;
+    bool     ibf_clear;
+    for (i = 0; i < 100000; i++) {
+        status   = inb(0x64);
+        ibf_clear = !(status & 0x2);
+        if (ibf_clear) return true;
+    }
+    return false;
 }
-void wait_until_out_buff_ready(){
-    while((inb(0x64)&0x1)==0);
+static bool wait_until_out_buff_ready(){
+    uint32_t i;
+    uint8_t  status;
+    bool     obf_set;
+    for (i = 0; i < 100000; i++) {
+        status  = inb(0x64);
+        obf_set = ((status & 0x3) == 0);
+        if (obf_set) return true;
+    }
+    return false;
 }
 void led_set(){
-    wait_until_in_buff_clear();
-    outb(0xed,0x60);
-    uint8_t ack;
-    wait_until_out_buff_ready();
-    ack=inb(0x60);
-    if(ack!=0xfa){
-        return;
-    }
-    wait_until_in_buff_clear();
-    outb(key_board_led.raw,0x60);
-    wait_until_out_buff_ready();
-    ack=inb(0x60);
-    if(ack!=0xfa){
-        return;
-    }
+    if (!wait_until_in_buff_clear()) return;
+    outb(0xed, 0x60);
+    if (!wait_until_out_buff_ready()) return;
+    uint8_t ack = inb(0x60);
+    if (ack != 0xfa) return;
+    if (!wait_until_in_buff_clear()) return;
+    outb(key_board_led.raw, 0x60);
+    if (!wait_until_out_buff_ready()) return;
+    ack = inb(0x60);
+    if (ack != 0xfa) return;
 }
 extern "C" void i8042_cpp_enter(x64_standard_context* frame,uint8_t vec,uint32_t processor_id){
     (void)frame;
@@ -374,15 +385,23 @@ void i8042_interrupt_enable(){
     //}
     key_board_led.raw=0;
     led_set();
-    while(inb(0x64)&0x3);
-    outb(0x64,0x20);
-    uint8_t command=inb(0x60);
-    while(inb(0x64)&0x3);
-    command|=1;
-    outb(0x64,0x20);
-    while(inb(0x64)&0x3);
-    outb(0x60,command);
-    while(inb(0x64)&0x3);
-    i8042_scancode_buffer_subscriber_queue=new tid_wait_queue;
-    i8042_analyzed_buffer_subscriber_queue=new tid_wait_queue;
+
+    // ── 读取 i8042 控制器命令字节 ──────────────────────────────────
+    // 系统 outb(value, port) 语义：写 0x20 到命令口 0x64 = "读取 CTR"
+    if (!wait_until_in_buff_clear()) return;
+    outb(0x20, 0x64);
+    if (!wait_until_out_buff_ready()) return;
+    uint8_t command = inb(0x60);
+
+    // ── 更新：使能键盘中断 ────────────────────────────────────────
+    command |= 1;
+
+    // ── 回写控制器命令字节 ────────────────────────────────────────
+    if (!wait_until_in_buff_clear()) return;
+    outb(0x60, 0x64);
+    if (!wait_until_in_buff_clear()) return;
+    outb(command, 0x60);
+
+    i8042_scancode_buffer_subscriber_queue = new tid_wait_queue;
+    i8042_analyzed_buffer_subscriber_queue = new tid_wait_queue;
 }

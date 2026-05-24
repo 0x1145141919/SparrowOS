@@ -337,7 +337,7 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
             return nullptr;
     }
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space(_4kbpgscount*0x1000,result%0x400000000);
+    vaddr_t vbase=kspace_vm_table->alloc_available_space(_4kbpgscount*0x1000,result%0x40000000);
     if(vbase==0){
         //回滚FreePagesAllocator::alloc
         return nullptr;
@@ -425,7 +425,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
             return result;
     }
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space((real_alloc_phypages+1)*0x1000,result%0x400000000);
+    vaddr_t vbase=kspace_vm_table->alloc_available_space((real_alloc_phypages+1)*0x1000,result%0x40000000);
     if(vbase==0){
         return 0;
     }
@@ -450,7 +450,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         .access=KspacePageTable::PG_RW
     };
     *kurd_out=KspacePageTable::enable_VMentry(interval);
-    return vbase+_4kbpgscount*0x1000;
+    return vbase+_4kbpgscount*0x1000+0xfc0;
 #endif
 }
 

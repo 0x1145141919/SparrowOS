@@ -104,15 +104,17 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
     heap_area_bitmaps.end   = heap_area_bitmaps.start + bitmap_area_size;
     heap_area_bitmaps.is_vaddr_alloced = 1;
 #else
-    HCB_ARRAY_lock.write_lock();
     {
         KURD_t kurd;
+        spinrwlock_interrupt_about_write_guard g(HCB_ARRAY_lock);
         HCB_ARRAY = (HCB_v3*)__wrapped_pgs_valloc(&kurd,
             alignup_and_shift_right(sizeof(HCB_v3) * hcb_count, 12),
             page_state_t::kernel_pinned, 12);
+        if(error_kurd(kurd))
+            return kurd;
+        
     }
     ksetmem_8(HCB_ARRAY, 0, hcb_count * sizeof(HCB_v3));
-    HCB_ARRAY_lock.write_unlock();
 
     heap_area.start = kspace_vm_table->alloc_available_space(heap_area_size, 0);
     if (heap_area.start == 0) {

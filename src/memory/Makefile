@@ -322,29 +322,29 @@ kpoolmemmgr.cpp.s:
 	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr.cpp.s
 .PHONY : kpoolmemmgr.cpp.s
 
-kpoolmemmgr_HCBv2.o: kpoolmemmgr_HCBv2.cpp.o
-.PHONY : kpoolmemmgr_HCBv2.o
+kpoolmemmgr_HCBv3.o: kpoolmemmgr_HCBv3.cpp.o
+.PHONY : kpoolmemmgr_HCBv3.o
 
 # target to build an object file
-kpoolmemmgr_HCBv2.cpp.o:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv2.cpp.o
-.PHONY : kpoolmemmgr_HCBv2.cpp.o
+kpoolmemmgr_HCBv3.cpp.o:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv3.cpp.o
+.PHONY : kpoolmemmgr_HCBv3.cpp.o
 
-kpoolmemmgr_HCBv2.i: kpoolmemmgr_HCBv2.cpp.i
-.PHONY : kpoolmemmgr_HCBv2.i
+kpoolmemmgr_HCBv3.i: kpoolmemmgr_HCBv3.cpp.i
+.PHONY : kpoolmemmgr_HCBv3.i
 
 # target to preprocess a source file
-kpoolmemmgr_HCBv2.cpp.i:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv2.cpp.i
-.PHONY : kpoolmemmgr_HCBv2.cpp.i
+kpoolmemmgr_HCBv3.cpp.i:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv3.cpp.i
+.PHONY : kpoolmemmgr_HCBv3.cpp.i
 
-kpoolmemmgr_HCBv2.s: kpoolmemmgr_HCBv2.cpp.s
-.PHONY : kpoolmemmgr_HCBv2.s
+kpoolmemmgr_HCBv3.s: kpoolmemmgr_HCBv3.cpp.s
+.PHONY : kpoolmemmgr_HCBv3.s
 
 # target to generate assembly for a file
-kpoolmemmgr_HCBv2.cpp.s:
-	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv2.cpp.s
-.PHONY : kpoolmemmgr_HCBv2.cpp.s
+kpoolmemmgr_HCBv3.cpp.s:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/kpoolmemmgr_HCBv3.cpp.s
+.PHONY : kpoolmemmgr_HCBv3.cpp.s
 
 mixed_bitmap.o: mixed_bitmap.cpp.o
 .PHONY : mixed_bitmap.o
@@ -427,9 +427,9 @@ help:
 	@echo "... kpoolmemmgr.o"
 	@echo "... kpoolmemmgr.i"
 	@echo "... kpoolmemmgr.s"
-	@echo "... kpoolmemmgr_HCBv2.o"
-	@echo "... kpoolmemmgr_HCBv2.i"
-	@echo "... kpoolmemmgr_HCBv2.s"
+	@echo "... kpoolmemmgr_HCBv3.o"
+	@echo "... kpoolmemmgr_HCBv3.i"
+	@echo "... kpoolmemmgr_HCBv3.s"
 	@echo "... mixed_bitmap.o"
 	@echo "... mixed_bitmap.i"
 	@echo "... mixed_bitmap.s"
