@@ -281,13 +281,17 @@ public:
 };
 
 class tid_wait_queue:Ktemplats::list_doubly<uint64_t>{
+    bool m_insert_front = false;
     
     public:
     using list_doubly::size;
     using list_doubly::begin;
     using list_doubly::end;
     using list_doubly::push_back;
+    using list_doubly::push_front;
     using list_doubly::pop_front_value;
+    void set_insert_front(bool b) { m_insert_front = b; }
+    void push(uint64_t tid) { if (m_insert_front) push_front(tid); else push_back(tid); }
     void wakeup_all();//假定外部有锁，调用此接口唤醒所有等待者
     spinlock_cpp_t lock;
 };
@@ -359,7 +363,7 @@ class alignas(64) per_processor_scheduler {
     reentrant_spinlock_cpp_t sched_lock;//调度器数据结构锁，保护running tid,sleep_queue_t
     bool is_idle;
     void sched();//会内部修改ready_queue数据结构用ready_queues_lock保护，然后对应的task也会用锁保护其状态改变
-    KURD_t insert_ready_task(task*task_ptr);
+    KURD_t insert_ready_task(task*task_ptr, bool front=false);
     void sleep_tasks_wake();
     per_processor_scheduler();
 };
@@ -367,20 +371,20 @@ extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 extern "C"{
     uint64_t create_kthread(void*(*entry)(void*),void*arg,KURD_t*out_kurd);
-    void kthread_yield_true_enter(x64_standard_context* context);
+    [[noreturn]] void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();
     void kthread_exit(uint64_t will);
     uint64_t kthread_wait(uint64_t tid);//注意，若对应的tid不存在返回~0ull
     void kthread_wait_cppenter(x64_standard_context*context);
-    void kthread_exit_cppenter(x64_standard_context*context);
+    [[noreturn]] void kthread_exit_cppenter(x64_standard_context*context);
     void kthread_self_blocked(task_blocked_reason_t reason);
     void kthread_sleep(miusecond_time_stamp_t offset);
-    void kthread_sleep_cppenter(x64_standard_context* context);
-    void kthread_self_blocked_cppenter(x64_standard_context* context);
-    uint64_t wakeup_thread(uint64_t tid);//返回的是KURD但是受限于abi，需要分析
+    [[noreturn]] void kthread_sleep_cppenter(x64_standard_context* context);
+    [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context);
+    uint64_t wakeup_thread(uint64_t tid, bool front_insert=false);//返回的是KURD但是受限于abi，需要分析
     void block_queue(tid_wait_queue* block_queue);
-    void block_queue_cppenter(x64_standard_context* context);
+    [[noreturn]] void block_queue_cppenter(x64_standard_context* context);
     void block_if_equal(tid_wait_queue* block_queue,uint64_t*checker,uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context* context);
     uint64_t release_kthread(uint64_t tid);

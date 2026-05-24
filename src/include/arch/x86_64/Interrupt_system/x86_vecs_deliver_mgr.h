@@ -40,14 +40,16 @@ namespace Interrupt_module{
 class idt_vec_dispatch_mgr{
     public:
     static KURD_t Init();//在MM_READY段被BSP调用
-    static uint8_t alloc_vec(hard_interrupt_func_t func,uint32_t processor_id,KURD_t&kurd);//用OS_utils.h里面的is_addr_kernel_address函数确认
+    static uint8_t alloc_vec(interrupt_token_t* token,uint32_t processor_id,KURD_t&kurd);
+    static uint8_t alloc_vec_by_apicid(interrupt_token_t* token,uint32_t x2_apicid,KURD_t&kurd);
     static KURD_t free_vec(uint8_t vec,uint32_t processor_id);
-    static hard_interrupt_func_t* get_vec(uint8_t vec,uint32_t processor_id,KURD_t& kurd);
+    static interrupt_token_t* get_vec(uint8_t vec,uint32_t processor_id,KURD_t& kurd);
 };
 class fred_based_mgr{
 
 };
 constexpr uint8_t INVALID_INTERRUPT_VEC=0xFF;
-extern "C" uint8_t out_interrupt_vec_alloc(hard_interrupt_func_t func,uint32_t processor_id,KURD_t*kurd);
+extern "C" uint8_t out_interrupt_vec_alloc(interrupt_token_t* token,uint32_t processor_id,KURD_t*kurd);
+extern "C" uint8_t out_interrupt_vec_alloc_by_apicid(interrupt_token_t* token,uint32_t x2_apicid,KURD_t*kurd);
 extern "C" KURD_t out_interrupt_vec_free(uint8_t vec,uint32_t processor_id);
-extern "C" hard_interrupt_func_t* out_interrupt_vec_get(uint8_t vec,uint32_t processor_id,KURD_t* kurd);
+extern "C" interrupt_token_t* out_interrupt_vec_get(uint8_t vec,uint32_t processor_id,KURD_t* kurd);

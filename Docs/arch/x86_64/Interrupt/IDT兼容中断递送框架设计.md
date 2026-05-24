@@ -1,71 +1,111 @@
-该从哪里讲起呢？该从FRED的机制开始吧，自从我看了FRED的机制后对IDT的机制是越看越他妈的不顺眼，一个中断入口只能绑定中断程序指针信息，不带任何额外参数。但是细想实则不然，我可以用256个中断入口，每个入口的高级语言入口其实可以弹入不同的向量信息，实则可以实现完全的向量号递送，类似FRED的机制。
-但是，IDT这个设计是完全落后的，无法实现对exception和interrupt/软中断的区分，由是只考虑有对32~255的软中断向量+硬件中断向量递送纳入这套体系
-接下来是架构设计：
-1.汇编层：
-global all_vec_delivery
-%macro INTERRUPT_ENTRY_WITH_ERRCODE 1
-;%1是向量号
-    push rbp
-    push r15
-    push r14
-    push r13
-    push r12
-    push r11
-    push r10
-    push r9
-    push r8
-    push rdi
-    push rsi
-    push rdx
-    push rcx
-    push rbx
-    push rax
-    mov rdi, rsp
-    mov rax, rsp            ; 保存原 rsp
-    and rsp, -16            ; 对齐到 16
-    sub rsp, 8              ; 为 call 的返回地址预留
-    push rax                ; 保存原 rsp（现在 rsp % 16 == 0）
-    mov rsi, %1
-    mov rax, all_vec_delivery
-    call rax
+# IDT 兼容中断递送框架设计
 
-    pop rsp ;栈自动回落
-    pop rax
-    pop rbx
-    pop rcx
-    pop rdx
-    pop rsi
-    pop rdi
-    pop r8
-    pop r9
-    pop r10
-    pop r11
-    pop r12
-    pop r13
-    pop r14
-    pop r15
-    pop rbp
-    iretq
-%endmacro
-生成，其唯一的工作时保全上下文，并传入中断向量信息
-2.高级语言入口：
-IDT的向量设计完全让硬件异常，外部中断，INT X挤在一个空间，而exception各自的一手信息不一样，页错误不但有错误码还有错误线性地址，#DE则没有，遂不再这个向量递送机制之下，但是软中断和硬中断的则完全由我设计掌握，遂要进行递送
-涉及到两个数据结构，全局的，编译链接时确定的，静态的，soft_interrupt_funcs[224]
-per_CPU的，动态创建的硬件中断表out_interrupt_funcs[224]
-这两个表项的内容为0时认为空闲，为非0时认为有效
-而all_exception_interrupt_entry_lv1的参数定义为
-void all_exception_interrupt_entry_lv1(x64_standard_context*ctx,uint8_t vec);
-而void all_exception_interrupt_entry_lv1(x64_standard_context*ctx,uint8_t vec);的进一步逻辑为
-void all_exception_interrupt_entry_lv1(x64_standard_context*ctx,uint8_t vec){
-    //先根据ctx是否是被中断自用户态而进行GS_SWAP，
-    processor_id=GS_SLOT[PROCESSOR_ID_GS_INDEX];//处理器标识符
-    //先尝试调用软中断函数表，为0跳过
-    //再调用per_CPU硬件中断表
-    //谁都没有匹配上则报告虚假中断，bsp_kout记录日志
-}
+## 动机
 
-中断函数指针表中的函数指针格式
-void (interrupt_handler*)(x64_standard_context*ctx,uint8_t vec,uint32_t processor_id);这样子就可以精确定位描一个中断事件
-软中断函数指针表则是
-void (soft_interrupt_handler*)(x64_standard_context*ctx,uint8_t vec);
-这么设计是因为软中断是同步的指令流跳转，讨论per_cpu信息没有什么意义
+FRED 机制提供了向量号递送能力——每个中断入口自动携带向量参数，高级语言入口
+统一接收 `(context, vec)` 无需查表。但在 FRED 硬件普及前，基于传统 IDT 实现
+相同的设计理念。
+
+核心思路：256 个 IDT 入口各自嵌入不同的向量号，高级语言入口统一接收 `(context, vec)`。
+
+## 纳入范围
+
+| 纳入 | 排除 |
+|------|------|
+| 向量 32～255 的软中断 (int n) | 向量 0～31 的 CPU 异常 (各带专用入口) |
+| 向量 32～255 的硬件中断 (外部/消息) | FRED 模式 (下行接口预留) |
+
+## 架构分层
+
+```
+  IDT (256 entry)
+    │
+    ├─ [0..31] CPU 异常 → 专用 bare_enter → cpp_enter
+    │
+    └─ [32..255] VEC_DELIVERY_ENTRY (224 个，宏批量生成)
+         │
+         └─ all_vec_delivery(frame, vec)
+              │
+              ├─ soft_interrupt_functions[vec] → 带 frame，可跑飞
+              │    ├─ KTHREAD_CALL (226): yield/exit/wait/sleep/block
+              │    ├─ IPI          (240): AP bringup up/down
+              │    ├─ ASM_PANIC    (225)
+              │    └─ SUPRIOUS     (255)
+              │
+              └─ self->tokens[vec].func(&tok) → 无 frame，必须返回
+                   ├─ LAPIC Timer
+                   ├─ i8042 / NVMe CQ / DMAR
+                   └─ TLB flush IPI (非跑飞型)
+```
+
+## 两路分流设计
+
+**软中断（soft_interrupt_functions）**：
+- 全局、同步、由 `int` 指令触发
+- handler 接收 `x64_standard_context* frame`，可访问/修改 CPU 寄存器状态
+- 允许执行流跑飞（即不返回），例如 kthread_call 内部的 sched()
+- 256 项函数指针表，空指针视为未注册
+
+**硬件中断（tokens[256]）**：
+- per-CPU、异步、由 LAPIC/IOAPIC/MSI 触发
+- handler 接收 `interrupt_token_t* token`，**无 frame**
+- handler 必须返回，禁止跑飞
+- 框架统一做 EOI，根据 handler 返回值 + token->flags 决策是否调度
+- gs_complex_t::tokens[256] 数组（每 CPU 一份）
+
+## 核心数据结构
+
+```cpp
+// Interrupt.h
+struct interrupt_token_t {
+    uint64_t flags;           // bit 0: NEED_RESCHED
+    uint64_t token_private;   // O(1) trigger source encoding
+    void   (*func)(interrupt_token_t* token);
+};
+
+// GS_complex.h — per-CPU 存储
+struct gs_complex_t {
+    uint64_t slots[256];             // [0x0000, 0x0800)
+    interrupt_token_t tokens[256];   // [0x0800, 0x1800) ← 6144 bytes
+    // ... GDT/TSS/FPU/stacks ...
+};
+```
+
+## 管理接口
+
+```cpp
+class idt_vec_dispatch_mgr {
+    static KURD_t Init();
+    static uint8_t alloc_vec(interrupt_token_t* token, uint32_t pid, KURD_t&);
+    static uint8_t alloc_vec_by_apicid(interrupt_token_t*, uint32_t apicid, KURD_t&);
+    static KURD_t free_vec(uint8_t vec, uint32_t pid);
+    static interrupt_token_t* get_vec(uint8_t vec, uint32_t pid, KURD_t&);
+};
+
+// extern "C" 统一入口，IDT/FRED 切换时只改这里
+uint8_t out_interrupt_vec_alloc(interrupt_token_t*, uint32_t pid, KURD_t*);
+uint8_t out_interrupt_vec_alloc_by_apicid(interrupt_token_t*, uint32_t apicid, KURD_t*);
+KURD_t out_interrupt_vec_free(uint8_t vec, uint32_t pid);
+interrupt_token_t* out_interrupt_vec_get(uint8_t vec, uint32_t pid, KURD_t*);
+```
+
+## alloc_vec 验证链
+
+1. token->func != nullptr → BAD_FUNC_PTR
+2. is_addr_kernel_address(token->func) → BAD_FUNC_PTR
+3. ksymmanager 精确地址匹配 → SYM_NOT_FOUND
+4. processor_id / apicid 合法性 → INVALID_PROCESSOR_ID
+5. 扫描 32..255 跳过 soft_interrupt_functions 占位 → NO_FREE_VEC
+6. dispatch_lock 保护下写入
+
+## 中断向量布局
+
+| 范围 | 用途 |
+|------|------|
+| 0～31 | CPU 异常（专用入口）|
+| 32～224 | 自由分配（硬件中断 token 表）|
+| 225 | ASM_PANIC（软中断）|
+| 226 | KTHREAD_CALL（软中断）|
+| 240 | IPI（跑飞型，软中断）|
+| 241～254 | 自由分配 |
+| 255 | SUPRIOUS_INTERRUPT（软中断）|

@@ -90,7 +90,7 @@ KURD_t cmd_out_int_spec(const line_t* line) {
         }
 
         gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + pid * GS_COMPLEX_STRIDE);
-        hard_interrupt_func_t* slice = cx->dispatch;
+        interrupt_token_t* slice = cx->tokens;
 
         if (line->token_count >= 3) {
             /* preciser: pid + vec */
@@ -101,9 +101,9 @@ KURD_t cmd_out_int_spec(const line_t* line) {
             }
             bsp_kout << "out_int[pid=" << (uint32_t)pid
                      << "][" << (uint32_t)vec << "] = 0x"
-                     << (uint64_t)slice[vec] << "  ";
-            if (slice[vec])
-                print_sym_name((uint64_t)slice[vec]);
+                     << HEX << (uint64_t)slice[vec].func << DEC << "  ";
+            if (slice[vec].func)
+                print_sym_name((uint64_t)slice[vec].func);
             else
                 bsp_kout << "(null)";
             bsp_kout << kendl;
@@ -132,13 +132,13 @@ KURD_t cmd_out_int_spec(const line_t* line) {
     for (uint32_t p = 0; p < pc; p++) {
         bsp_kout << "=== hard-interrupt table for processor " << p << " ===" << kendl;
         gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + p * GS_COMPLEX_STRIDE);
-        hard_interrupt_func_t* slice = cx->dispatch;
+        interrupt_token_t* slice = cx->tokens;
         bool any = false;
         for (uint16_t v = 32; v <= 255; v++) {
-            if (slice[v]) {
+            if (slice[v].func) {
                 bsp_kout << "  [" << (uint32_t)v << "] 0x"
-                         << (uint64_t)slice[v] << "  ";
-                print_sym_name((uint64_t)slice[v]);
+                         << HEX << (uint64_t)slice[v].func << DEC << "  ";
+                print_sym_name((uint64_t)slice[v].func);
                 bsp_kout << kendl;
                 any = true;
             }

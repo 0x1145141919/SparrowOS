@@ -8,6 +8,7 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/abi/GS_complex.h"
+#include "arch/x86_64/abi/msr_offsets_definitions.h"    
 #include "panic.h"
 
 logical_idt template_idt[256];
@@ -78,11 +79,11 @@ KURD_t idt_vec_dispatch_mgr::Init()
 
     using namespace Interrupt_module::idt_mgr_events::init_results;
 
-    /* dispatch 表已预分配在 conjunc_GSs (gs_complex_t::dispatch)，仅需清零 */
+    /* tokens 表已预分配在 conjunc_GSs (gs_complex_t::tokens)，仅需清零 */
     vaddr_t gs_vbase = conjucnt_GSs.vbase();
     for (uint32_t p = 0; p < logical_processor_count; p++) {
         gs_complex_t* cx = (gs_complex_t*)(gs_vbase + p * GS_COMPLEX_STRIDE);
-        ksetmem_8(cx->dispatch, 0, sizeof(cx->dispatch));
+        ksetmem_8(cx->tokens, 0, sizeof(cx->tokens));
     }
 
     /* resolve vec_delivery symbols */
@@ -168,7 +169,7 @@ KURD_t idt_vec_dispatch_mgr::Init()
 /* ===================================================================
  * alloc_vec
  * =================================================================== */
-uint8_t idt_vec_dispatch_mgr::alloc_vec(hard_interrupt_func_t func,
+uint8_t idt_vec_dispatch_mgr::alloc_vec(interrupt_token_t* token,
                                         uint32_t processor_id,
                                         KURD_t &kurd)
 {
@@ -180,15 +181,20 @@ uint8_t idt_vec_dispatch_mgr::alloc_vec(hard_interrupt_func_t func,
     using namespace Interrupt_module::idt_mgr_events::alloc_vec_results;
     using namespace Interrupt_module::idt_mgr_events::common_fail_reason_code;
 
-    if (!is_addr_kernel_address((void *)func)) {
+    if (!token || !token->func) {
+        kurd = fail_k;
+        kurd.reason = fail_reason_code::BAD_FUNC_PTR;
+        return 0;
+    }
+    if (!is_addr_kernel_address((void *)token->func)) {
         kurd = fail_k;
         kurd.reason = fail_reason_code::BAD_FUNC_PTR;
         return 0;
     }
 
-    /* verify func is a known kernel symbol (must match exactly) */
-    {   const symbol_entry* se = ksymmanager::get_entry_near_addr((vaddr_t)func);
-        if (!se || se->address != (uint64_t)func) {
+    /* verify func is a known kernel symbol */
+    {   const symbol_entry* se = ksymmanager::get_entry_near_addr((vaddr_t)token->func);
+        if (!se || se->address != (uint64_t)token->func) {
             kurd = fail_k;
             kurd.reason = fail_reason_code::SYM_NOT_FOUND;
             return 0;
@@ -201,22 +207,20 @@ uint8_t idt_vec_dispatch_mgr::alloc_vec(hard_interrupt_func_t func,
     }
 
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
-    hard_interrupt_func_t* slice = cx->dispatch;
+    interrupt_token_t* slice = cx->tokens;
 
-    dispatch_lock.lock();
-    uint8_t vec = 32;
+    spinlock_interrupt_about_guard l(dispatch_lock);
+    uint16_t vec = 32;
     for (; vec <= 255; vec++) {
         if (soft_interrupt_functions[vec] != nullptr) continue;
-        if (slice[vec] == nullptr) break;
+        if (slice[vec].func == nullptr) break;
     }
     if (vec > 255) {
-        dispatch_lock.unlock();
         kurd = fail_k;
         kurd.reason = fail_reason_code::NO_FREE_VEC;
         return 0;
     }
-    slice[vec] = func;
-    dispatch_lock.unlock();
+    slice[vec] = *token;
 
     kurd = success_k;
     return vec;
@@ -245,24 +249,21 @@ KURD_t idt_vec_dispatch_mgr::free_vec(uint8_t vec, uint32_t processor_id)
     }
 
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
-    hard_interrupt_func_t* slice = cx->dispatch;
+    interrupt_token_t* slice = cx->tokens;
 
-    dispatch_lock.lock();
-    if (slice[vec] == nullptr) {
-        dispatch_lock.unlock();
+    spinlock_interrupt_about_guard l(dispatch_lock);
+    if (slice[vec].func == nullptr) {
         fail_k.reason = fail_reason_code::VEC_NOT_ALLOCED;
         return fail_k;
     }
-    slice[vec] = nullptr;
-    dispatch_lock.unlock();
-
+    ksetmem_8(slice + vec, 0, sizeof(interrupt_token_t));
     return success_k;
 }
 
 /* ===================================================================
  * get_vec
  * =================================================================== */
-hard_interrupt_func_t *idt_vec_dispatch_mgr::get_vec(uint8_t vec,
+interrupt_token_t *idt_vec_dispatch_mgr::get_vec(uint8_t vec,
                                                      uint32_t processor_id,
                                                      KURD_t &kurd)
 {
@@ -286,9 +287,9 @@ hard_interrupt_func_t *idt_vec_dispatch_mgr::get_vec(uint8_t vec,
     }
 
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
-    hard_interrupt_func_t *entry = &cx->dispatch[vec];
+    interrupt_token_t *entry = &cx->tokens[vec];
 
-    if (*entry == nullptr) {
+    if (entry->func == nullptr) {
         kurd = fail_k;
         kurd.reason = VEC_NOT_ALLOCED;
         return nullptr;
@@ -301,12 +302,20 @@ hard_interrupt_func_t *idt_vec_dispatch_mgr::get_vec(uint8_t vec,
 /* ===================================================================
  * Unified dispatch interface — IDT path (FRED placeholder)
  * =================================================================== */
-extern "C" uint8_t out_interrupt_vec_alloc(hard_interrupt_func_t func,
+extern "C" uint8_t out_interrupt_vec_alloc(interrupt_token_t* token,
                                             uint32_t processor_id,
                                             KURD_t *kurd)
 {
     if (!kurd) return 0xff;
-    return idt_vec_dispatch_mgr::alloc_vec(func, processor_id, *kurd);
+    return idt_vec_dispatch_mgr::alloc_vec(token, processor_id, *kurd);
+}
+
+extern "C" uint8_t out_interrupt_vec_alloc_by_apicid(interrupt_token_t* token,
+                                                        uint32_t x2_apicid,
+                                                        KURD_t *kurd)
+{
+    if (!kurd) return 0xff;
+    return idt_vec_dispatch_mgr::alloc_vec_by_apicid(token, x2_apicid, *kurd);
 }
 
 extern "C" KURD_t out_interrupt_vec_free(uint8_t vec, uint32_t processor_id)
@@ -314,14 +323,14 @@ extern "C" KURD_t out_interrupt_vec_free(uint8_t vec, uint32_t processor_id)
     return idt_vec_dispatch_mgr::free_vec(vec, processor_id);
 }
 
-extern "C" hard_interrupt_func_t *out_interrupt_vec_get(uint8_t vec,
+extern "C" interrupt_token_t *out_interrupt_vec_get(uint8_t vec,
                                                         uint32_t processor_id,
                                                         KURD_t *kurd)
 {
     if (!kurd) return nullptr;
     return idt_vec_dispatch_mgr::get_vec(vec, processor_id, *kurd);
 }
-
+extern "C" [[noreturn]] void resched(x64_standard_context *frame);
 /* ===================================================================
  * all_vec_delivery — asm stubs dispatch to here
  * =================================================================== */
@@ -350,12 +359,70 @@ extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec)
     }
     //这里可以直接rdmsr获取gs基址作为gs_complex
     /* per-processor hardware — 从 gs_complex_t::dispatch 直接取 */
-    gs_complex_t* self = (gs_complex_t*)(conjucnt_GSs.vbase() + pid * GS_COMPLEX_STRIDE);
-    if (self->dispatch[vec]) {
-        self->dispatch[vec](frame, vec, pid);
+    gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
+    if (self->tokens[vec].func) {
+        uint64_t res= self->tokens[vec].func(&self->tokens[vec]);
         x2apic::x2apic_driver::write_eoi();
+        if(res&TOKEN_FLAG_MASK_TOKEN_SCHEDULE){
+            resched(frame);
+        }
         return;
     }
     bsp_kout << now << "[all_vec_delivery] WARNING: no handler for vec "
              << (uint32_t)vec << " on processor " << pid << kendl;
+}
+uint8_t idt_vec_dispatch_mgr::alloc_vec_by_apicid(interrupt_token_t *token, uint32_t x2_apicid, KURD_t &kurd)
+{
+    KURD_t success_k = idt_mgr_default_success();
+    KURD_t fail_k    = idt_mgr_default_error();
+    success_k.event_code = Interrupt_module::idt_mgr_events::alloc_vec;
+    fail_k.event_code    = Interrupt_module::idt_mgr_events::alloc_vec;
+
+    using namespace Interrupt_module::idt_mgr_events::alloc_vec_results;
+    using namespace Interrupt_module::idt_mgr_events::common_fail_reason_code;
+
+    if (!token || !token->func) {
+        kurd = fail_k;
+        kurd.reason = fail_reason_code::BAD_FUNC_PTR;
+        return 0;
+    }
+    if (!is_addr_kernel_address((void *)token->func)) {
+        kurd = fail_k;
+        kurd.reason = fail_reason_code::BAD_FUNC_PTR;
+        return 0;
+    }
+    /* verify func is a known kernel symbol */
+    {   const symbol_entry* se = ksymmanager::get_entry_near_addr((vaddr_t)token->func);
+        if (!se || se->address != (uint64_t)token->func) {
+            kurd = fail_k;
+            kurd.reason = fail_reason_code::SYM_NOT_FOUND;
+            return 0;
+        }
+    }
+
+    /* O(1) APIC ID → gs_complex_t via g_gs_by_apicid 映射表 */
+    gs_complex_t* cx = g_gs_by_apicid[x2_apicid];
+    if (!cx) {
+        kurd = fail_k;
+        kurd.reason = INVALID_PROCESSOR_ID;
+        return 0;
+    }
+
+    interrupt_token_t* slice = cx->tokens;
+
+    spinlock_interrupt_about_guard l(dispatch_lock);
+    uint16_t vec = 32;
+    for (; vec <= 255; vec++) {
+        if (soft_interrupt_functions[vec] != nullptr) continue;
+        if (slice[vec].func == nullptr) break;
+    }
+    if (vec > 255) {
+        kurd = fail_k;
+        kurd.reason = fail_reason_code::NO_FREE_VEC;
+        return 0;
+    }
+    slice[vec] = *token;
+
+    kurd = success_k;
+    return vec;
 }

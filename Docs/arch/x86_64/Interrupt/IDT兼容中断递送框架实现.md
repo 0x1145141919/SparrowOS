@@ -2,7 +2,8 @@
 
 ## 概述
 
-本框架受 FRED 中断机制启发，基于传统 IDT 实现了向量号递送能力：256 个 IDT 入口各自嵌入不同的向量号，高级语言入口统一接收 `(context, vec)`，无需额外查表确定中断来源。
+本框架受 FRED 中断机制启发，基于传统 IDT 实现了向量号递送能力：256 个 IDT 入口
+各自嵌入不同的向量号，高级语言入口统一接收 `(context, vec)`，无需额外查表确定中断来源。
 
 > 设计文档见 [IDT兼容中断递送框架设计.md](./IDT兼容中断递送框架设计.md)。
 > 本文档描述代码仓库中的实际落地实现。
@@ -21,7 +22,12 @@
 | 范围 | 用途 |
 |------|------|
 | 0～31 | CPU 异常 (专用 bare_enter → cpp_enter) |
-| 32～255| 自由分配 (硬件中)  但是全局软中断占位: , 225=ASM_PANIC, 226=KTHREAD_CALL, 240=IPI, 255=SUPRIOUS |
+| 32～224 | 自由分配 (硬件中断 token 表) |
+| 225 (ASM_PANIC) | 软中断 — 内核恐慌 |
+| 226 (KTHREAD_CALL) | 软中断 — 跨核函数调用 |
+| 240 (IPI) | 软中断 — 跑飞型核间中断 (AP bringup up/down) |
+| 241～254 | 自由分配 |
+| 255 (SUPRIOUS) | 软中断 — 虚假中断检测 |
 
 ---
 
@@ -85,7 +91,7 @@ vec_delivery_%+__vec%+_bare_enter:
 
 ### 栈切换
 
-所有 224 个递送入口统一使用 **IST=5**（TSS.IST[5]）。当 CPU 从任意 CPL 递送中断时，自动切换到 IST5 专用栈，不污染当前内核栈。
+当前使用 IST=0（不切换栈）。所有递送入口直接在当前栈上执行。
 
 ---
 
@@ -94,85 +100,96 @@ vec_delivery_%+__vec%+_bare_enter:
 ### 文件位置
 `src/arch/x86_64/Interrupts/x86_vecs_deliver_mgr.cpp`
 
-### 分发逻辑：`all_vec_delivery`
+### 两路分发逻辑：all_vec_delivery
 
 ```cpp
-extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec) {
-    if (vec < 32)
-        panic("BAD_VEC_RECIEVED");     // 不应到达此处
+extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec)
+{
+    if (vec < 32) {
+        panic("BAD_VEC_RECIEVED");
+        return;
+    }
 
     uint32_t pid = fast_get_processor_id();
 
-    // 1. 软中断表 (全局、同步)
+    /* ── 1. 软中断表 (全局, 同步, 带 frame) ── */
     if (soft_interrupt_functions[vec]) {
-        soft_interrupt_functions[vec](frame, vec);
+        soft_interrupt_functions[vec](frame);
+        return;   // 软中断允许跑飞, 此处 return 仅在 handler 返回时可达
+    }
+
+    /* ── 2. 硬件中断表 (per-CPU, token 驱动) ── */
+    gs_complex_t* self = (gs_complex_t*)rdmsr(IA32_GS_BASE);
+    if (self->tokens[vec].func) {
+        self->tokens[vec].func(&self->tokens[vec]);
+        x2apic::x2apic_driver::write_eoi();
+        if (self->tokens[vec].flags & TOKEN_FLAG_NEED_RESCHED) {
+            // TODO: schedule logic
+        }
         return;
     }
 
-    // 2. 硬件中断表 (per-CPU)
-    hard_interrupt_func_t *table =
-        (hard_interrupt_func_t *)read_gs_u64(PROCESSOR_INTERRUPT_FUNCS_TABLE_GS_INDEX);
-    if (table && table[vec]) {
-        table[vec](frame, vec, pid);
-        return;
-    }
-
-    // 3. 谁都没匹配 → 虚假中断警告
-    bsp_kout << "[WARNING] no handler for vec " << vec
+    /* ── 3. 未匹配 → 虚假中断 ── */
+    bsp_kout << "[WARNING] no handler for vec " << (uint32_t)vec
              << " on processor " << pid << kendl;
 }
 ```
 
-优先级：软中断表 > 硬件中断表。软中断是同步指令流跳转，不关心 per-CPU 信息；硬件中断表是 per-CPU 的，可精确描述中断事件。
+优先级：软中断表 > 硬件中断表。软中断是同步指令流跳转，带 frame 可跑飞；
+硬件中断是异步的，handler 无 frame、禁止跑飞，框架统一做 EOI + 调度决策。
 
 ---
 
-## 4. 数据结构
+## 4. 核心数据结构
 
-### 函数指针类型
+### interrupt_token_t
 
 **`src/include/arch/x86_64/Interrupt_system/Interrupt.h`**
 
 ```cpp
-typedef void (*soft_interrupt_func_t)(x64_standard_context* context, uint8_t vec);
-typedef void (*hard_interrupt_func_t)(x64_standard_context* context, uint8_t vec, uint32_t processor_id);
+typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
+
+struct interrupt_token_t {
+    uint64_t flags;           // bit 0: TOKEN_FLAG_NEED_RESCHED
+    uint64_t token_private;   // O(1) 触发源定位，由注册者编码
+    void   (*func)(interrupt_token_t* token);
+};
 ```
+
+handler 只接收 token 指针，不接收 frame，以此阻断在硬件中断上下文跑飞的路径。
+`token_private` 由注册者填写，例如 NVMe 可编码 `(ctrl_ptr << 16) | queue_idx`，
+handler 内 O(1) 定位触发源。
 
 ### 软中断表
 
 ```cpp
-// fixed_interrupt_resources.cpp — 编译时初始化（const）
 soft_interrupt_func_t soft_interrupt_functions[256];
 
 // 已注册的内置软中断:
 //   [ivec::ASM_PANIC]      = asm_panic_cpp_enter
-//   [ivec::IPI]            = ipi_cpp_enter
 //   [ivec::KTHREAD_CALL]   = kthread_call_cpp_enter
+//   [ivec::IPI]            = ipi_cpp_enter
 //   [ivec::SUPRIOUS_INTERRUPT] = suprious_interrupt_cpp_enter
 ```
 
-### 硬件中断表
+### 硬件中断 Token 表
+
+per-CPU 存储于 `gs_complex_t::tokens[256]`，`rdmsr(IA32_GS_BASE)` 获得基址后
+直接索引。
 
 ```cpp
-// 运行时分配的 flat 数组: [logical_processor_count × 256]
-// 每个处理器 GS slot[4] 指向其 256 项切片
-hard_interrupt_func_t *all_processors_interrupt_functions;
-
-// local_processor_manage.cpp — 每个处理器初始化时:
-gs_slot[PROCESSOR_INTERRUPT_FUNCS_TABLE_GS_INDEX] =
-    (uint64_t)&all_processors_interrupt_functions[256 * processor_id];
+struct gs_complex_t {
+    uint64_t slots[256];             // [0x0000, 0x0800)
+    interrupt_token_t tokens[256];   // [0x0800, 0x1800)
+    // ... GDT/TSS/FPU/stacks ...
+};
 ```
 
 ### logical_idt → IDTEntry 翻译
 
 ```cpp
-// fixed_interrupt_resources.cpp
-void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec) {
-    for each v in [from_vec, to_vec]:
-        global_idt[v] = translate(template_idt[v]);
-        // 段选择子 = 0x08, type = 0xE (64-bit 中断门)
-        // present = 1, ist_index / dpl 透传
-}
+void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec);
+// type = 0xE (64-bit 中断门), ist_index=0, dpl 透传
 ```
 
 ---
@@ -180,23 +197,25 @@ void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec) {
 ## 5. 初始化流程
 
 ### 异常入口 (`exceptions_idt_init`)
-在 `fixed_interrupt_resources.cpp` 中，BSP 调用 `exceptions_init()` → `x86_smp_processors_container::exceptions_idt_init()`。填充向量 0～31 的 `template_idt`，调用 `template_idt_apply_region(0, 31)` 写入 `global_idt`。
+BSP 调用 `exceptions_init()` → `template_idt_apply_region(0, 31)`，
+填充向量 0～31 异常入口。
 
 ### 向量递送入口 (`idt_vec_dispatch_mgr::Init`)
 
 在 MM_READY 段由 BSP 调用：
 
-1. **分配硬件中断表**：
-   `__wrapped_pgs_valloc(bytes)` → `ksetmem_8` 清零
+1. **清零 tokens 表**：
+   遍历所有 CPU 的 gs_complex_t，`ksetmem_8(cx->tokens, 0, sizeof(cx->tokens))`
 
 2. **符号表扫描**：
-   `ksymmanager` 中查找 `vec_delivery_32_bare_enter` → 递增尝试 33, 34… 直到断裂 → 回退全表扫描补全
+   查找 `vec_delivery_32_bare_enter` → 递增尝试 33, 34… 直到断裂 →
+   回退全表扫描补全
 
 3. **填入 template_idt**：
    ```
    handler   = symbol.address
-   type      = 0xE
-   ist_index = 5
+   type      = 0xE (interrupt gate)
+   ist_index = 0
    dpl       = 0
    ```
 
@@ -213,29 +232,30 @@ void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec) {
 
 | 函数 | 行为 |
 |------|------|
-| `Init(logical_processor_count)` | 符号表扫描 + template_idt 填充 + global_idt 写入 |
-| `alloc_vec(func, pid, &kurd)` | 在指定处理器的硬件表中分配空闲向量 (32～255)，跳过被软中断占用的向量 |
+| `Init()` | 符号表扫描 + template_idt 填充 + global_idt 写入 |
+| `alloc_vec(token*, pid, &kurd)` | 在指定处理器的 tokens 表中分配空闲向量 |
+| `alloc_vec_by_apicid(token*, apicid, &kurd)` | 同 alloc_vec 但通过 x2APIC ID → g_gs_by_apicid 表 O(1) 查 gs_complex_t |
 | `free_vec(vec, pid)` | 释放指定处理器上的向量槽 |
-| `get_vec(vec, pid, &kurd)` | 查询指定处理器上向量的处理函数 |
+| `get_vec(vec, pid, &kurd)` | 查询指定处理器上向量的 token 指针 |
 
 **alloc_vec 验证链**:
-1. `is_addr_kernel_address(func)` → `BAD_FUNC_PTR`
-2. `processor_id >= logical_processor_count` → `INVALID_PROCESSOR_ID`
-3. 跳过 `soft_interrupt_functions[vec]` 非空的槽位
-4. 扫 32～255 找空槽 → 无空位 `NO_FREE_VEC`
-5. 加 `dispatch_lock` 原子写入
+1. token->func 非空 → `BAD_FUNC_PTR`
+2. `is_addr_kernel_address(token->func)` → `BAD_FUNC_PTR`
+3. ksymmanager 精确地址匹配 → `SYM_NOT_FOUND`
+4. processor_id / apicid 合法性 → `INVALID_PROCESSOR_ID`
+5. 扫描 32～255 跳过 soft_interrupt_functions 占位 → `NO_FREE_VEC`
+6. `dispatch_lock` (spinlock_interrupt_about_guard) 保护写入
 
 ### extern "C" 统一接口
 
-提供给其他模块（如 LAPIC 驱动）的统一入口，IDT/FRED 切换时只改这里：
+提供给其他模块的统一入口，IDT/FRED 切换时只改这里：
 
 ```cpp
-extern "C" uint8_t out_interrupt_vec_alloc(func, pid, kurd_ptr);
-extern "C" KURD_t   out_interrupt_vec_free(vec, pid);
-extern "C" auto     out_interrupt_vec_get(vec, pid, kurd_ptr);
+uint8_t out_interrupt_vec_alloc(interrupt_token_t* token, uint32_t pid, KURD_t*);
+uint8_t out_interrupt_vec_alloc_by_apicid(interrupt_token_t*, uint32_t apicid, KURD_t*);
+KURD_t  out_interrupt_vec_free(uint8_t vec, uint32_t pid);
+interrupt_token_t* out_interrupt_vec_get(uint8_t vec, uint32_t pid, KURD_t*);
 ```
-
-当前无条件走 IDT 路径 → `idt_vec_dispatch_mgr::*`。
 
 ---
 
@@ -244,18 +264,15 @@ extern "C" auto     out_interrupt_vec_get(vec, pid, kurd_ptr);
 ```cpp
 // 类级模板
 static KURD_t idt_mgr_default_kurd()    // module=INTERRUPT, modloc=modloc_idt_mgr, domain=CORE
-static KURD_t idt_mgr_default_success() // result=SUCCESS, level=INFO
-static KURD_t idt_mgr_default_error()   // result=FAIL, level=ERROR
-static KURD_t idt_mgr_default_fatal()   // result=FATAL, level=FATAL
+static KURD_t idt_mgr_default_success()
+static KURD_t idt_mgr_default_error()
+static KURD_t idt_mgr_default_fatal()
 
 // per 方法模式:
 KURD_t success_k = idt_mgr_default_success();
 KURD_t fail_k    = idt_mgr_default_error();
 success_k.event_code = <事件>;
 fail_k.event_code    = <事件>;
-
-using namespace <结果代码命名空间>;
-
 kurd = fail_k;
 kurd.reason = <原因码>;
 ```
@@ -266,25 +283,37 @@ kurd.reason = <原因码>;
 
 ### LAPIC Timer
 ```cpp
-// lapic.cpp
-x2apic::lapic_timer_one_shot::processor_regist()
-x2apic::lapic_timer_tsc_ddline::processor_regist()
+interrupt_token_t token = { TOKEN_FLAG_NEED_RESCHED, 0, timer_cpp_enter };
+vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
 ```
-使用 `out_interrupt_vec_alloc` 在本地处理器上分配向量，配置 LVT 计时器。
+flags 带 NEED_RESCHED，框架在 EOI 后触发调度。
 
 ### LAPIC Error
 ```cpp
-// lapic.cpp
-x2apic::lapic_error_handler::handler()      // 读 ESR → bsp_kout 打印错误标志
-x2apic::lapic_error_handler::processor_regist() // 分配 vec + 配置 LVT Error
+interrupt_token_t token = { 0, 0, lapic_error_handler::handler };
+vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
 ```
+flags=0，仅读 ESR 打印日志，不触发调度。
+
+### i8042 键盘
+```cpp
+interrupt_token_t token = { 0, 0, i8042_cpp_enter };
+vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
+```
+
+### NVMe CQ
+```cpp
+interrupt_token_t token = { 0, token_private, ADMIN_CQ_handler };
+vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
+```
+token_private 编码 controller + queue 信息。
 
 ### 内置软中断
 | 向量 | 用途 |
 |------|------|
 | 225 (ASM_PANIC) | `int ASM_PANIC` 触发内核恐慌 |
-| 226 (KTHREAD_CALL) | 跨核函数调用 |
-| 240 (IPI) | 核间中断 |
+| 226 (KTHREAD_CALL) | 跨核函数调用 (yield/exit/wait/sleep/block) |
+| 240 (IPI) | 跑飞型核间中断 (AP bringup up/down) |
 | 255 (SUPRIOUS) | 虚假中断检测记录 |
 
 ---
@@ -295,10 +324,11 @@ x2apic::lapic_error_handler::processor_regist() // 分配 vec + 配置 LVT Error
 |------|------|
 | `Sysdef_exception_entries.asm` | VEC_DELIVERY_ENTRY 宏 + 224 个入口 + swapgs |
 | `x86_vecs_deliver_mgr.h` | 类声明 + KURD 事件代码 + extern "C" 统一接口 |
-| `x86_vecs_deliver_mgr.cpp` | Init / alloc_vec / free_vec / get_vec + all_vec_delivery |
+| `x86_vecs_deliver_mgr.cpp` | Init / alloc_vec / free_vec / get_vec / alloc_vec_by_apicid + all_vec_delivery |
 | `fixed_interrupt_resources.cpp` | logical_idt/global_idt/soft_interrupt_functions + template_idt_apply_region |
 | `loacl_processor.h` | TSS / IDTEntry / logical_idt / GS slot 常量 |
-| `Interrupt.h` | hard_interrupt_func_t / soft_interrupt_func_t 类型定义 |
+| `Interrupt.h` | interrupt_token_t / soft_interrupt_func_t 类型定义 |
+| `GS_complex.h` | gs_complex_t (含 tokens[256]) + per_processor_hardware_stack_t |
 | `fixed_interrupt_vectors.h` | ivec 命名空间 (向量编号常量) |
 | `lapic.cpp` | LAPIC timer + error handler 注册示例 |
-| `local_processor_manage.cpp` | per-CPU GS slot 初始化 (函数表指针) |
+| `local_processor_manage.cpp` | per-CPU GS slot 初始化 (tokens 表指针) |

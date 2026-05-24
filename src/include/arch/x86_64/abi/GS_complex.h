@@ -11,7 +11,7 @@
 //
 // 布局概述：
 //   [0x0000, 0x0800)  slots[256]         — SLOT_IS_SLOT 区，uint64_t 槽
-//   [0x0800, 0x1000)  dispatch[256]      — 中断函数指针表，零间接分发
+//   [0x0800, 0x1800)  tokens[256]      — 中断 Token 表
 //   [0x1000, 0x10B0)  gdt + tss_desc + tss — 架构描述符
 //   [0x10C0, 0x30C0)  fpu_area[8KB]     — XSAVE/XRSTOR 暂存区
 //   [0x4000, 0x17000) 硬件栈区（5 个固定栈）
@@ -36,8 +36,8 @@ struct gs_complex_t {
     // ══════════════════════════════════════════════════════════════════════
 
     // ── 中断函数指针表 ─────────────────────────────────────────────────────
-    // GS_BASE + offsetof(dispatch) + vec * 8 直接命中，无需解指针
-    hard_interrupt_func_t dispatch[256];     // 0x0800 — 0x1000 (2048 B)
+    // GS_BASE + offsetof(tokens) + vec * sizeof(interrupt_token_t) 直接命中
+    interrupt_token_t tokens[256];     // 0x0800 — 0x1800 (6144 B)
 
     // ── GDT + TSS ─────────────────────────────────────────────────────────
     x64_gdtentry        gdt[6];              // 0x1000 — 0x1030

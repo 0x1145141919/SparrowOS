@@ -459,11 +459,12 @@ void per_processor_scheduler::sched()
     to_run->set_running();
     to_run->set_belonged_processor_id(fast_get_processor_id());
     to_run->lastest_run_stamp=ktime::get_microsecond_stamp();
-    gs_u64_write(PROCESSOR_NOW_RUNNING_TID_GS_INDEX,to_run->get_tid());
+    gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
     to_run->task_lock.unlock();
+    ktime::heart_beat_alarm::set_clock_by_offset(20000);
     to_run->atomic_load();
 }
-KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr)
+KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
 {
     KURD_t fail=default_fail();
     KURD_t success=default_success();
@@ -480,9 +481,16 @@ KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr)
         fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::bad_task_type;
         return fail;
     }
-    if(!ready_queue.push_back(task_ptr)){
-        fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::insert_fail;
-        return fail;
+    if(front){
+        if(!ready_queue.push_front(task_ptr)){
+            fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::insert_fail;
+            return fail;
+        }
+    }else{
+        if(!ready_queue.push_back(task_ptr)){
+            fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::insert_fail;
+            return fail;
+        }
     }
     return success;
 }
@@ -594,7 +602,7 @@ void tid_wait_queue::wakeup_all()
 {
     for(uint64_t i=0;i<this->size();i++){
         uint64_t tid=this->pop_front_value();
-        wakeup_thread(tid);
+        wakeup_thread(tid,this->m_insert_front);
         //这里要把返回的uint64_t转成KURD并且对于
         //Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
         //和Scheduler::self_scheduler_events::wake_up_kthread_results::fail_reasons::bad_task_state;

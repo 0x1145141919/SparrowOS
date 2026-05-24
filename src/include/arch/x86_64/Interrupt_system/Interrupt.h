@@ -6,7 +6,12 @@
 #include "abi/arch_code.h"
 extern void (*global_ipi_handler)();
 typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
-typedef void (*hard_interrupt_func_t)(x64_standard_context* context, uint8_t vec, uint32_t processor_id);
+constexpr uint64_t TOKEN_FLAG_MASK_TOKEN_SCHEDULE=0x1;
+struct interrupt_token_t{
+    uint64_t flags;
+    uint64_t token_private;
+    uint64_t (*func)(interrupt_token_t*token);
+};
 /**
  * 中断管理器，管理着每个cpu的中断描述符表和本地apic
  * 当然，调用时必须上报其apic__id
@@ -27,7 +32,7 @@ extern "C" void machine_check_cpp_enter(x64_standard_context* frame);        // 
 extern "C" void simd_floating_point_cpp_enter(x64_standard_context* frame);    // #XM
 extern "C" void virtualization_cpp_enter(x64_standard_context* frame);     // #VE
 extern "C" void Control_Protection_cpp_enter(x64_standard_context* frame);
-extern "C" void timer_cpp_enter(x64_standard_context* frame);
+extern "C" [[noreturn]] void timer_cpp_enter(x64_standard_context* frame);
 // 汇编定义的异常处理入口点
 extern "C" char div_by_zero_bare_enter;
 extern "C" char breakpoint_bare_enter;
