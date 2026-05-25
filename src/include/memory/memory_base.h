@@ -10,18 +10,69 @@ enum class page_state_t : uint8_t {
     user_anonymous = 4, 
     dma = 5,
     kernel_pinned = 10,
-    reserved = 63
+    reserved = 15
 };
-
+struct page{
+    page_state_t state;
+};
 /**
  * @brief page struct
  *此数据结构必须进入mem_map才有语义，
  *透明大页支持：若某个页框的page.is_skipped为真则属于透明页，其实际语义被mem_map[ptr]所代表
  */
-struct page{
-    page_state_t state;
+struct page_v2{
+    union {
+        struct {
+            uint64_t state:4;           // page_state_t
+            uint64_t vaddr_compact:52;  // 内核指针 [55:4]，16B 对齐约束
+            uint64_t order:6;           // 页框阶
+            uint64_t reserved:2;
+        } fields;
+        uint64_t raw;
+    };
+
+    // ── 编解码辅助 ──
+    void*   decode_ptr()   const { return (void*)(uint64_t)((this->raw|0xff00000000000000)&(~0xf)); }
+    void    encode_ptr(void* p)   { fields.vaddr_compact = (uint64_t)p >> 4; }
+    uint64_t page_size()   const { return 4096ULL << fields.order; }
+    uint64_t page_count()  const { return 1ULL << fields.order; }
 };
-static_assert(sizeof(page)==1,"struct page size must be 1 bytes");
+
+// ── page_cache_node_t flags 位定义 ──
+constexpr uint64_t PAGE_DIRTY      = 1ULL << 0;   // 写入过，换出前需回写
+constexpr uint64_t PAGE_LOCKED     = 1ULL << 1;   // 锁定，禁止换出
+constexpr uint64_t PAGE_WRITEBACK  = 1ULL << 2;   // 回写 IO 进行中
+constexpr uint64_t PAGE_UPTODATE   = 1ULL << 3;   // 内容有效
+constexpr uint64_t PAGE_SWAPPING   = 1ULL << 4;   // 换入/换出中（防重入）
+constexpr uint64_t PAGE_REFERENCED = 1ULL << 5;   // 最近访问（clock LRU 二次机会）
+constexpr uint64_t PAGE_ACTIVE     = 1ULL << 6;   // 在活跃 LRU 链表
+constexpr uint64_t PAGE_RECLAIM    = 1ULL << 7;   // 正在被回收
+
+/**
+ * @brief 页缓存节点 — 用于 user_file / user_anonymous / kernel_anonymous
+ *
+ * state=user_file:
+ *   vaddr_compact → inode*（文件所有者）
+ *   offset_of_file → file_block_index（文件内页偏移）
+ *
+ * state=user_anonymous:
+ *   vaddr_compact → VM_DESC*（所属 VMA 描述符）
+ *   offset_of_file → vaddr_offset = (vaddr - VM_DESC.start) >> 12
+ *   语义: VM_DESC 中偏移 vaddr_offset 的虚拟区间，映射到本页物理内存。
+ *
+ * 物理地址由本节点在 mem_map 中的索引按页基址推算:
+ *   phyaddr = mem_map_pbase + mem_map_idx * 4096
+ */
+struct page_cache_node_t{
+    page_v2 meta;
+    page_cache_node_t* next;     // LRU 链表后继
+    page_cache_node_t* prev;     // LRU 链表前驱
+    uint64_t flags;              // PAGE_* 掩码
+    uint64_t offset_of_file;     // 文件块索引 / VMA 内偏移
+    uint32_t refcount;           // 引用计数
+    uint32_t map_count;          // PTE 映射数
+};
+static_assert(sizeof(page_cache_node_t) == 48, "page_cache_node_t must be 48 bytes");
 typedef enum :uint32_t{
     EFI_RESERVED_MEMORY_TYPE,
     EFI_LOADER_CODE,
