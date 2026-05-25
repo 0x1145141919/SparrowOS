@@ -217,7 +217,112 @@ mem_map[idx].state = page_state_t::free;
 | 子系统 | 需要的 page 信息 | 提供的 page 信息 |
 |---|---|---|
 | FreePagesAllocator (BCB) | state=free 的页框 | 管理空闲区间 |
-| LRU kthread | page_cache_node_t::next/prev/refcount/flags | 回收候选页 |
 | swap (文件/块设备) | owner(inode*) + offset + dirty | 回写 / 换出 |
 | TLB flush (per-AS IPI) | owner(VM_DESC*) + pgd | 刷新页表 |
 | COW (page fault handler) | map_count | 决定 copy-on-write |
+| LRU kthread | page_cache_node_t 链表 + refcount/flags | 回收候选页到 BCB |
+
+---
+
+## 附录A: LRU 回收草案（2026-05-26）
+
+### A.1 设计目标
+
+- 多级 LRU 链表挂在每个 BCB 上，而非全局单一链表
+- 利用 BCB 的区间锁机制，kswapd 按 BCB 粒度并行回收
+- page 回收后直接归还到所属 BCB，无需跨 BCB 查找
+
+### A.2 BCB 结构扩展
+
+```cpp
+// FreePagesAllocator::BuddyControlBlock 新增字段
+struct BuddyControlBlock {
+    // ... 现有: bitmap / cache / fnd / statistics / lock ...
+
+    // ── LRU 链表 ──
+    page_cache_node_t* lru_active_head;      // 活跃链表
+    page_cache_node_t* lru_inactive_head;    // 非活跃链表
+    uint64_t nr_active;   // 活跃页计数
+    uint64_t nr_inactive; // 非活跃页计数
+};
+```
+
+### A.3 page_cache_node_t 的 LRU 角色
+
+每页的元数据结构 `page_cache_node_t` 自带双向链表节点（next/prev）：
+- state=user_file / user_anonymous → 挂在所属 BCB 的 LRU 链表上
+- `flags & PAGE_ACTIVE` 决定在 active 还是 inactive 链表
+- `flags & PAGE_REFERENCED` 供 clock 算法识别热页
+- `refcount > 0` 表示被引用，不可回收
+- `flags & PAGE_DIRTY` 表示回写 pending
+
+### A.4 kswapd 回收流程（草案）
+
+```
+kswapd kthread:
+    for each BCB in BCBS[]:
+        if !bcb.lock.try_lock():
+            continue                    // 跳过忙 BCB，不阻塞 alloc
+
+        // 阶段1: 旋转 active → inactive
+        scan(bcb.lru_active_head, ratio=NR_ACTIVE/NR_INACTIVE):
+            for each page:
+                if page.flags & PAGE_REFERENCED:
+                    page.flags &= ~PAGE_REFERENCED   // 二次机会
+                    move_to_tail(lru_active)
+                else:
+                    page.flags &= ~PAGE_ACTIVE
+                    list_del(&lru_active)
+                    list_add_tail(&lru_inactive)
+
+        // 阶段2: 回收 inactive
+        scan(bcb.lru_inactive_head, target_pages):
+            for each page:
+                if page.refcount > 0:
+                    continue            // 还在用，跳过
+                if page.flags & PAGE_REFERENCED:
+                    page.flags &= ~PAGE_REFERENCED
+                    move_to_active(page)
+                    continue
+
+                if page.flags & PAGE_DIRTY:
+                    // 需要回写后再回收
+                    submit_writeback(page, page.owner, page.offset_of_file)
+                    page.flags |= PAGE_WRITEBACK
+                    continue
+
+                // 可以回收
+                list_del(page)
+                unmap_page(page)        // 通知所有映射者
+                bcb.free_buddy_way(base, 1 << page.meta.order)
+                nr_inactive--
+
+        bcb.lock.unlock()
+        schedule()                     // 让出，避免饿死 alloc
+```
+
+### A.5 与 BCB 现有机制的衔接
+
+| 操作 | BCB lock | 说明 |
+|---|---|---|
+| alloc | 取锁 → alloc → 解锁 | LRU 不参与分配路径 |
+| free | 取锁 → free_buddy_way → 解锁 | 归还物理页，与 LRU 无关 |
+| kswapd | try_lock | 跳过繁忙 BCB，不阻塞 alloc |
+
+Alloc/free 路径完全不受 LRU 影响。kswapd 只用 `try_lock`，不阻塞正常分配。
+
+### A.6 已知未解决问题
+
+1. **跨 BCB 页面**：一个文件 inode 的缓存页可能散落在多个 BCB 上。
+   kswapd 在一个 BCB 里回收其所属页，其他 BCB 里的同文件页不受影响。
+   这是按物理分区回收的固有特性，不是 bug。
+
+2. **PAGE_REFERENCED 谁设**：当前没有硬件访问位软更新。
+   方案一：在缺页/扫描路径中由软件置位。
+   方案二：kswapd 进入 inactive 扫描时设置 accessed 位，等待下次缺页指示。
+
+3. **kswapd 唤醒条件**：当 free_pages 低于某阈值（watermark），或当
+   某个 BCB 的 free 页低于 min 阈值时唤醒。具体阈值待定。
+
+4. **multi-kswapd**：多核并行回收不同 BCB 是自然的，但同一个 BCB 不可并行。
+   初期单 kswapd kthread 即可。
