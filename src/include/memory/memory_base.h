@@ -60,8 +60,9 @@ constexpr uint64_t PAGE_RECLAIM    = 1ULL << 7;   // 正在被回收
  *   offset_of_file → vaddr_offset = (vaddr - VM_DESC.start) >> 12
  *   语义: VM_DESC 中偏移 vaddr_offset 的虚拟区间，映射到本页物理内存。
  *
- * 物理地址由本节点在 mem_map 中的索引按页基址推算:
- *   phyaddr = mem_map_pbase + mem_map_idx * 4096
+ * 物理地址由 all_pages_arr::phyinterval_t 链表推算:
+ *   phyaddr = interval.base + (idx - interval.baseidx_in_memmap) * 4096
+ *   逆向: idx = interval.baseidx_in_memmap + (phyaddr - interval.base) / 4096
  */
 struct page_cache_node_t{
     page_v2 meta;                //  8B, [0]

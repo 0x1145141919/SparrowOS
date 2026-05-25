@@ -145,10 +145,28 @@ vaddr_compact → VM_DESC*  （所属 VMA 描述符）
 offset_of_file → vaddr_offset = (vaddr - VM_DESC.start) >> 12
 ```
 
-物理地址由本节点在 mem_map 中的索引推算：
+物理地址通过 all_pages_arr 的 phyinterval_t 链表推算（见 all_pages_arr.h）：
 
 ```
-phyaddr = mem_map_pbase + mem_map_idx * 4096
+mem_map 不是按 PFN 线性索引的。它由 phyinterval_t 描述若干个自由物理内存区间。
+每个区间记录:
+  base              — 物理基址
+  baseidx_in_memmap — mem_map 数组中的基索引
+  numof4kbpgs       — 区间内的 4KB 页数
+
+mem_map[idx] → phyaddr:
+    for each interval:
+        if idx ∈ [interval.baseidx_in_memmap, interval.baseidx_in_memmap + interval.numof4kbpgs):
+            offset = idx - interval.baseidx_in_memmap
+            phyaddr = interval.base + offset * 4096
+            break
+
+phyaddr → mem_map[idx]:
+    for each interval:
+        if phyaddr ∈ [interval.base, interval.base + interval.numof4kbpgs * 4096):
+            offset = (phyaddr - interval.base) / 4096
+            idx = interval.baseidx_in_memmap + offset
+            break
 ```
 
 VM_DESC 中偏移 `vaddr_offset` 的虚拟区间，映射到本页的物理内存。
