@@ -64,15 +64,16 @@ constexpr uint64_t PAGE_RECLAIM    = 1ULL << 7;   // 正在被回收
  *   phyaddr = mem_map_pbase + mem_map_idx * 4096
  */
 struct page_cache_node_t{
-    page_v2 meta;
-    page_cache_node_t* next;     // LRU 链表后继
-    page_cache_node_t* prev;     // LRU 链表前驱
-    uint64_t flags;              // PAGE_* 掩码
-    uint64_t offset_of_file;     // 文件块索引 / VMA 内偏移
-    uint32_t refcount;           // 引用计数
-    uint32_t map_count;          // PTE 映射数
+    page_v2 meta;                //  8B, [0]
+    page_cache_node_t* next;     //  8B, LRU 链表后继
+    page_cache_node_t* prev;     //  8B, LRU 链表前驱
+    uint64_t flags;              //  8B, PAGE_* 掩码
+    uint64_t offset_of_file;     //  8B, 文件块索引 / VMA 内偏移
+    uint32_t refcount;           //  4B, 引用计数
+    uint32_t map_count;          //  4B, PTE 映射数
+    uint64_t reserved[2];        // 16B, 对齐到 64B，供 future 扩展
 };
-static_assert(sizeof(page_cache_node_t) == 48, "page_cache_node_t must be 48 bytes");
+static_assert(sizeof(page_cache_node_t) == 64, "page_cache_node_t must be 64 bytes");
 typedef enum :uint32_t{
     EFI_RESERVED_MEMORY_TYPE,
     EFI_LOADER_CODE,
