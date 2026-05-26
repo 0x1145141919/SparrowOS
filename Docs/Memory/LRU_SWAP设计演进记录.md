@@ -122,17 +122,14 @@ SparrowOS 因 page_cache_node_t 制约，槽粒度必须是 32K。
                 └─ ...
 ```
 
-### 3.3 bitmap 同步策略
+### 3.3 bitmap 纯内存，不入盘
 
-| 策略 | 可靠性 | 性能 |
-|------|--------|------|
-| alloc/free 时同步写回 bitmap | 高 | 每次 swap 多一次 NVMe 写 (~10us, 可接受) |
-| swapoff 时一次性写回 | 正常关机安全，断电丢 | 最快 |
-| bitmap_dirty 标记 + 异步刷回 | 折中 | 折中 |
+swap 是内存的延伸，断电即废。bitmap 只存在于运行时：
+- swapon: `kzalloc(32KB)` 全零初始化，所有槽空闲
+- swapoff: `kfree(bitmap)`
+- 不读写磁盘，无同步策略，无 dirty 标记
 
-**初期决策**：使用 bitmap_dirty 标记 + allocate 时选择性写回、swapoff 时强制写回。
-断电场景下 bitmap 脏 → 下一次 swapon 时 bitmap 可能不一致，但 SparrowOS
-不保证掉电恢复，可接受。
+与 Linux 的 `swap_map` swapon 时清零是同一道理。
 
 ### 3.4 接口设计（草案）
 
@@ -141,8 +138,7 @@ SparrowOS 因 page_cache_node_t 制约，槽粒度必须是 32K。
 struct swap_device {
     struct block_dev *bdev;      // 块设备
     uint64_t          slot_count; // 32K 槽总数
-    uint8_t          *bitmap;     // 32KB 比特图（内存驻留）
-    bool              bitmap_dirty;
+    uint8_t          *bitmap;     // 32KB 比特图（内存驻留，swapon kzalloc，swapoff kfree）
     spinlock_cpp_t    lock;
     // ... LRU 链表头 ...
 };
@@ -351,12 +347,14 @@ shootdown 代替（安全但过度杀伤）。
    方案一：在缺页/扫描路径中由软件置位。
    方案二：kswapd 进入 inactive 扫描时设置 accessed 位，等待下次缺页指示。
 
-5. **bitmap 同步可靠性**：断电后 bitmap 可能不干净，下一次 swapon 时
-   是否需要全量扫描数据区重建 bitmap？初期依赖 SparrowOS 不做掉电恢复
-   的前提，跳过此问题。
+5. ~~bitmap 同步可靠性~~：已解决。bitmap 是纯运行时结构，swapon 时自动清零，
+   不存在
 
 6. **swap 设备热插拔**：swapoff 时需确认所有关联 page_cache_node_t 已释放。
    设计还未考虑设备热移除路径。
+
+7. **hibernation/resume**：断电后 swap 数据无效，bitmap 不持久不是问题。
+   但未来若需 suspend-to-disk，则 bitmap + 元数据都需持久化——暂不考虑。
 
 ---
 
