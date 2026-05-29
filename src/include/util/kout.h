@@ -50,7 +50,7 @@ class tmp_buff{
             char character;
             KURD_t kurd;
         }data;
-        entry():entry_type(entry_type_t::character),num_type(num_format_t::u8),num_sys(numer_system_select::DEC),str_len(0),data(0){
+        entry():entry_type(entry_type_t::character),num_type(num_format_t::u8),num_sys(numer_system_select::DEC),str_len(0),data{}{
         }
     };
     static constexpr uint16_t entry_max=64;

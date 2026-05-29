@@ -6,8 +6,7 @@
 // 在用户态运行，用 malloc 模拟 bitmap 区域
 // ════════════════════════════════════════════════════════════════
 
-#include "util/BuddyControlBlock_foundation.h"
-#include "util/kout.h"
+#include "util/BCB_fnd_DeepFirst.h"
 #include <vector>
 #include <random>
 #include <cstdlib>
@@ -342,7 +341,7 @@ int main() {
     std::memset(bitmap_mem, 0, bitmap_bytes);
     printf("Bitmap: %lu bytes at %p\n", (unsigned long)bitmap_bytes, bitmap_mem);
 
-    BuddyControlBlock_foundation fnd;
+    BCB_fnd_DeepFirst fnd;
     fnd.init((uint64_t)bitmap_mem, BCB_ORDER);
     printf("Foundation initialized\n\n");
 

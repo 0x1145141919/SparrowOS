@@ -1,6 +1,6 @@
 #pragma once
 #include "stdint.h"
-#include "util/BuddyControlBlock_foundation.h"
+#include "util/BCB_fnd_ShallowFirst.h"
 #include "memmodule_err_definitions.h"
 #include "abi/boot.h"
 #include <util/lock.h>
@@ -146,7 +146,7 @@ private:
 
     private:
         friend class kpoolmemmgr_t;
-        BuddyControlBlock_foundation fnd;
+        BCB_fnd_ShallowFirst fnd;
         BuddyCache      caches_[MAX_ORDER + 1];
         vaddr_t         vbase_  = 0;
         phyaddr_t       data_pbase = 0;
