@@ -666,7 +666,6 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         vaddr_t gs_base  = iv->arch_info.conjunc_GSs.vbase();
         wrmsr_func(msr::syscall::IA32_GS_BASE,gs_base);//提前给bsp加载好gs
         wrmsr_func(msr::syscall::IA32_KERNEL_GS_BASE,gs_base);//提前给bsp加载好gs
-        vaddr_t hw_base  = iv->arch_info.hdstacks_interval_vbase;
         uint32_t  pcount   = h->logical_processor_count;
         constexpr TSSDescriptorEntry ktss = {
             .limit = sizeof(TSSentry), .base0 = 0, .base1 = 0,

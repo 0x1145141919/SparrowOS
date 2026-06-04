@@ -287,6 +287,7 @@ extern "C" void i8042_char_wait_event(uint64_t last_publish_seq)
     if(i8042_char_buffer_subscriber_queue == nullptr){
         return;
     }
+    i8042_char_buffer_subscriber_queue->set_insert_front(true);
     block_if_equal(
         i8042_char_buffer_subscriber_queue,
         (uint64_t*)&i8042_char_publish_seq_block_token,

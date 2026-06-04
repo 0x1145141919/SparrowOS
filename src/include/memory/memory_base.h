@@ -72,7 +72,8 @@ struct page_cache_node_t{
     uint64_t offset_of_file;     //  8B, 文件块索引 / VMA 内偏移
     uint32_t refcount;           //  4B, 引用计数
     uint32_t map_count;          //  4B, PTE 映射数
-    uint64_t reserved[2];        // 16B, 对齐到 64B，供 future 扩展
+    spinlock_cpp_t spinlock;
+    uint8_t reserved[15];
 };
 static_assert(sizeof(page_cache_node_t) == 64, "page_cache_node_t must be 64 bytes");
 typedef enum :uint32_t{

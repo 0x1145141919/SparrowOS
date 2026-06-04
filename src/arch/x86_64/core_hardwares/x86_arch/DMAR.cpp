@@ -103,7 +103,8 @@ int dmar::Init(acpi::DMAR_head *head)
         return OS_BAD_FUNCTION;
     }
     KURD_t iommu_vec_kurd;
-    dmar::iommu_fault_alloced_vector=out_interrupt_vec_alloc(iommu_fault_cpp_enter,fast_get_processor_id(),&iommu_vec_kurd);
+    interrupt_token_t token = { 0, 0, iommu_fault_cpp_enter };
+    dmar::iommu_fault_alloced_vector=out_interrupt_vec_alloc(&token,fast_get_processor_id(),&iommu_vec_kurd);
     if(dmar::iommu_fault_alloced_vector==0xff||error_kurd(iommu_vec_kurd)){
         Panic::panic(default_panic_behaviors_flags,"DMAR:iommu vec regist fault",
             nullptr,

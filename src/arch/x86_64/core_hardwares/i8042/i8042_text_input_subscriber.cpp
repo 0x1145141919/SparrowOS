@@ -372,6 +372,7 @@ extern "C" uint64_t text_input_get_publish_seq()
 extern "C" void text_input_wait_event(uint64_t last_publish_seq)
 {
     if (!text_input_subscribers_queue) return;
+    text_input_subscribers_queue->set_insert_front(true);
     block_if_equal(
         text_input_subscribers_queue,
         (uint64_t*)&text_input_publish_seq_block_token,

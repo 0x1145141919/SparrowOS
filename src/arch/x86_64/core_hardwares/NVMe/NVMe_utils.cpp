@@ -61,16 +61,14 @@ KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
     KURD_t kurd;
     uint8_t vec;
     if(msix_vec == 0){
-        // 使用reinterpret_cast转换函数指针类型以匹配hard_interrupt_func_t签名
-        hard_interrupt_func_t handler = reinterpret_cast<hard_interrupt_func_t>(ADMIN_CQ_handler);
-        vec = out_interrupt_vec_alloc(handler, processor_id, &kurd);
+        interrupt_token_t token = { 0, 0, ADMIN_CQ_handler };
+        vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
         if(error_kurd(kurd))return kurd;
         ADmin_queue_belonged_processor=processor_id;
         ADmin_queue_vec=vec;
     }else{
-        // 使用reinterpret_cast转换函数指针类型以匹配hard_interrupt_func_t签名
-        hard_interrupt_func_t handler = reinterpret_cast<hard_interrupt_func_t>(IO_CQ_handler);
-        vec = out_interrupt_vec_alloc(handler, processor_id, &kurd);
+        interrupt_token_t token = { 0, 0, IO_CQ_handler };
+        vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
         if(error_kurd(kurd))return kurd;
         IO_CQ_vecs[processor_id]=vec;
     }

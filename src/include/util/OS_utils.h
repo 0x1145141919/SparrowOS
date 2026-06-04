@@ -139,6 +139,9 @@ using i32ka = atomic_scalar_t<int32_t>;
 using u32ka = atomic_scalar_t<uint32_t>;
 using i64ka = atomic_scalar_t<int64_t>;
 using u64ka = atomic_scalar_t<uint64_t>;
+
+
+
 #endif
 
 #ifdef __cplusplus
@@ -194,6 +197,9 @@ uint64_t min(uint64_t a, uint64_t b);
 uint64_t max(uint64_t a, uint64_t b);
 uint8_t log2_up(uint64_t value);
 uint64_t alignup_and_shift_right(uint64_t value, uint8_t align_log2);
+bool cmpxchg16(__uint128_t* ptr, __uint128_t*expected, __uint128_t*desiered,bool weak,
+                                 int success_memorder, 
+                                 int failure_memorder);
 #ifdef USER_MODE
 // 将内存描述符表从文本格式转换为gBaseMemMgr.Init函数所需的格式
 void print_memory_descriptor_for_gbasememmgr(const char* input_file_path);

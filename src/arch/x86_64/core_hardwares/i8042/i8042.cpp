@@ -314,6 +314,7 @@ extern "C" void i8042_wait_event(uint64_t last_publish_seq)
     if(i8042_analyzed_buffer_subscriber_queue==nullptr){
         return;
     }
+    i8042_analyzed_buffer_subscriber_queue->set_insert_front(true);
     block_if_equal(
         i8042_analyzed_buffer_subscriber_queue,
         (uint64_t*)&i8042_event_publish_seq_block_token,
@@ -346,7 +347,8 @@ void i8042_interrupt_enable(){
     if(i8042_event_ring_readonly_view == nullptr){
         i8042_event_ring_readonly_view = i8042_event_ring;
     }
-    uint8_t vec= out_interrupt_vec_alloc(i8042_cpp_enter, fast_get_processor_id(), &ring_phy_kurd);
+    interrupt_token_t token = { 0, 0, i8042_cpp_enter };
+    uint8_t vec= out_interrupt_vec_alloc(&token, fast_get_processor_id(), &ring_phy_kurd);
     if(vec==0xff||error_kurd(ring_phy_kurd)){
         //panic
     }

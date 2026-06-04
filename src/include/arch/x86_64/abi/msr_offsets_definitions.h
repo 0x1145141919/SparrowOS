@@ -163,6 +163,29 @@ namespace msr {
         constexpr uint32_t IA32_SGXLEPUBKEYHASH2 = 0x8E;    // SGX Launch Enclave Public Key Hash 2 // SGX启动飞地公钥哈希2
         constexpr uint32_t IA32_SGXLEPUBKEYHASH3 = 0x8F;    // SGX Launch Enclave Public Key Hash 3 // SGX启动飞地公钥哈希3
     }
+    // FRED 相关寄存器 (Intel SDM Vol.3 §8.2.3)
+    namespace fred {
+        constexpr uint32_t IA32_FRED_RSP0    = 0x1CC;  // FRED Regular Stack Pointer 0
+        constexpr uint32_t IA32_FRED_RSP1    = 0x1CD;  // FRED Regular Stack Pointer 1
+        constexpr uint32_t IA32_FRED_RSP2    = 0x1CE;  // FRED Regular Stack Pointer 2
+        constexpr uint32_t IA32_FRED_RSP3    = 0x1CF;  // FRED Regular Stack Pointer 3
+        constexpr uint32_t IA32_FRED_STKLVLS = 0x1D0;  // FRED Stack Levels (vec 0-31 per-vector stack level)
+        constexpr uint32_t IA32_FRED_SSP1    = 0x1D1;  // FRED Shadow-Stack Pointer 1
+        constexpr uint32_t IA32_FRED_SSP2    = 0x1D2;  // FRED Shadow-Stack Pointer 2
+        constexpr uint32_t IA32_FRED_SSP3    = 0x1D3;  // FRED Shadow-Stack Pointer 3
+        constexpr uint32_t IA32_FRED_CONFIG  = 0x1D4;  // FRED Configuration Register
+
+        // IA32_FRED_CONFIG 位域
+        namespace config {
+            constexpr uint64_t CSL_MASK          = 0x003ULL;  // bits[1:0]   — Current Stack Level
+            constexpr uint64_t RSP_DEC_STEP_MASK = 0x1C0ULL;  // bits[8:6]   — RSP decrement multiple of 64
+            constexpr uint64_t INT_STKLVL_MASK   = 0x600ULL;  // bits[10:9]  — maskable interrupt stack level
+            constexpr uint64_t ENTRY_PAGE_MASK   = ~0xFFFULL; // bits[63:12] — FRED entry point page base
+        }
+    }
+    // IA32_PL0_SSP — aka IA32_FRED_SSP0 (existing CET MSR)
+    constexpr uint32_t IA32_PL0_SSP = 0x6A4;
+
     namespace timer{
         constexpr uint32_t IA32_TSC_DEADLINE = 0x6E0; 
     };
