@@ -199,16 +199,13 @@ SECTION .ap_bootstrap_stack
 align 0x1000
 times 2048 dq 0
 init_stack_end:                         ; 为AP初始栈分配空间
-SECTION .data
-bsp_init_gs:
-    times 64 dq 0
 SECTION .text
 bits 64
 global secure_hlt
 global ap_final_work
 extern get_current_processor_rsp0
 extern wrmsr_func
-extern exceptions_init
+extern vec_demux_init
 
 _kernel_Init:
     mov r15, rdi
@@ -216,7 +213,7 @@ _kernel_Init:
     mov rdi, 0x277
     mov rsi, 0x0407050600070106
     call rax
-    mov rax, exceptions_init
+    mov rax, vec_demux_init
     call rax
     mov rax, global_idtr
     lidt [rax]
@@ -228,10 +225,6 @@ _kernel_Init:
     or rax, (1<<16)
     mov cr0, rax
     mov rax, ap_init_patch_idt_pe
-    call rax
-    mov rax, wrmsr_func
-    mov rdi, 0xC0000101
-    mov rsi, bsp_init_gs
     call rax
     mov rax, kernel_start
     mov rdi, r15

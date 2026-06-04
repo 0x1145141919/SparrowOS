@@ -48,3 +48,4 @@ void tsc_regist()
     bsp_kout << "  lapic_fs_per_cycle: " << (uint64_t)complex->lapic_fs_per_cycle << "\n";
     bsp_kout.shift_dec();
 }
+void 

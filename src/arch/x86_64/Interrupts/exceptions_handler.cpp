@@ -268,11 +268,93 @@ void suprious_interrupt_cpp_enter(x64_standard_context *frame)
 {
     bsp_kout<<"[suprious_interrupt_cpp_enter] fake interrupt detected on processor "<<fast_get_processor_id()<<kendl;
 }
-extern "C" void fred_user_cpp_enter(x64_fred_context*context){
+extern void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec);
+extern void fred_vec_demux_soft_dispatch(x64_standard_context* frame, uint8_t vec);
 
+// ── FRED 异常路由器 — 根据 x64_fred_context 分发异常 ──
+// 直接接收 FRED 原始帧，内部提取标准上下文 + vec + event_data。
+// 根据 SDM §8.3.2：
+//   - #PF:  event_data = faulting linear address (同 CR2)
+//   - #DB:  event_data = debug 异常性质
+//   - #NM:  event_data = IA32_XFD_ERR (若因 XFD 触发)
+//   - 其他: event_data = 0 (FRED 不推 sep 错误码)
+static void fred_exceptions_router(x64_fred_context* context)
+{
+    x64_standard_context frame;
+    filt_frame(&frame, context);
+    uint8_t vec = context->fred.vec;
+    uint64_t event_data = context->fred.event_data;
+
+    switch (vec) {
+    case x86_exceptions::DIVIDE_ERROR:
+        div_by_zero_cpp_enter(&frame); return;
+    case x86_exceptions::DEBUG:
+        debug_cpp_enter(&frame); return;
+    case x86_exceptions::BREAKPOINT:
+        breakpoint_cpp_enter(&frame); return;
+    case x86_exceptions::OVERFLOW:
+        overflow_cpp_enter(&frame); return;
+    case x86_exceptions::INVALID_OPCODE:
+        invalid_opcode_cpp_enter(&frame); return;
+    case x86_exceptions::DOUBLE_FAULT:
+        double_fault_handler(&frame, context->fred.errcode); return;
+    case x86_exceptions::INVALID_TSS:
+        invalid_tss_handler(&frame, context->fred.errcode); return;
+    case x86_exceptions::GENERAL_PROTECTION_FAULT:
+        general_protection_handler(&frame, context->fred.errcode); return;
+    case x86_exceptions::PAGE_FAULT:
+        // event_data = 导致 #PF 的线性地址 (SDM §8.3.2)
+        page_fault_handler(&frame, context->fred.errcode, (vaddr_t)event_data); return;
+    case x86_exceptions::MACHINE_CHECK:
+        machine_check_cpp_enter(&frame); return;
+    case x86_exceptions::SIMD_FLOATING_POINT_EXCEPTION:
+        simd_floating_point_cpp_enter(&frame); return;
+    case x86_exceptions::VIRTUALIZATION_EXCEPTION:
+        virtualization_cpp_enter(&frame); return;
+    default:
+        break;
+    }
+}
+
+void fred_common_enter(x64_fred_context* context)
+{
+    switch (context->fred.type) {
+    case 0:   // 外部中断
+    {
+        x64_standard_context frame;
+        filt_frame(&frame, context);
+        fred_vec_demux_hw_dispatch(&frame, context->fred.vec);
+        return;
+    }
+    case 2:   // NMI
+    {
+        x64_standard_context frame;
+        filt_frame(&frame, context);
+        nmi_cpp_enter(&frame);
+        return;
+    }
+    case 3:   // 异常 — 内部会做 filt_frame
+        fred_exceptions_router(context);
+        return;
+    case 4:   // 软中断
+    {
+        x64_standard_context frame;
+        filt_frame(&frame, context);
+        fred_vec_demux_soft_dispatch(&frame, context->fred.vec);
+        return;
+    }
+    case 7:   // SYSCALL/SYSENTER
+        // TODO: 用户态系统调用入口
+        return;
+    default:
+        return;
+    }
+}
+extern "C" void fred_user_cpp_enter(x64_fred_context*context){
+    fred_common_enter(context);
 }
 extern "C" void fred_supervisor_cpp_entry(x64_fred_context*context){
-    
+    fred_common_enter(context);
 }
 
 void filt_frame(x64_standard_context*frame, x64_errcode_exception_frame*raw)

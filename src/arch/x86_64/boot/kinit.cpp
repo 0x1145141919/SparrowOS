@@ -33,6 +33,50 @@
 #include "arch/x86_64/boot.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "KImage_Introspection.h"
+
+/* === Runtime environment detection === */
+enum runtime_env : uint8_t {
+    ENV_BARE_METAL = 0,
+    ENV_KVM        = 1,
+    ENV_TCG        = 2,
+};
+
+runtime_env g_env;
+
+/*
+ * Sole criterion: CPUID leaf 0x40000000 (hypervisor signature).
+ *   "KVMKVMKVM"    → KVM
+ *   "TCGTCGTCGTCG" → TCG
+ *   anything else   → bare metal
+ *
+ * WAITPKG etc. are pure capability probes, NOT environment indicators.
+ */
+static runtime_env probe_env(void)
+{
+    cpuid_tmp cpuid(0x40000000, 0);
+
+    /*
+     * All four registers are architecture-defined for leaf 0x40000000.
+     * Match the full quad to avoid false positives from leaf aliasing.
+     */
+
+    /* KVM: "KVMKVMKVM\0\0\0"  EAX=0x40000001 */
+    if (cpuid.eax == 0x40000001 &&
+        cpuid.ebx == 0x4B4D564B &&
+        cpuid.ecx == 0x564B4D56 &&
+        cpuid.edx == 0x0000004D)
+        return ENV_KVM;
+
+    /* TCG: "TCGTCGTCGTCG"  EAX=0x40000001 */
+    if (cpuid.eax == 0x40000001 &&
+        cpuid.ebx == 0x54474354 &&
+        cpuid.ecx == 0x43544743 &&
+        cpuid.edx == 0x47435447)
+        return ENV_TCG;
+
+    /* No known hypervisor signature → bare metal */
+    return ENV_BARE_METAL;
+}
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
 // 定义C++运行时需要的符号
@@ -59,11 +103,16 @@ uint32_t efi_map_ver;
 void ipi_test(){
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<kendl;
-    KURD_t kurd=KURD_t();
     x2apic::x2apic_driver::write_eoi();
-    ktime::heart_beat_alarm::set_clock_by_offset(20000);
     global_schedulers[self_processor_id].sched();
     asm volatile("hlt");
+}
+void ipi_start_sched(x64_standard_context* ctx){
+    ctx=nullptr;
+    uint32_t self_processor_id=fast_get_processor_id();
+    bsp_kout<<"processor id "<< self_processor_id<<" start scheduling"<<kendl;
+    x2apic::x2apic_driver::write_eoi();
+    global_schedulers[self_processor_id].sched();
 }
 
 void* Collatz_kthread(void* init_value){
@@ -122,13 +171,13 @@ void create_first_kthread(){
     KURD_t kurd=KURD_t();
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
     per_processor_scheduler&sc=global_schedulers[0];
-    ktime::heart_beat_alarm::set_clock_by_offset(20000);
     sc.sched();
 }
 loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
 XSDT_Table *XSDT;
 void very_early_init(init_to_kernel_header* transfer){
+    g_env = probe_env();
     GlobalKernelStatus=kernel_state::EARLY_BOOT;
     kpoolmemmgr_t::Init();
     kIMG_self_window=transfer->kIMG_self_window;
@@ -161,6 +210,7 @@ void very_early_init(init_to_kernel_header* transfer){
     hw_stacks.ppn=arch->hdstacks_interval_pbase>>12;
     hw_stacks.npages=arch->hdstacks_4kbpgs_count;
 }
+extern "C" void fred_enable(gs_complex_t*gs_complex);
 extern "C" void kernel_start(init_to_kernel_header* transfer) 
 {   
     very_early_init(transfer);
@@ -196,7 +246,9 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
         return;
     }
     gAcpiVaddrSapceMgr.Init(g_xsdt_base);
-    bsp_init_kurd=idt_vec_dispatch_mgr::Init();
+    if(fred_support_catch_bit){
+        fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
+    }
     x2apic_core_init();
     ktime::heart_beat_alarm::processor_regist();
     bsp_kout<<now<<"BSP online"<<kendl;
@@ -224,6 +276,9 @@ extern "C" void ap_init()
 {
     asm volatile("sfence");
     ktime::heart_beat_alarm::processor_regist();
+    if(fred_support_catch_bit){
+        fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
+    }
     new(global_schedulers+fast_get_processor_id()) per_processor_scheduler;
     init_finish_checkpoint.success_word=~query_x2apicid();
     asm volatile("sfence");

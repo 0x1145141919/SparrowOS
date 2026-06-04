@@ -6,6 +6,10 @@
 #include "abi/arch_code.h"
 extern void (*global_ipi_handler)();
 typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
+struct ipi_descrioptor_t{
+    soft_interrupt_func_t func;
+    bool is_no_return;
+};
 constexpr uint64_t TOKEN_FLAG_MASK_TOKEN_SCHEDULE=0x1;
 struct interrupt_token_t{
     uint64_t flags;
@@ -33,7 +37,7 @@ extern "C" void simd_floating_point_cpp_enter(x64_standard_context* frame);    /
 extern "C" void virtualization_cpp_enter(x64_standard_context* frame);     // #VE
 extern "C" void Control_Protection_cpp_enter(x64_standard_context* frame);
 extern "C" [[noreturn]] void timer_cpp_enter(x64_standard_context* frame);
-// 汇编定义的异常处理入口点
+// 汇编定义的异常处理入口点typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
 extern "C" char div_by_zero_bare_enter;
 extern "C" char breakpoint_bare_enter;
 extern "C" char nmi_bare_enter;

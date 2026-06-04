@@ -127,7 +127,8 @@ void x2apic::lapic_timer_one_shot::processor_regist()
 void x2apic::lapic_timer_tsc_ddline::processor_regist()
 {
     KURD_t kurd;
-    uint8_t vec = out_interrupt_vec_alloc(timer_cpp_enter, fast_get_processor_id(), &kurd);
+    interrupt_token_t token = { TOKEN_FLAG_MASK_TOKEN_SCHEDULE, 0, timer_cpp_enter };
+    uint8_t vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
     if (vec == 0xff||error_kurd(kurd)) {
         panic_context::x64_context ctx = {};
         panic_info_inshort info = { .is_bug = 1, .is_policy = 0, .is_hw_fault = 0,
@@ -163,7 +164,8 @@ void x2apic::lapic_error_handler::handler(x64_standard_context*frame,uint8_t vec
 void x2apic::lapic_error_handler::processor_regist()
 {
     KURD_t kurd;
-    uint8_t vec = out_interrupt_vec_alloc(lapic_error_handler::handler,
+    interrupt_token_t token = { 0, 0, lapic_error_handler::handler };
+    uint8_t vec = out_interrupt_vec_alloc(&token,
                                           fast_get_processor_id(), &kurd);
     if (vec == 0xff||error_kurd(kurd)) {
         panic_context::x64_context ctx = {};
