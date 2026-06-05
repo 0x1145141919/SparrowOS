@@ -87,20 +87,5 @@ void gs_u64_write(uint32_t index, uint64_t value)
     );
 }
 
-uint32_t fast_get_processor_id()
-{
-#if defined(USER_MODE)
-    return sched_getcpu();
-#elif defined(KERNEL_MODE)
-    uint32_t processor_id;
-    asm volatile(
-        "movl %%gs:%P1, %0"    // 从GS段选择器的指定偏移读取
-        : "=r" (processor_id)         // 输出操作数
-        : "i" (PROCESSOR_ID_GS_INDEX*8)  // 输入操作数，PROCESSOR_ID_GS_OFFSET通常是常数
-    );
-    return processor_id;
-#else
-    // Default fallback for unknown mode
-    return 0;
-#endif
-}
+// fast_get_processor_id / fast_get_x2apic_id 已移至
+// src/arch/x86_64/Processor/fast_get_ids.asm (NASM 裸汇编)

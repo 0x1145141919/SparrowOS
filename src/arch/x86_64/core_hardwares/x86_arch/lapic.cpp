@@ -113,7 +113,7 @@ void x2apic::lapic_timer_one_shot::processor_regist()
     x2apic_driver::raw_config_timer(timer_config);
     x2apic_driver::raw_config_timer_divider(devide_config);
     x2apic_driver::raw_config_timer_init_count(0xFFFFFFFF);
-    ktime::microsecond_polling_delay_by_hpet(10000);//这里是刻意假设不会把~0跑光
+    ktime::microsecond_polling(10000);//这里是刻意假设不会把~0跑光
     uint64_t current=x2apic_driver::get_timer_current_count();
     time_complex*complex=(time_complex*)read_gs_u64(TIME_COMPLEX_GS_INDEX);
     if(complex==nullptr){

@@ -4,6 +4,8 @@ set(Processor_SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/APs_bringup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/fixed_interrupt_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime_processor_regist.asm
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmpxchg16b.asm
+    ${CMAKE_CURRENT_SOURCE_DIR}/fast_get_ids.asm
     ${CMAKE_CURRENT_SOURCE_DIR}/gs_complex_load_gdt_tss.cpp
 )
 

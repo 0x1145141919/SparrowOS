@@ -10,14 +10,19 @@
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 #include "panic.h"
+#include "ktime.h"
+#include "util/lock.h"
+#include "exec_env_detect.h"
 bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复器 置函数)中bsp测量是否支持fred,若支持则此bit置1,并且ap直接根据这个bit决定是否初始化fred。
 logical_idt template_idt[256];
 IDTEntry global_idt[256];
 soft_interrupt_func_t soft_interrupt_functions[256];
-ipi_descrioptor_t ipi_descrioptors[256];
 extern void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec);
 extern uint32_t logical_processor_count;
 extern vm_interval conjucnt_GSs;
+
+// ── cmpxchg16b 原子 16B CAS（实现在 Processor/cmpxchg16b.asm） ─────
+extern "C" bool cmpxchg16b(void* ptr, void* expected, const void* desired);
 
 static spinlock_cpp_t dispatch_lock;
 
@@ -218,14 +223,6 @@ void vec_demux::real_init()
     soft_interrupt_functions[x86_softinterrupt_abi::ASM_PANIC]    = &asm_panic_cpp_enter;
     soft_interrupt_functions[x86_softinterrupt_abi::KTHREAD_CALL] = &kthread_call_cpp_enter;
     soft_interrupt_functions[x86_softinterrupt_abi::USER_ABI_ENTER] = &user_abi_cpp_enter;
-    soft_interrupt_functions[x86_softinterrupt_abi::SUPRIOUS]     = &suprious_interrupt_cpp_enter;
-
-    /* ── 初始化 IPI 描述符表（占位，由 IPI 子系统后续填充 func） ── */
-    ipi_descrioptors[runaway_ipi_vec::START_SCHED] = { .func = nullptr, .is_no_return = true };
-    ipi_descrioptors[runaway_ipi_vec::RESCHEDDUE]  = { .func = nullptr, .is_no_return = true };
-    ipi_descrioptors[runaway_ipi_vec::IPI_HALT]    = { .func = nullptr, .is_no_return = true };
-    ipi_descrioptors[return_ipi_vec::GLOBAL_TLB]   = { .func = nullptr, .is_no_return = false };
-    ipi_descrioptors[return_ipi_vec::LOCAL_TLB]    = { .func = nullptr, .is_no_return = false };
 
     bsp_kout << now << "[vec_demux] real_init: vectors 32~255 ready" << kendl;
 }
@@ -275,7 +272,7 @@ uint8_t vec_demux::alloc_vec(interrupt_token_t* token,
     uint16_t vec = 32;
     for (; vec <= 255; vec++) {
         if (soft_interrupt_functions[vec] != nullptr) continue;
-        if (vec >= return_ipi_vec::LOCAL_TLB && vec <= runaway_ipi_vec::START_SCHED) continue;
+        if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
         if (slice[vec].func == nullptr) break;
     }
     if (vec > 255) {
@@ -405,7 +402,7 @@ uint8_t vec_demux::alloc_vec_by_apicid(interrupt_token_t *token, uint32_t x2_api
     uint16_t vec = 32;
     for (; vec <= 255; vec++) {
         if (soft_interrupt_functions[vec] != nullptr) continue;
-        if (vec >= return_ipi_vec::LOCAL_TLB && vec <= runaway_ipi_vec::START_SCHED) continue;
+        if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
         if (slice[vec].func == nullptr) break;
     }
     if (vec > 255) {
@@ -496,29 +493,53 @@ extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* raw_frame)
         soft_interrupt_functions[vec](&ctx);
         asm volatile("ud2");   // 软中断必须不返回
     }
-
+    gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
+    __uint128_t*local_ipi_complex = (__uint128_t*)&self->local_ipi_complex;
+    struct local_ipi_complex_fnbox_t{
+        void*(*func)(void*);
+        void* arg;
+    };
+    
+    __uint128_t fnbox_copy=*local_ipi_complex;
     /* ── 2. 系统 IPI 表 (全局, LAPIC ICR) ── */
-    if (ipi_descrioptors[vec].func) {
-        ipi_descrioptors[vec].func(&ctx);
-        standard_to_frame(raw_frame, &ctx);
-        x2apic::x2apic_driver::write_eoi();
-        if (ipi_descrioptors[vec].is_no_return) {
+    switch(vec){
+        case SUPRIOUS_INTERRUPT:{
+            bsp_kout << now << "[vec_demux] SUPRIOUS on CPU " << pid << kendl;
+            return;
+        }
+        case ipi_vecs::IPI_HALT:{
+            asm volatile("cli;hlt");
+            __builtin_unreachable();
+        }
+        case ipi_vecs::IPI_RETURNABLE:{
+            local_ipi_complex_fnbox_t* fnbox=(local_ipi_complex_fnbox_t*)local_ipi_complex;
+            uint64_t result=(uint64_t)fnbox->func(fnbox->arg);
+            __uint128_t result_box=(__uint128_t)result << 64 | 1;   // hi64=返回值, lo64=1
+            cmpxchg16b(local_ipi_complex,&fnbox_copy,&result_box);
+            x2apic::x2apic_driver::write_eoi();
+            return;
+        }
+        case ipi_vecs::IPI_RUNAWAY:{
+            local_ipi_complex_fnbox_t fnbox=*(local_ipi_complex_fnbox_t*)local_ipi_complex;
+            __uint128_t get_func_mail = 1;
+            cmpxchg16b(local_ipi_complex,&fnbox_copy,&get_func_mail);
+            x2apic::x2apic_driver::write_eoi();
+            fnbox.func(fnbox.arg);
             asm volatile("ud2");
         }
+        default:{
+            if (self->tokens[vec].func) {
+            uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
+            x2apic::x2apic_driver::write_eoi();
+            if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE) {
+                resched(&ctx);
+            }
         return;
     }
-
-    /* ── 3. 硬件中断表 (per-CPU tokens) ── */
-    gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
-    if (self->tokens[vec].func) {
-        uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
-        x2apic::x2apic_driver::write_eoi();
-        if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE) {
-            resched(&ctx);
-            standard_to_frame(raw_frame, &ctx);
         }
-        return;
     }
+    
+    
 
     /* ── 4. 未匹配 → 虚假中断 ── */
     bsp_kout << now << "[vec_demux] WARNING: no handler for vec "
@@ -527,30 +548,53 @@ extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* raw_frame)
 
 /* ===================================================================
  * vec_demux_hw_dispatch — FRED type 0 (外部中断) 分发器
- * =================================================================== */
+ * ===================================================================
+ * FRED 下硬件中断可能携带 IPI，统一走 v3 消息槽 + tokens 表。
+ * 注意：FRED 自动管理 EOIf，此处不应再调用 write_eoi()。
+ */
 void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec)
 {
-    /* FRED 下硬件中断内部可能杂糅 IPI：
-     * 先查 ipi_descrioptors (低频), 再查 tokens (高频设备) */
-    if (ipi_descrioptors[vec].func) {
-        ipi_descrioptors[vec].func(frame);
-        if (ipi_descrioptors[vec].is_no_return) {
-            asm volatile("ud2");
-        }
-        return;
-    }
-
     gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
-    if (self->tokens[vec].func) {
-        uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
-        if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE) {
-            resched(frame);
+    __uint128_t* slot = &self->local_ipi_complex;
+    __uint128_t msg = *slot;
+    uint32_t pid = fast_get_processor_id();
+    switch (vec) {
+        case SUPRIOUS_INTERRUPT:{
+            bsp_kout << now << "[vec_demux] SUPRIOUS on CPU " << pid << kendl;
+            return;
         }
+    case ipi_vecs::IPI_HALT: {
+        asm volatile("cli;hlt");
+        __builtin_unreachable();
+    }
+    case ipi_vecs::IPI_RETURNABLE: {
+        auto fn  = (uint64_t (*)(uint64_t))(uint64_t)msg;
+        uint64_t ret = fn((uint64_t)(msg >> 64));
+        __uint128_t result_box = (__uint128_t)ret << 64|1;
+        __uint128_t expected = msg;
+        cmpxchg16b(slot, &expected, &result_box);
+        return;  // FRED 自动 EOI
+    }
+    case ipi_vecs::IPI_RUNAWAY: {
+        __uint128_t get_func_mail = 1;
+        __uint128_t expected = msg;
+        cmpxchg16b(slot, &expected, &get_func_mail);
+        auto fn = (void (*)(void*))(uint64_t)msg;
+        fn((void*)(uint64_t)(msg >> 64));
+        __builtin_unreachable();
+    }
+    default: {
+        if (self->tokens[vec].func) {
+            uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
+            if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE)
+                resched(frame);
+            return;
+        }
+        bsp_kout << now << "[vec_demux:FRED/HW] no handler for vec "
+                 << (uint32_t)vec << kendl;
         return;
     }
-
-    bsp_kout << now << "[vec_demux:FRED/HW] WARNING: no handler for vec "
-             << (uint32_t)vec << kendl;
+    }
 }
 
 /* ===================================================================
@@ -566,4 +610,188 @@ void fred_vec_demux_soft_dispatch(x64_standard_context* frame, uint8_t vec)
 
     bsp_kout << now << "[vec_demux:FRED/SOFT] no soft handler for vec "
              << (uint32_t)vec << kendl;
+}
+
+// ── 辅助：id → gs_complex_t* 解析 ─────────────────────────────────
+static gs_complex_t* resolve_target(uint32_t id, bool is_apicid)
+{
+    if (is_apicid)
+        return g_gs_by_apicid[id];
+
+    if (id >= logical_processor_count)
+        return nullptr;
+    return (gs_complex_t*)(conjucnt_GSs.vbase() + id * GS_COMPLEX_STRIDE);
+}
+
+// ── 辅助：取目标的 x2APIC ID（从 slot[1] 编码提取） ──────────────
+static uint32_t target_x2apicid(gs_complex_t* cx)
+{
+    return (uint32_t)(cx->slots[PROCESSOR_ID_GS_INDEX] >> 32);
+}
+
+// ── 辅助：构建定向 ICR ────────────────────────────────────────────
+static x2apic::x2apic_icr_t make_ipi_icr(uint8_t vec, uint32_t dest_apicid)
+{
+    x2apic::x2apic_icr_t icr = {};
+    icr.param.vector               = vec;
+    icr.param.delivery_mode        = LAPIC_PARAMS_ENUM::DELIVERY_MODE_T::FIXED;
+    icr.param.destination_mode     = LAPIC_PARAMS_ENUM::DESTINATION_T::PHYSICAL;
+    icr.param.destination_shorthand= LAPIC_PARAMS_ENUM::DESTINATION_SHORTHAND_T::NO_SHORTHAND;
+    icr.param.destination.id       = dest_apicid;
+    return icr;
+}
+
+// ── cacheline_wait — 监听 64B 对齐缓存行，等待 store 写入 ─────────
+// UMONITOR + UMWAIT（EDX:EAX = UINT64_MAX → OS deadline 绑定）
+// addr 必须 ≥64B 对齐（UMONITOR 监视整条缓存线）
+// 返回后调用者需要重新检查条件（可能因 OS 超时或虚假唤醒返回）
+static inline void cacheline_wait(void* addr)
+{
+    uint32_t flags = 1;  // bit 0 = 1 → C0.1 轻量睡眠
+    // EDX:EAX = ~0ULL, 使 IA32_UMWAIT_CONTROL 的 OS deadline 始终更小
+    asm volatile(
+        "umwait %0\n\t"
+        : "+r"(flags)
+        : "a"(~0U), "d"(~0U)
+        : "memory");
+}
+
+// ── 轮询辅助：等待 slot.lo64 变为 expected_lo ────────────────────
+// KVM/BARE_METAL + WAITPKG → UMONITOR + cacheline_wait
+// TCG / 无 WAITPKG         → pause() spin
+// 返回 true=预期值到达, false=超时
+static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t expected_lo,
+                        uint64_t deadline_us)
+{
+    // 单次探测 WAITPKG (CPUID leaf 0x07, subleaf 0, ECX bit 5)
+    static bool waitpkg_checked = false;
+    static bool has_waitpkg = false;
+    if (!waitpkg_checked) {
+        cpuid_tmp cpuid7(0x07, 0x00);
+        has_waitpkg = (cpuid7.ecx >> 5) & 1;
+        waitpkg_checked = true;
+    }
+
+    if (g_env == ENV_TCG || !has_waitpkg) {
+        /* TCG / 无 WAITPKG → pause spin */
+        while ((uint64_t)*slot != expected_lo) {
+            if (ktime::get_microsecond_stamp() >= deadline_us)
+                return false;
+            asm volatile("pause");
+        }
+        return true;
+    }
+
+    /* KVM / BARE_METAL + WAITPKG → UMONITOR + cacheline_wait */
+    while ((uint64_t)*slot != expected_lo) {
+        if (ktime::get_microsecond_stamp() >= deadline_us)
+            return false;
+
+        asm volatile("umonitor %0" : : "r"(slot) : "memory");
+        if ((uint64_t)*slot == expected_lo)
+            return true;   // 双检：arm 后值已到
+
+        cacheline_wait((void*)slot);
+        // 醒来：store 命中 → 下次循环检测；OS deadline 超时 → 继续
+    }
+    return true;
+}
+
+/* ===================================================================
+ * ret_ipi_send — 返回型 IPI
+ * ===================================================================
+ * 抢占目标 slot → 发送 IPI_RETURNABLE → 轮询结果（10ms 超时）
+ * 返回值: hi64=fn(arg) 返回值, lo64=结果码
+ *   1=成功, 2=抢占失败(BUSY), 3=超时, 4=目标不存在
+ */
+__uint128_t ret_ipi_send(ipi_package_t *package)
+{
+    gs_complex_t* complex = resolve_target(package->id, package->is_apicid);
+    if (!complex)
+        return (__uint128_t)0 << 64 | 4;   // 不存在
+
+    interrupt_guard irq;
+
+    /* 抢占 slot */
+    __uint128_t expected = 0;
+    __uint128_t desired  = package->func
+                         | ((__uint128_t)(uint64_t)package->arg << 64);
+    if (!cmpxchg16b(&complex->local_ipi_complex, &expected, &desired))
+        return (__uint128_t)0 << 64 | 2;   // BUSY
+
+    /* 发 IPI */
+    uint32_t dest_apicid = package->is_apicid
+        ? package->id
+        : target_x2apicid(complex);
+    x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_RETURNABLE, dest_apicid));
+
+    /* 轮询结果：lo64 != func → target 已消费并写回 */
+    uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
+    if (!ipi_wait_lo(&complex->local_ipi_complex, package->func, deadline)) {
+        complex->local_ipi_complex = 0;   // 超时强占
+        return (__uint128_t)0 << 64 | 3;   // 超时
+    }
+    __uint128_t val = complex->local_ipi_complex;
+    uint64_t result = (uint64_t)(val >> 64);
+    complex->local_ipi_complex = 0;        // 释放槽
+    return (__uint128_t)result << 64 | 1;  // 成功
+}
+
+/* ===================================================================
+ * fly_ipi_send — 跑飞型 IPI（不等待结果）
+ * ===================================================================
+ * 抢占目标 slot → 发送 IPI_RUNAWAY → 立即返回
+ * 返回值: lo64=结果码（1=成功, 2=抢占失败, 4=目标不存在）
+ */
+uint64_t fly_ipi_send(ipi_package_t *package)
+{
+    gs_complex_t* complex = resolve_target(package->id, package->is_apicid);
+    if (!complex)
+        return 4;
+
+    interrupt_guard irq;
+
+    __uint128_t expected = 0;
+    __uint128_t desired  = package->func
+                         | ((__uint128_t)(uint64_t)package->arg << 64);
+    if (!cmpxchg16b(&complex->local_ipi_complex, &expected, &desired))
+        return 2;   // BUSY
+
+    uint32_t dest_apicid = package->is_apicid
+        ? package->id
+        : target_x2apicid(complex);
+    x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_RUNAWAY, dest_apicid));
+
+    /* 轮询确认：target 将 lo64 置 1 表示已消费 */
+    uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
+    if (!ipi_wait_lo(&complex->local_ipi_complex, 1, deadline)) {
+        complex->local_ipi_complex = 0;   // 超时强占
+        return 3;                         // 超时
+    }
+    complex->local_ipi_complex = 0;        // 释放槽
+    return 1;                               // 成功
+}
+
+/* ===================================================================
+ * broadcast_halt — 广播停机（ALL_EXCLUDING_SELF，不碰 slot）
+ * =================================================================== */
+extern "C" void broadcast_halt()
+{
+    x2apic::x2apic_icr_t icr = {};
+    icr.param.vector               = ipi_vecs::IPI_HALT;
+    icr.param.delivery_mode        = LAPIC_PARAMS_ENUM::DELIVERY_MODE_T::FIXED;
+    icr.param.destination_mode     = LAPIC_PARAMS_ENUM::DESTINATION_T::PHYSICAL;
+    icr.param.destination_shorthand= LAPIC_PARAMS_ENUM::DESTINATION_SHORTHAND_T::ALL_EXCLUDING_SELF;
+    icr.param.destination.id       = 0xFFFFFFFF;
+    x2apic::x2apic_driver::raw_send_ipi(icr);
+}
+
+/* ===================================================================
+ * halt_on — 定向停机（不碰 slot）
+ * =================================================================== */
+extern "C" void halt_on(uint32_t id, bool is_apicid)
+{
+    uint32_t apicid = is_apicid ? id : target_x2apicid(
+        (gs_complex_t*)(conjucnt_GSs.vbase() + id * GS_COMPLEX_STRIDE));
+    x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_HALT, apicid));
 }

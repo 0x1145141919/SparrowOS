@@ -99,41 +99,35 @@ extern "C" KURD_t ap_init_one_by_one()
 
     /* ══════════════════════════════════════════════════════════════════
      * 第二遍：分配 processor_id，填 gs_complex_t* + slot 中的处理器 ID
-     * ══════════════════════════════════════════════════════════════════ */
-    uint32_t processor_id = 0;   /* BSP = 0 */
-    vaddr_t  gs_vbase     = conjucnt_GSs.vbase();
+     * ══════════════════════════════════════════════════════════════════
+     * BSP = 0，AP 按 MADT 遍历顺序从 1 开始分配。
+     */
+    vaddr_t gs_vbase = conjucnt_GSs.vbase();
+
+    /* BSP: processor_id = 0, slot[1] = 0 */
     {
-        struct SecondPassCtx {
-            uint32_t*    next_id;
-            vaddr_t      gs_vbase;
-            gs_complex_t** table;
-            x2apicid_t   self_apicid;
-        };
-        SecondPassCtx sp{&processor_id, gs_vbase, g_gs_by_apicid, self_x2apicid};
-
-        /* BSP 优先：固定 processor_id = 0 */
         gs_complex_t* bsp_cx = (gs_complex_t*)(gs_vbase + 0 * GS_COMPLEX_STRIDE);
-        sp.table[self_x2apicid] = bsp_cx;
-        bsp_cx->slots[PROCESSOR_ID_GS_INDEX] = 0;
-        (*sp.next_id)++;  /* next_id = 1 for first AP */
-
-        walk_processors(
-            [](const APICtb_analyzed_structures::processor_x64_lapic_struct& p, void* ctx) {
-                auto* sp  = static_cast<SecondPassCtx*>(ctx);
-                if (p.apicid == sp->self_apicid) return;  /* BSP already done */
-
-                uint32_t pid = *sp->next_id;
-                gs_complex_t* cx = (gs_complex_t*)(sp->gs_vbase + pid * GS_COMPLEX_STRIDE);
-                sp->table[p.apicid] = cx;
-                cx->slots[PROCESSOR_ID_GS_INDEX] = pid;
-                bsp_kout << now << "APs_bringup: APIC 0x" << HEX << (uint32_t)p.apicid
-                         << DEC << " → proc_id=" << pid << kendl;
-                (*sp->next_id)++;
-            },
-            &sp);
+        g_gs_by_apicid[self_x2apicid] = bsp_cx;
+        bsp_cx->slots[PROCESSOR_ID_GS_INDEX] = (uint64_t)self_x2apicid << 32 | 0;
     }
-    bsp_kout << now << "APs_bringup: first AP processor_id starts at 1, total "
-             << (uint32_t)(processor_id - 1) << " APs" << kendl;
+
+    /* APs: 遍历 MADT，processor_id 从 1 递增 */
+    uint32_t ap_count = 0;
+    for (auto it = gAnalyzer->processor_x64_list->begin();
+         it != gAnalyzer->processor_x64_list->end(); ++it)
+    {
+        if ((*it).apicid == self_x2apicid) continue;   // BSP 已处理
+
+        uint32_t pid = ap_count + 1;
+        gs_complex_t* cx = (gs_complex_t*)(gs_vbase + pid * GS_COMPLEX_STRIDE);
+        g_gs_by_apicid[(*it).apicid] = cx;
+        cx->slots[PROCESSOR_ID_GS_INDEX] = (uint64_t)(*it).apicid << 32 | pid;
+
+        bsp_kout << now << "APs_bringup: APIC 0x" << HEX << (uint32_t)(*it).apicid
+                 << DEC << " -> proc_id=" << pid << kendl;
+        ap_count++;
+    }
+    bsp_kout << now << "APs_bringup: " << ap_count << " APs (ids 1.." << ap_count << ")" << kendl;
 
     /* ── SIPI ICR 模板（逐 AP 覆盖 destination） ──────────────────── */
     x2apic::x2apic_icr_t icr_sipi = {
@@ -170,7 +164,7 @@ extern "C" KURD_t ap_init_one_by_one()
         bsp_kout << now << "APs_bringup: INIT IPI all-excluding-self" << kendl;
         x2apic::x2apic_driver::raw_send_ipi(icr_init);
         bsp_kout << now << "APs_bringup: INIT done" << kendl;
-        ktime::microsecond_polling_delay_by_hpet(20000);
+        ktime::microsecond_polling(20000);
     }
 
     /* ── INIT de-assert IPI（ALL_INCLUDING_SELF） ──────────────────── */
@@ -192,7 +186,7 @@ extern "C" KURD_t ap_init_one_by_one()
         bsp_kout << now << "APs_bringup: INIT de-assert" << kendl;
         x2apic::x2apic_driver::raw_send_ipi(icr_init_de_assert);
         bsp_kout << now << "APs_bringup: INIT de-assert done" << kendl;
-        ktime::microsecond_polling_delay_by_hpet(1000);
+        ktime::microsecond_polling(1000);
     }
 
     /* ── Checkpoint 观察器枚举 ────────────────────────────────────── */

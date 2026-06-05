@@ -197,7 +197,7 @@ uint64_t min(uint64_t a, uint64_t b);
 uint64_t max(uint64_t a, uint64_t b);
 uint8_t log2_up(uint64_t value);
 uint64_t alignup_and_shift_right(uint64_t value, uint8_t align_log2);
-bool cmpxchg16(__uint128_t* ptr, __uint128_t*expected, __uint128_t*desiered,bool weak,
+bool cmpxchg16_full(__uint128_t* ptr, __uint128_t*expected, __uint128_t*desiered,bool weak,
                                  int success_memorder, 
                                  int failure_memorder);
 #ifdef USER_MODE

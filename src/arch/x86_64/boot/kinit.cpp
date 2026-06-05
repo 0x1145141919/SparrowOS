@@ -33,50 +33,10 @@
 #include "arch/x86_64/boot.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "KImage_Introspection.h"
+#include "exec_env_detect.h"
 
-/* === Runtime environment detection === */
-enum runtime_env : uint8_t {
-    ENV_BARE_METAL = 0,
-    ENV_KVM        = 1,
-    ENV_TCG        = 2,
-};
 
-runtime_env g_env;
 
-/*
- * Sole criterion: CPUID leaf 0x40000000 (hypervisor signature).
- *   "KVMKVMKVM"    → KVM
- *   "TCGTCGTCGTCG" → TCG
- *   anything else   → bare metal
- *
- * WAITPKG etc. are pure capability probes, NOT environment indicators.
- */
-static runtime_env probe_env(void)
-{
-    cpuid_tmp cpuid(0x40000000, 0);
-
-    /*
-     * All four registers are architecture-defined for leaf 0x40000000.
-     * Match the full quad to avoid false positives from leaf aliasing.
-     */
-
-    /* KVM: "KVMKVMKVM\0\0\0"  EAX=0x40000001 */
-    if (cpuid.eax == 0x40000001 &&
-        cpuid.ebx == 0x4B4D564B &&
-        cpuid.ecx == 0x564B4D56 &&
-        cpuid.edx == 0x0000004D)
-        return ENV_KVM;
-
-    /* TCG: "TCGTCGTCGTCG"  EAX=0x40000001 */
-    if (cpuid.eax == 0x40000001 &&
-        cpuid.ebx == 0x54474354 &&
-        cpuid.ecx == 0x43544743 &&
-        cpuid.edx == 0x47435447)
-        return ENV_TCG;
-
-    /* No known hypervisor signature → bare metal */
-    return ENV_BARE_METAL;
-}
 #undef __stack_chk_fail
 extern  void __wrap___stack_chk_fail(void);
 // 定义C++运行时需要的符号
@@ -272,9 +232,11 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
 }
 extern "C" void ap_final_work();
 check_point init_finish_checkpoint;
+extern void apply_umwait_control(void);
 extern "C" void ap_init()
 {
     asm volatile("sfence");
+    apply_umwait_control();
     ktime::heart_beat_alarm::processor_regist();
     if(fred_support_catch_bit){
         fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
