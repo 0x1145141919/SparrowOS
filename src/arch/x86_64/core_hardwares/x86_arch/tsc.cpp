@@ -132,7 +132,7 @@ void tsc_regist()
     is_tsc_reliable       = !!(querier.edx & (1 << 8));
 
     querier.update(1, 0);
-    is_tsc_ddline_avaliabe = !!(querier.edx & (1 << 24));
+    is_tsc_ddline_avaliabe = !!(querier.ecx & (1 << 24));
 
     // 必须同时支持，否则停在这里
     if (!is_tsc_reliable || !is_tsc_ddline_avaliabe)

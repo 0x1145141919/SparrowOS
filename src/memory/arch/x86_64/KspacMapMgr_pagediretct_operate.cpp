@@ -260,6 +260,50 @@ void KspacePageTable::invalidate_seg()
     shared_inval_kspace_VMentry_info.completed_processors_count++;
 
 }
+
+/* ===================================================================
+ * remote_invalidate_seg — IPI v3 远端 TLB 失效执行函数
+ * ===================================================================
+ * 签名符合 ret_ipi_send/fly_ipi_send 要求的 uint64_t func(void* ptr)
+ * 接收 seg_to_pages_info_pakage_t*，逐条目 invlpg，不依赖全局共享状态。
+ * 运行在 IPI handler 上下文中（IF=0），无需 interrupt_guard。
+ * 返回 0=成功, 1=无效包, 2=无效页大小
+ */
+extern "C" uint64_t remote_invalidate_seg(void* ptr)
+{
+    auto* pkg = (seg_to_pages_info_pakage_t*)ptr;
+    if (!pkg)
+        return 1;
+
+    uint64_t ret = 0;
+    for (uint8_t i = 0; i < 5; i++) {
+        auto& e = pkg->entryies[i];
+        if (e.page_size_in_byte == 0 || e.num_of_pages == 0)
+            continue;
+
+        switch (e.page_size_in_byte) {
+            case 0x1000:  // 4KB
+                for (uint32_t j = 0; j < e.num_of_pages; j++)
+                    asm volatile("invlpg (%0)" : : "r"(e.vbase + j * 0x1000) : "memory");
+                break;
+            case (1ULL << 21):  // 2MB
+                for (uint32_t j = 0; j < e.num_of_pages; j++)
+                    asm volatile("invlpg (%0)" : : "r"(e.vbase + j * (1ULL << 21)) : "memory");
+                break;
+            case (1ULL << 30):  // 1GB
+                for (uint32_t j = 0; j < e.num_of_pages; j++)
+                    asm volatile("invlpg (%0)" : : "r"(e.vbase + j * (1ULL << 30)) : "memory");
+                break;
+            default:
+                ret = 2;
+                break;
+        }
+        if (ret)
+            break;
+    }
+    return ret;
+}
+
 // 2MB 大页映射（PDE 级别）
 // 要求：不能跨 PDPT 边界（即一次最多映射 512 个 2MB 页，覆盖 1GB）
 // ====================================================================

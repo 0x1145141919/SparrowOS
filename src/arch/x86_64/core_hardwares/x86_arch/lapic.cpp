@@ -39,15 +39,6 @@ void x2apic::x2apic_driver::raw_send_ipi(x2apic_icr_t icr)
     wrmsr_func(msr::apic::IA32_X2APIC_ICR,icr.raw);
 }
 
-void x2apic::x2apic_driver::broadcast_exself_fixed_ipi(void (*ipi_handler)())
-{
-    global_ipi_handler=ipi_handler;
-    asm volatile (
-        "sfence"    
-    );
-    raw_send_ipi(broadcast_exself_icr);
-}
-
 void x2apic::x2apic_driver::raw_error_lvt_config(lvt_error_entry entry)
 {
     wrmsr_func(msr::apic::IA32_X2APIC_LVT_ERROR, entry.raw);

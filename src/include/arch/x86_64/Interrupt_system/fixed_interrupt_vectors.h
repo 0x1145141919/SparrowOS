@@ -49,5 +49,6 @@ namespace ipi_vecs{
     static constexpr uint8_t IPI_RUNAWAY = 254;
     static constexpr uint8_t IPI_RETURNABLE  = 253;
     static constexpr uint8_t IPI_HALT    = 252;
+    static constexpr uint8_t IPI_RESCHED    = 251;
 };
 static constexpr uint8_t SUPRIOUS_INTERRUPT = 255;  

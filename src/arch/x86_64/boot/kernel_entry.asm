@@ -140,7 +140,7 @@ bits 64
     mov cr0, rax
 
     mov rax, cr4
-    or rax, 0x668
+    or rax, 0x668| (1<<17)|(1<<16)|(1<<8)|(1<<7)|(1<<18)
     mov cr4, rax
     
     mov rax, ap_bootstrap_init
@@ -224,6 +224,9 @@ _kernel_Init:
     mov rax, cr0
     or rax, (1<<16)
     mov cr0, rax
+    mov rax, cr4
+    or rax, 0x668| (1<<17)|(1<<16)|(1<<8)|(1<<7)|(1<<18)
+    mov cr4, rax
     mov rax, ap_init_patch_idt_pe
     call rax
     mov rax, kernel_start

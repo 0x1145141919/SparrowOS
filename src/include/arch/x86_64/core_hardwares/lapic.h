@@ -244,7 +244,6 @@ static_assert(sizeof(lvt_general_entry) == 4, "LVT General must be 4 bytes");
     static void raw_config_timer_divider(devide_reg_t reg);
     static current_reg_t get_timer_current_count();
     static void raw_send_ipi(x2apic_icr_t icr);
-    static void broadcast_exself_fixed_ipi(void(*ipi_handler)());
     static void raw_error_lvt_config(lvt_error_entry entry);
     static void raw_lint0_lvt_config(lvt_lint_entry entry);
     static void raw_lint1_lvt_config(lvt_lint_entry entry);

@@ -344,3 +344,18 @@ vec_demux_common:
     pop rbp
     add rsp, 8                 ; 弹出 trampoline push 的 vec
     iretq
+global cacheline_wait
+cacheline_wait:
+    ; bool cacheline_wait(void* addr);
+    ; UMONITOR + UMWAIT, 返回 false=store 唤醒, true=超时/其他
+    umonitor rdi
+    xor     eax, eax
+    xor     edx, edx
+    not     rax             ; EDX:EAX = ~0ULL → 忽略 UMWAIT 指令级 deadline
+    not     rdx             ;   实际时限由 IA32_UMWAIT_CONTROL (50μs) 约束
+    xor     ecx, ecx        ; ECX=0 → C0.2 状态
+    umwait  ecx
+    setc    al              ; CF→AL (0=store, 1=timeout)
+    movzx   eax, al
+    ret
+    
