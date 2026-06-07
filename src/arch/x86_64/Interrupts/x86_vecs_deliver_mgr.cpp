@@ -24,8 +24,6 @@ extern vm_interval conjucnt_GSs;
 // ── cmpxchg16b 原子 16B CAS（实现在 Processor/cmpxchg16b.asm） ─────
 extern "C" bool cmpxchg16b(void* ptr, void* expected, const void* desired);
 
-static spinlock_cpp_t dispatch_lock;
-
 /* ---- class-level KURD templates ---- */
 static KURD_t demux_default_kurd()
 {
@@ -268,19 +266,21 @@ uint8_t vec_demux::alloc_vec(interrupt_token_t* token,
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
     interrupt_token_t* slice = cx->tokens;
 
-    spinlock_interrupt_about_guard l(dispatch_lock);
-    uint16_t vec = 32;
-    for (; vec <= 255; vec++) {
-        if (soft_interrupt_functions[vec] != nullptr) continue;
-        if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
-        if (slice[vec].func == nullptr) break;
+    {
+        spinlock_interrupt_about_guard l(cx->tokens_lock);
+        uint16_t vec = 32;
+        for (; vec <= 255; vec++) {
+            if(!fred_support_catch_bit)if (soft_interrupt_functions[vec] != nullptr) continue;
+            if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
+            if (slice[vec].func == nullptr) break;
+        }
+        if (vec > 255) {
+            kurd = fail_k;
+            kurd.reason = fail_reason_code::NO_FREE_VEC;
+            return 0;
+        }
+        slice[vec] = *token;
     }
-    if (vec > 255) {
-        kurd = fail_k;
-        kurd.reason = fail_reason_code::NO_FREE_VEC;
-        return 0;
-    }
-    slice[vec] = *token;
 
     kurd = success_k;
     return vec;
@@ -311,12 +311,14 @@ KURD_t vec_demux::free_vec(uint8_t vec, uint32_t processor_id)
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
     interrupt_token_t* slice = cx->tokens;
 
-    spinlock_interrupt_about_guard l(dispatch_lock);
-    if (slice[vec].func == nullptr) {
-        fail_k.reason = fail_reason_code::VEC_NOT_ALLOCED;
-        return fail_k;
+    {
+        spinlock_interrupt_about_guard l(cx->tokens_lock);
+        if (slice[vec].func == nullptr) {
+            fail_k.reason = fail_reason_code::VEC_NOT_ALLOCED;
+            return fail_k;
+        }
+        ksetmem_8(slice + vec, 0, sizeof(interrupt_token_t));
     }
-    ksetmem_8(slice + vec, 0, sizeof(interrupt_token_t));
     return success_k;
 }
 
@@ -347,9 +349,12 @@ interrupt_token_t *vec_demux::get_vec(uint8_t vec,
     }
 
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
-    interrupt_token_t *entry = &cx->tokens[vec];
+    interrupt_token_t *entry;
 
-    if (entry->func == nullptr) {
+    {
+        spinlock_interrupt_about_guard l(cx->tokens_lock);
+        entry = &cx->tokens[vec];
+        if (entry->func == nullptr) {
         kurd = fail_k;
         kurd.reason = VEC_NOT_ALLOCED;
         return nullptr;
@@ -357,6 +362,7 @@ interrupt_token_t *vec_demux::get_vec(uint8_t vec,
 
     kurd = success_k;
     return entry;
+    }
 }
 
 /* ===================================================================
@@ -398,11 +404,12 @@ uint8_t vec_demux::alloc_vec_by_apicid(interrupt_token_t *token, uint32_t x2_api
 
     interrupt_token_t* slice = cx->tokens;
 
-    spinlock_interrupt_about_guard l(dispatch_lock);
-    uint16_t vec = 32;
-    for (; vec <= 255; vec++) {
-        if (soft_interrupt_functions[vec] != nullptr) continue;
-        if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
+    {
+        spinlock_interrupt_about_guard l(cx->tokens_lock);
+        uint16_t vec = 32;
+    for (;vec <= 255; vec++){
+        if(!fred_support_catch_bit)if (soft_interrupt_functions[vec] != nullptr) continue;
+        if (vec >= ipi_vecs::IPI_RESCHED && vec <= SUPRIOUS_INTERRUPT) continue;
         if (slice[vec].func == nullptr) break;
     }
     if (vec > 255) {
@@ -410,7 +417,8 @@ uint8_t vec_demux::alloc_vec_by_apicid(interrupt_token_t *token, uint32_t x2_api
         kurd.reason = fail_reason_code::NO_FREE_VEC;
         return 0;
     }
-    slice[vec] = *token;
+        slice[vec] = *token;
+    }
 
     kurd = success_k;
     return vec;
@@ -527,15 +535,23 @@ extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* raw_frame)
             fnbox.func(fnbox.arg);
             asm volatile("ud2");
         }
-        default:{
-            if (self->tokens[vec].func) {
-            uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
+        case ipi_vecs::IPI_RESCHED:{ 
             x2apic::x2apic_driver::write_eoi();
-            if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE) {
-                resched(&ctx);
+            resched(&ctx);
+        }
+        default:{
+            interrupt_token_t local_tok;
+            {
+                spinlock_interrupt_about_guard l(self->tokens_lock);
+                local_tok = self->tokens[vec];
             }
-        return;
-    }
+            if (local_tok.func) {
+                uint64_t res = local_tok.func(&local_tok);
+                x2apic::x2apic_driver::write_eoi();
+                if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE)
+                    resched(&ctx);
+            }
+            return;
         }
     }
     
@@ -583,9 +599,17 @@ void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec)
         fn((void*)(uint64_t)(msg >> 64));
         __builtin_unreachable();
     }
+    case ipi_vecs::IPI_RESCHED:{ 
+            resched(frame);
+        }
     default: {
-        if (self->tokens[vec].func) {
-            uint64_t res = self->tokens[vec].func(&self->tokens[vec]);
+        interrupt_token_t local_tok;
+        {
+            spinlock_interrupt_about_guard l(self->tokens_lock);
+            local_tok = self->tokens[vec];
+        }
+        if (local_tok.func) {
+            uint64_t res = local_tok.func(&local_tok);
             if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE)
                 resched(frame);
             return;
@@ -640,28 +664,12 @@ static x2apic::x2apic_icr_t make_ipi_icr(uint8_t vec, uint32_t dest_apicid)
     icr.param.destination.id       = dest_apicid;
     return icr;
 }
-
-// ── cacheline_wait — 监听 64B 对齐缓存行，等待 store 写入 ─────────
-// UMONITOR + UMWAIT（EDX:EAX = UINT64_MAX → OS deadline 绑定）
-// addr 必须 ≥64B 对齐（UMONITOR 监视整条缓存线）
-// 返回后调用者需要重新检查条件（可能因 OS 超时或虚假唤醒返回）
-static inline void cacheline_wait(void* addr)
-{
-    uint32_t flags = 1;  // bit 0 = 1 → C0.1 轻量睡眠
-    // EDX:EAX = ~0ULL, 使 IA32_UMWAIT_CONTROL 的 OS deadline 始终更小
-    asm volatile(
-        "umwait %0\n\t"
-        : "+r"(flags)
-        : "a"(~0U), "d"(~0U)
-        : "memory");
-}
-
-// ── 轮询辅助：等待 slot.lo64 变为 expected_lo ────────────────────
+extern "C" bool cacheline_wait(void* addr);// false=store 唤醒, true=超时/其他
+// ── 轮询辅助：等待 slot.lo64 变为 1 ────────────────────────────
 // KVM/BARE_METAL + WAITPKG → UMONITOR + cacheline_wait
 // TCG / 无 WAITPKG         → pause() spin
 // 返回 true=预期值到达, false=超时
-static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t expected_lo,
-                        uint64_t deadline_us)
+static bool ipi_wait_lo(volatile __uint128_t* slot,uint64_t deadline_us)
 {
     // 单次探测 WAITPKG (CPUID leaf 0x07, subleaf 0, ECX bit 5)
     static bool waitpkg_checked = false;
@@ -674,7 +682,7 @@ static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t expected_lo,
 
     if (g_env == ENV_TCG || !has_waitpkg) {
         /* TCG / 无 WAITPKG → pause spin */
-        while ((uint64_t)*slot != expected_lo) {
+        while ((uint64_t)*slot != 1) {
             if (ktime::get_microsecond_stamp() >= deadline_us)
                 return false;
             asm volatile("pause");
@@ -683,13 +691,9 @@ static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t expected_lo,
     }
 
     /* KVM / BARE_METAL + WAITPKG → UMONITOR + cacheline_wait */
-    while ((uint64_t)*slot != expected_lo) {
+    while ((uint64_t)*slot != 1) {
         if (ktime::get_microsecond_stamp() >= deadline_us)
             return false;
-
-        asm volatile("umonitor %0" : : "r"(slot) : "memory");
-        if ((uint64_t)*slot == expected_lo)
-            return true;   // 双检：arm 后值已到
 
         cacheline_wait((void*)slot);
         // 醒来：store 命中 → 下次循环检测；OS deadline 超时 → 继续
@@ -727,13 +731,15 @@ __uint128_t ret_ipi_send(ipi_package_t *package)
 
     /* 轮询结果：lo64 != func → target 已消费并写回 */
     uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
-    if (!ipi_wait_lo(&complex->local_ipi_complex, package->func, deadline)) {
-        complex->local_ipi_complex = 0;   // 超时强占
+    if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
+        __uint128_t release=0;
+        cmpxchg16b(&complex->local_ipi_complex, &desired, &release);
         return (__uint128_t)0 << 64 | 3;   // 超时
     }
     __uint128_t val = complex->local_ipi_complex;
     uint64_t result = (uint64_t)(val >> 64);
-    complex->local_ipi_complex = 0;        // 释放槽
+     __uint128_t release_zero=0;
+    cmpxchg16b(&complex->local_ipi_complex, &val, &release_zero);     // 释放槽
     return (__uint128_t)result << 64 | 1;  // 成功
 }
 
@@ -764,11 +770,13 @@ uint64_t fly_ipi_send(ipi_package_t *package)
 
     /* 轮询确认：target 将 lo64 置 1 表示已消费 */
     uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
-    if (!ipi_wait_lo(&complex->local_ipi_complex, 1, deadline)) {
-        complex->local_ipi_complex = 0;   // 超时强占
+    __uint128_t release_zero=0;
+    if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
+        cmpxchg16b(&complex->local_ipi_complex, &desired, &release_zero);
         return 3;                         // 超时
     }
-    complex->local_ipi_complex = 0;        // 释放槽
+    __uint128_t val = complex->local_ipi_complex;
+    cmpxchg16b(&complex->local_ipi_complex, &val, &release_zero);
     return 1;                               // 成功
 }
 

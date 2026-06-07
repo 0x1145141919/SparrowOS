@@ -8,7 +8,8 @@ constexpr uint8_t CACHE_SLOT_COUNT = 16;
 class PhyAddrAccessor {
     static vm_interval BASIC_interval;          // 底座恒等映射区间
     static vm_interval cache_tb[CACHE_SLOT_COUNT]; // stage2 扩展映射缓存
-    static uint8_t     lfu_freq[CACHE_SLOT_COUNT]; // LFU 访问频次计数器
+    static uint64_t   lru_tick[CACHE_SLOT_COUNT];  // LRU 最近访问时间戳 (单调递增)
+    static uint64_t   access_clock;                // 全局访问时钟
 
     // 阶段判定
     static bool is_not_ready() { return BASIC_interval.npages == 0; }
@@ -17,9 +18,9 @@ class PhyAddrAccessor {
 
     // 辅助：返回 addr 在 cache_tb 中的槽位，-1 为未命中
     static int  cache_lookup(phyaddr_t addr);
-    // 辅助：LRU 选出受害者槽位并返回
-    static int  cache_evict_lfu();
-    // 辅助：访问完毕时递增频次 (防止溢出)
+    // 辅助：LRU 选出最久未访问的受害者槽位
+    static int  cache_evict_lru();
+    // 辅助：访问命中时更新时间戳
     static void cache_touch(int slot);
     // 辅助：物理地址 → 可解引用虚拟地址（按阶段决策），返回 0 表示当前不可访问
     static vaddr_t resolve_addr(phyaddr_t addr);

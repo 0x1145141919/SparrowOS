@@ -25,9 +25,16 @@
 constexpr uint64_t XSAVE_SIZE_MAX = 8192;   // 8 KB
 
 struct per_processor_hardware_stack_t;
-
+struct pcid_entry_t{
+    void* addrSpace;
+    uint64_t last_accees_microsecond_timestamp;
+};
+struct pcid_complex_t{
+    pcid_entry_t entries[6];//0号槽清0
+    uint8_t now_using_pcid_idx;
+};
 // ── GS 复合体结构 ─────────────────────────────────────────────────────────
-struct __attribute__((packed)) alignas(4096) gs_complex_t {
+struct  alignas(4096) gs_complex_t {
     // ═══════════════════════════════════════════════════════════════════════
     // SLOT_IS_SLOT 区 — 固定 256 × uint64_t，索引见 GS_Slots_index_definitions.h
     // ═══════════════════════════════════════════════════════════════════════
@@ -35,6 +42,7 @@ struct __attribute__((packed)) alignas(4096) gs_complex_t {
 
     // ── 中断函数指针表 ─────────────────────────────────────────────────────
     interrupt_token_t tokens[256];
+    spinlock_cpp_t    tokens_lock;  // 保护 tokens[] 读写
 
     // ── GDT + TSS ─────────────────────────────────────────────────────────
     x64_gdtentry        gdt[6];
@@ -45,13 +53,15 @@ struct __attribute__((packed)) alignas(4096) gs_complex_t {
     alignas(64) uint8_t fpu_area[XSAVE_SIZE_MAX];
     alignas(64) __uint128_t local_ipi_complex;
     uint64_t padding[6]; // 填充至 64B，方便umwait监视
+    pcid_complex_t pcid_complex;
     // ── 硬件栈区指针 ───────────────────────────────────────────────────────
     per_processor_hardware_stack_t* stacks_ptr;
 };
+
 static_assert(sizeof(gs_complex_t)%4096 == 0, "gs_complex_t must be 4096-byte aligned");
 // ── 每处理器硬件栈区 ─────────────────────────────────────────────────────
 // 必须严格布局控制，guard 页内容不映射，仅占用物理/虚拟地址空间。
-struct per_processor_hardware_stack_t {
+struct __attribute__((packed)) per_processor_hardware_stack_t {
     uint8_t guard1[4096];            // rsp0 前 guard
 
     // rsp0 — 核心态入口栈（CPL3→0 切换时自动加载到 RSP）
@@ -109,6 +119,16 @@ static_assert(offsetof(per_processor_hardware_stack_t, stack_rsp0) % 4096 == 0,
 // ── per-processor stride ─────────────────────────────────────────────────
 // gs_complex_t 已 alignas(4096)，sizeof 自然为 4096 倍数
 constexpr uint64_t GS_COMPLEX_STRIDE = (sizeof(gs_complex_t) + 4095) & ~4095ULL;
+
+// ── 读取 GS 段基址 ───────────────────────────────────────────────────
+// RDGSBASE 无特权级限制，直接读 IA32_GS_BASE MSR 到通用寄存器。
+// 返回值即指向当前核 gs_complex_t 实例的指针。
+static inline gs_complex_t* get_gs_base()
+{
+    void* ptr;
+    asm volatile("rdgsbase %0" : "=r"(ptr) ::);
+    return (gs_complex_t*)ptr;
+}
 
 // ── GDT/TSS 加载接口 ──────────────────────────────────────────────────
 // 从 gs_complex_t 的内嵌 GDT + TSS 描述符中加载 GDT 和 TSS（LGDT + LTR）。

@@ -7,6 +7,12 @@
 #include "linker_symbols.h"
 #include "util/OS_utils.h"
 #include "util/kout.h"
+#include <util/arch/x86-64/cpuid_intel.h>
+#include "arch/x86_64/abi/GS_complex.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
+#include "ktime.h"
+#include "panic.h"
+extern uint32_t logical_processor_count;
 AddressSpace*gKernelSpace;
 KURD_t AddressSpace::default_kurd()
 {
@@ -98,6 +104,42 @@ KURD_t AddressSpace::invalidate_tlb_of_VM_desc(VM_DESC desc, tlb_invalidate_flag
 }
 AddressSpace::AddressSpace()
 {
+}
+
+// ─── TLB 存在性位图 CAS 操作 ────────────────────────────
+
+bool AddressSpace::tlb_on_set()
+{
+    interrupt_guard irq_guard;
+    uint32_t id = fast_get_processor_id();
+    uint32_t w = id / 64;
+    uint64_t b = 1ULL << (id % 64);
+    uint64_t expected, desired;
+    do {
+        expected = __atomic_load_n(&tlb_holding_bitmap[w], __ATOMIC_RELAXED);
+        if (expected & b) return false;
+        desired = expected | b;
+    } while (!__atomic_compare_exchange_n(
+        &tlb_holding_bitmap[w], &expected, desired,
+        false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    return true;
+}
+
+bool AddressSpace::tlb_on_clear()
+{
+    interrupt_guard irq_guard;
+    uint32_t id = fast_get_processor_id();
+    uint32_t w = id / 64;
+    uint64_t b = 1ULL << (id % 64);
+    uint64_t expected, desired;
+    do {
+        expected = __atomic_load_n(&tlb_holding_bitmap[w], __ATOMIC_RELAXED);
+        if (!(expected & b)) return false;
+        desired = expected & ~b;
+    } while (!__atomic_compare_exchange_n(
+        &tlb_holding_bitmap[w], &expected, desired,
+        false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
+    return true;
 }
 
 KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)    
@@ -1040,7 +1082,7 @@ void AddressSpace::unsafe_load_pml4_to_cr3(uint16_t pcid)
     asm volatile("mov %0, %%cr3"::"r"(cr3_value));
 }
 
-AddressSpace::~AddressSpace()
+AddressSpace::~AddressSpace()//深度优先搜索折构低一半的页表
 {
     KURD_t status=FreePagesAllocator::free(pml4_phybase,1<<12);
     if(status.result!=result_code::SUCCESS){
@@ -1071,7 +1113,207 @@ KURD_t AddressSpace::second_stage_init()
         );
     }
     occupyied_size=0;
+    ksetmem_8(tlb_holding_bitmap,0,sizeof(tlb_holding_bitmap));
     KURD_t success=default_success();
     success.event_code=MEMMODULE_LOCAIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INIT;
     return success;
+}
+void shift_addresSpace(AddressSpace *new_address_space)
+{
+    interrupt_guard g;
+    // ── 切到内核空间：PCID 0，无需缓存管理 ──
+    if (new_address_space == gKernelSpace) {
+        new_address_space->unsafe_load_pml4_to_cr3(0);
+        return;
+    }
+
+    // ── 取本核 pcid_complex ──
+    gs_complex_t* gs = get_gs_base();
+    pcid_complex_t* pcc = &gs->pcid_complex;
+    pcid_entry_t* entries = pcc->entries;
+    uint64_t now = ktime::get_microsecond_stamp();
+    int8_t cached_idx = -1;
+    int8_t free_idx  = -1;
+    int8_t victim_idx = -1;
+    uint64_t victim_oldest = UINT64_MAX;
+
+    // ── 扫描 slots[1..5]：查缓存命中 + 找空闲/最久 ──
+    for (int i = 1; i <= 5; i++) {
+        if (entries[i].addrSpace == new_address_space) {
+            cached_idx = i;                         // 缓存命中
+        } else if (entries[i].addrSpace == nullptr) {
+            if (free_idx < 0) free_idx = i;         // 空闲槽
+        } else {
+            uint64_t age = entries[i].last_accees_microsecond_timestamp;
+            if (age < victim_oldest) {
+                victim_oldest = age;
+                victim_idx = i;                     // 最久未用
+            }
+        }
+    }
+
+    if (cached_idx >= 0) {
+        // ── cached → online：TLB 保留，只需切 CR3 ──
+        entries[cached_idx].last_accees_microsecond_timestamp = now;
+        pcc->now_using_pcid_idx = cached_idx;
+        new_address_space->tlb_on_set();
+        new_address_space->unsafe_load_pml4_to_cr3(cached_idx);
+        // 旧 AS 自动变为 cached（tlb_bitmap 不动，PCID slot 不动）
+        return;
+    }
+
+    // ── offline → online：需要分配 PCID 槽 ──
+    int8_t slot;
+    if (free_idx >= 0) {
+        slot = free_idx;
+    } else {
+        // LRU 逐出
+        slot = victim_idx;
+        AddressSpace* victim_as = static_cast<AddressSpace*>(entries[slot].addrSpace);
+
+        // INVPCID type=1：清除此 PCID 的所有 TLB
+        struct { uint64_t pcid; uint64_t reserved; } desc = {
+            .pcid = static_cast<uint64_t>(slot) & 0xFFF,
+            .reserved = 0
+        };
+        asm volatile("invpcid (%1), %0"
+            : : "r"(1ULL), "r"(&desc) : "memory");
+
+        victim_as->tlb_on_clear();
+    }
+
+    // 填入新 AS
+    entries[slot].addrSpace = new_address_space;
+    entries[slot].last_accees_microsecond_timestamp = now;
+    pcc->now_using_pcid_idx = slot;
+    new_address_space->tlb_on_set();
+    new_address_space->unsafe_load_pml4_to_cr3(slot);
+}
+
+// ─── 用户空间 TLB 定点失效 IPI handler ────────────────────
+// 执行在目标核上（IF=0），按 pak→tlb_pak 逐条 INVPCID type=0
+// 返回值：1=上线, 2=缓存中, 3=脱靶
+
+extern "C" uint64_t utlb_invalidate(uspace_tlb_shutdown_infopak* pak)
+{
+    gs_complex_t* gs = get_gs_base();
+    pcid_entry_t* entries = gs->pcid_complex.entries;
+    uint8_t cur = gs->pcid_complex.now_using_pcid_idx;
+
+    for (int i = 1; i <= 5; i++) {
+        if (entries[i].addrSpace != pak->target_space)
+            continue;
+
+        // 按 tlb_pak 逐条目逐页 INVPCID type=0
+        for (int e = 0; e < 5; e++) {
+            auto& entry = pak->tlb_pak.entryies[e];
+            uint64_t psize = entry.page_size_in_byte;
+            uint64_t npages = entry.num_of_pages;
+            if (npages == 0 || psize == 0) continue;
+
+            for (uint64_t j = 0; j < npages; j++) {
+                vaddr_t vaddr = entry.vbase + j * psize;
+                struct { uint64_t pcid; uint64_t vaddr; } desc = {
+                    .pcid  = static_cast<uint64_t>(i) & 0xFFF,
+                    .vaddr = vaddr
+                };
+                asm volatile("invpcid (%1), %0"
+                    : : "r"(0ULL), "r"(&desc) : "memory");
+            }
+        }
+        return (i == cur) ? 1 : 2;
+    }
+    return 3;
+}
+
+// ─── 用户空间 TLB 失效远端投递 ───────────────────────────
+// 读 tlb_holding_bitmap 快照，对有脏 TLB 的核发 IPI
+
+extern "C" void utlb_invalidate_ipis(uspace_tlb_shutdown_infopak* pak)
+{
+    AddressSpace* as = pak->target_space;
+    uint32_t self = fast_get_processor_id();
+    uint32_t nproc = logical_processor_count;
+    uint32_t nwords = (MAX_PROCESSORS_COUNT + 63) / 64;
+    uint64_t* bitmap = as->get_tlb_hoding_bitmap();
+
+    // ── 快照 = 完成位图（成功一个清一个位，全零即完毕） ──
+    uint64_t snapshot[nwords];
+    {
+        uint32_t rw = (nproc + 63) / 64;
+        for (uint32_t w = 0; w < rw; w++)
+            snapshot[w] = __atomic_load_n(&bitmap[w], __ATOMIC_RELAXED);
+        for (uint32_t w = rw; w < nwords; w++)
+            snapshot[w] = 0;
+    }
+
+    // ── 本核直调后清除自身位 ──
+    {
+        uint32_t w = self / 64;
+        uint64_t b = 1ULL << (self % 64);
+        if (snapshot[w] & b) {
+            utlb_invalidate(pak);
+            snapshot[w] &= ~b;
+        }
+    }
+
+    // ── 快速检测：无远端核需要发 ──
+    auto is_all_clear = [&]() -> bool {
+        for (uint32_t w = 0; w < nwords; w++)
+            if (snapshot[w]) return false;
+        return true;
+    };
+    if (is_all_clear()) return;
+
+    // ── 50ms 硬上限内逐轮投递 ──
+    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
+
+    while (!is_all_clear()) {
+        if (ktime::get_microsecond_stamp() >= deadline) {
+            KURD_t fatal = KURD_t(result_code::FATAL, 0,
+                module_code::MEMORY, 0, 0,
+                level_code::FATAL, err_domain::CORE_MODULE);
+            fatal.reason = 1;
+            panic_info_inshort inshort = {
+                .is_bug = true, .is_policy = true,
+                .is_hw_fault = false, .is_mem_corruption = false,
+                .is_escalated = false
+            };
+            Panic::panic(default_panic_behaviors_flags,
+                (char*)"utlb_invalidate_ipis: 50ms deadline exceeded",
+                nullptr, &inshort, fatal);
+            __builtin_unreachable();
+        }
+
+        bool made_progress = false;
+
+        for (uint32_t pid = 0; pid < nproc; pid++) {
+            if (pid == self) continue;
+            uint32_t w = pid / 64;
+            uint64_t b = 1ULL << (pid % 64);
+            if (!(snapshot[w] & b)) continue;
+
+            ipi_package_t ipi;
+            ipi.arg        = pak;
+            ipi.func       = (uint64_t)utlb_invalidate;
+            ipi.id         = pid;
+            ipi.is_apicid  = false;
+            ipi.is_returnable = true;
+
+            __uint128_t result = ret_ipi_send(&ipi);
+            uint64_t lo = (uint64_t)result;
+
+            if (lo == 1 || lo == 3 || lo == 4) {
+                // 1=成功, 3=超时, 4=不存在 → 清除快照位
+                snapshot[w] &= ~b;
+                made_progress = true;
+            }
+            // lo==2 (BUSY) → 下轮重试
+        }
+
+        if (!made_progress) {
+            for (volatile int p = 0; p < 8; p++)
+                asm volatile("pause");
+        }
+    }
 }

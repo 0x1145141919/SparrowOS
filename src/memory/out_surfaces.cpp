@@ -4,6 +4,13 @@
 #include "memory/FreePagesAllocator.h"
 #include "panic.h"
 #include "util/OS_utils.h"
+#include "ktime.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
+#include "util/arch/x86-64/cpuid_intel.h"
+
+// 远端 TLB 失效函数，实现在 KspacMapMgr_pagediretct_operate.cpp
+extern "C" uint64_t remote_invalidate_seg(void* ptr);
 #ifdef USER_MODE
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -246,6 +253,7 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
 extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 {
     using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_UNMAP_PADDR_RESULTS;
+    interrupt_guard g;
     KURD_t success=KURD_t(result_code::SUCCESS,
             0,
             module_code::MEMORY,
@@ -267,8 +275,9 @@ extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
         fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
         return fail;
     }
-
-    interrupt_guard g;
+    KURD_t status; 
+    seg_to_pages_info_pakage_t pak;
+    {
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
     int result = kspace_vm_table->remove(interval.vbase());
@@ -276,8 +285,100 @@ extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
         fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
         return fail;
     }
-    KURD_t status = KspacePageTable::disable_VMentry(interval);
+    pak= KspacePageTable::disable_VMentry(interval,status);
+    }
+    
+    status=broadcast_invalidate_tlb(&pak);
     if (error_kurd(status)) return status;
+    return success;
+}
+KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
+{
+    KURD_t success = KURD_t(result_code::SUCCESS, 0,
+        module_code::MEMORY,
+        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
+        level_code::INFO,
+        err_domain::CORE_MODULE);
+    KURD_t fatal = KURD_t(result_code::FATAL, 0,
+        module_code::MEMORY,
+        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
+        level_code::FATAL,
+        err_domain::CORE_MODULE);
+
+    if (!pak)
+        return success;
+
+    uint32_t self = fast_get_processor_id();
+    uint32_t nproc = logical_processor_count;
+
+    // ── 本核直接执行 ──
+    remote_invalidate_seg(pak);
+
+    if (nproc <= 1)
+        return success;
+
+    // ── 跟踪已完成的远端核 ──
+    // MAX_PROCESSORS_COUNT = 4096, 栈上 512B bitmap
+    uint8_t done_bitmap[512];
+    ksetmem_8(done_bitmap, 0, sizeof(done_bitmap));
+
+    // 本核视为已完成
+    done_bitmap[self / 8] |= (1 << (self % 8));
+    uint32_t confirmed = 1;
+
+    // ── 多核 TLB shootdown ────────────────────────────────────
+    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;  // 50ms
+
+    while (confirmed < nproc) {
+        if (ktime::get_microsecond_stamp() >= deadline) {
+            fatal.reason = 1;
+            panic_info_inshort inshort{
+                .is_bug = true, .is_policy = true,
+                .is_hw_fault = false, .is_mem_corruption = false,
+                .is_escalated = false
+            };
+            Panic::panic(default_panic_behaviors_flags,
+                (char*)"broadcast_invalidate_tlb: deadline exceeded",
+                nullptr, &inshort, fatal);
+            __builtin_unreachable();
+        }
+
+        bool made_progress = false;
+
+        for (uint32_t pid = 0; pid < nproc; pid++) {
+            // 跳过已完成核
+            uint32_t byte_idx = pid / 8;
+            uint8_t  bit_mask = 1 << (pid % 8);
+            if (done_bitmap[byte_idx] & bit_mask)
+                continue;
+
+            ipi_package_t ipi;
+            ipi.arg         = pak;
+            ipi.func        = (uint64_t)remote_invalidate_seg;
+            ipi.id          = pid;
+            ipi.is_apicid   = false;
+            ipi.is_returnable = true;
+
+            __uint128_t result = ret_ipi_send(&ipi);
+            uint64_t ipi_status = (uint64_t)result;  // lo64 = IPI 状态
+
+            if (ipi_status == 1) {
+                done_bitmap[byte_idx] |= bit_mask;
+                confirmed++;
+                made_progress = true;
+            }
+            // BUSY(2) / TIMEOUT(3) → 下轮重试
+        }
+
+        // 无进展 → pause 短暂避让
+        if (!made_progress) {
+            for (int i = 0; i < 8; i++)
+                asm volatile("pause");
+        }
+    }
+
     return success;
 }
 void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2) {
@@ -500,19 +601,38 @@ KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount){
         .npages=_4kbpgscount,
         .access=KspacePageTable::PG_RW
     };
-    spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    int result= kspace_vm_table->remove((vaddr_t)vbase);
-    if(result!=0){
-        return KURD_t(result_code::FAIL,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::PAGES_VFREE_RESULTS::FAIL_REASONS::REMOVE_VMENTRY_FAIL,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
-            level_code::ERROR,
-            err_domain::CORE_MODULE
-        );
-    }
-    return KspacePageTable::disable_VMentry(interval);
+    seg_to_pages_info_pakage_t pak;
+    {
+        spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
+        int result = kspace_vm_table->remove((vaddr_t)vbase);
+        if (result != 0) {
+            return KURD_t(result_code::FAIL,
+                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::PAGES_VFREE_RESULTS::FAIL_REASONS::REMOVE_VMENTRY_FAIL,
+                module_code::MEMORY,
+                MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+                level_code::ERROR,
+                err_domain::CORE_MODULE
+            );
+        }
+        KURD_t inner_kurd;
+        pak = KspacePageTable::disable_VMentry(interval, inner_kurd);
+        if (error_kurd(inner_kurd))
+            return inner_kurd;
+    }  // kspace_pagetable_modify_lock 已释放
+
+    // ── TLB shootdown（无锁）──
+    KURD_t tlb_status = broadcast_invalidate_tlb(&pak);
+    if (error_kurd(tlb_status))
+        return tlb_status;
+
+    return KURD_t(result_code::SUCCESS, 0,
+        module_code::MEMORY,
+        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+        level_code::INFO,
+        err_domain::CORE_MODULE
+    );
 #endif
 }
 #ifdef KERNEL_MODE

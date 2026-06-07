@@ -1,0 +1,21 @@
+此文档为对于per-cpu的pcid管理以及tlbshitdown的实现的文档
+首先是pcid管理，本系统使用AddressSpace类作为地址空间，尤其是低位地址空间作为页表树的管理对象。而更是由于CPU的tlb数目有限，遂只用6个pcid(0~5)其中内核主体gKernelSpace强制占用0号pcid，1～5号可以自由分配。
+由是一个addressSpace在一个处理器上可以处于3种状态--下线，缓存，在线
+下面进行三种状态机的定义：
+1.下线状态：
+  当一个addressSpace处于下线状态时，其tlb中的内容全部被清空，并且其pcid被释放。
+2.缓存状态：
+  当一个addressSpace处于缓存状态时，其tlb中的内容被保留，且pcid被保留。
+3.在线状态：
+  当一个addressSpace处于在线状态时，则对应处理器的正是使用AddressSpace的根表物理地址作为cr3寄存器，当然肯定有对应的tlb。
+对应的合法的状态转换关系为：
+  下线->在线：就是对应的addressSpace被调度到某处理器上，通过lru淘汰缓存的addressSpace,并且启用继承者的tlb
+  缓存->在线：被缓存的addressSpace,切换到并且启用其pcid
+  在线->缓存：一个addressSpace暂时被换出（因为其它addressSpace换入，但是是先进入缓存池）
+  缓存->下线: 被LRU淘汰的addressSpace,pcid被新来的继承,或生命周期尽头被释放
+只有这四个状态转换关系，其他转换关系都是非法的。
+由是，应该在addressSpace中增加一个字段，作为tlb存在性位图，受addressSpace锁保护。位图bits[x]=1代表processor_id为x的处理器上的addressSpace处于在线/缓存态，也就是那个处理器上有此addressSpace对应的tlb
+bits[x]=0代表processor_id为x的处理器上的addressSpace处于下线态，也就是没有任何的脏tlb存在
+有了那个位图，作为副本，我们才能够按图索骥，发送tlb-shutdown，ipi,进行失效工作。当然，你可能会担心那个位图变动导致原子性不保证bug，但是
+，根据规则，那个位图副本，后续变动者，若是原本缓存/在线的被淘汰了，tlb全部消失，安全。新来的没有脏tlb,安全。但是持续持有的，必须ipi通知，不过总是在那个副本的子集之下，所以刻意如此设计。
+但是，实际上CPU视角，只有一个操作，addressSpace切换，同时触发上线/降级/逐出至多3个状态变换。

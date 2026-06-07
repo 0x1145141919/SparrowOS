@@ -2,6 +2,7 @@
 #include "stdint.h"
 #include "memory/memory_base.h"
 #include "arch/x86_64/abi/pgtable45.h"
+#include "arch/x86_64/abi/base.h"
 #include <util/lock.h>
 #include "util/Ktemplats.h"
 #include "memmodule_err_definitions.h"
@@ -201,6 +202,7 @@ class AddressSpace//到时候进程管理器可以用这个类创建，但是内
     private:
     phyaddr_t pml4_phybase;
     uint64_t occupyied_size;
+    uint64_t tlb_holding_bitmap[(MAX_PROCESSORS_COUNT+63)/64];
     constexpr static uint64_t PAGE_LV4_USERSPACE_SIZE=0x00007FFFFFFFFFFF+1;
     constexpr static uint64_t PAGE_LV5_USERSPACE_SIZE=0x00FFFFFFFFFFFFFF+1;
     static constexpr uint32_t _4KB_SIZE=0x1000;
@@ -231,6 +233,12 @@ class AddressSpace//到时候进程管理器可以用这个类创建，但是内
         return pml4_phybase;
     }
     void unsafe_load_pml4_to_cr3(uint16_t pcid);//这个接口会直接把当前页表加载到cr3寄存器
+    
+    bool tlb_on_set();
+    bool tlb_on_clear();
+    uint64_t* get_tlb_hoding_bitmap(){
+        return tlb_holding_bitmap;
+    }
     ~AddressSpace();//如果cr3还装载这这个页表，删除会在堆里释放根表，虽然不会马上报错但是极度危险，最好别这么干
 };
 extern AddressSpace*gKernelSpace;
@@ -365,17 +373,25 @@ static KURD_t enable_VMentry(const vm_interval& interval);
 //这个函数的职责是根据vmentry的内容撤销对应的页表项映射，只对对应的页表结构进行操作
 //失效对应tlb项目在函数外部完成
 //以及顺便使用共享信息包填充shared_inval_kspace_VMentry_info
-static KURD_t disable_VMentry(const vm_interval& interval);
+static seg_to_pages_info_pakage_t disable_VMentry(const vm_interval& interval,KURD_t&kurd);
 static constexpr pgaccess PG_RW={1,1,1,0,1,WB};
 static constexpr pgaccess PG_RWX ={1,1,1,1,1,WB};
 static constexpr pgaccess PG_R ={1,0,1,0,1,WB};
 static KURD_t Init();
 static KURD_t v_to_phyaddrtraslation(vaddr_t vaddr,phyaddr_t& result);
 };
-extern shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
+extern "C" void shift_addresSpace(AddressSpace* new_address_space);
+struct uspace_tlb_shutdown_infopak
+{ 
+    AddressSpace* target_space;
+    seg_to_pages_info_pakage_t tlb_pak;
+}; 
+extern "C" uint64_t utlb_invalidate(uspace_tlb_shutdown_infopak* pak);//返回值为1代表target_cpu的对应addressSpace上线，2代表在缓存中，3代表脱靶
+extern "C" void utlb_invalidate_ipis(uspace_tlb_shutdown_infopak* pak);
 extern spinlock_cpp_t kspace_pagetable_modify_lock;//此锁的用途在于保证“修改vm区间红黑树+修改页表结构”的原子性
 extern "C" int userspace_compatible_phymem_direct_map_enable();
 extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* kurd);
 extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval);
 extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval);
+extern "C" KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t* pak);
 extern "C" int userspace_compatible_phymem_direct_map_disable();

@@ -4,7 +4,8 @@
 // 静态成员定义
 vm_interval PhyAddrAccessor::BASIC_interval = {};
 vm_interval PhyAddrAccessor::cache_tb[CACHE_SLOT_COUNT] = {};
-uint8_t     PhyAddrAccessor::lfu_freq[CACHE_SLOT_COUNT] = {};
+uint64_t    PhyAddrAccessor::lru_tick[CACHE_SLOT_COUNT] = {};
+uint64_t    PhyAddrAccessor::access_clock = 0;
 
 void PhyAddrAccessor::Init(vm_interval basic_interval)
 {
@@ -12,8 +13,9 @@ void PhyAddrAccessor::Init(vm_interval basic_interval)
     // 清空缓存槽
     for (uint32_t i = 0; i < CACHE_SLOT_COUNT; i++) {
         cache_tb[i] = {};
-        lfu_freq[i] = 0;
+        lru_tick[i] = 0;
     }
+    access_clock = 0;
 }
 
 // ─── Cache helpers ────────────────────────────────────────
@@ -27,11 +29,11 @@ int PhyAddrAccessor::cache_lookup(phyaddr_t addr)
     return -1;
 }
 
-int PhyAddrAccessor::cache_evict_lfu()
+int PhyAddrAccessor::cache_evict_lru()
 {
     int victim = 0;
     for (uint32_t i = 1; i < CACHE_SLOT_COUNT; i++) {
-        if (lfu_freq[i] < lfu_freq[victim])
+        if (lru_tick[i] < lru_tick[victim])
             victim = i;
     }
     return victim;
@@ -39,13 +41,12 @@ int PhyAddrAccessor::cache_evict_lfu()
 
 void PhyAddrAccessor::cache_touch(int slot)
 {
-    // 频次递增，饱和到 0xFF 防溢出
-    if (lfu_freq[slot] < 0xFF)
-        lfu_freq[slot]++;
+    lru_tick[slot] = ++access_clock;
 }
 
 // ─── 通用访问辅助：将物理地址转换为可解引用的虚拟地址 ──────
 // 返回 vaddr，对于 stage2 cache miss 返回 0
+constexpr uint32_t _1GB_SIZE = 0x40000000;
 vaddr_t PhyAddrAccessor::resolve_addr(phyaddr_t addr)
 {
     if (is_not_ready())
@@ -70,9 +71,40 @@ vaddr_t PhyAddrAccessor::resolve_addr(phyaddr_t addr)
              + (addr - cache_tb[slot].pbase());
     }
 
-    // stage2 — cache miss：暂未实现按需映射，返回 0
-    // TODO: 按 2MB 窗口映射到 LRU 槽位后重试
-    return 0;
+    // stage2 — cache miss：逐出 LRU 槽 → 分配并映射 1GB UC_WR 窗口
+    {
+        phyaddr_t phybase = addr & ~(phyaddr_t)(_1GB_SIZE - 1);
+        int slot = cache_evict_lru();
+
+        // 逐出现有条目（Kspace_phyaddr_direct_unmap 包含 vm_table remove + 清 PTE + TLB shootdown）
+        if (cache_tb[slot].npages != 0) {
+            Kspace_phyaddr_direct_unmap(cache_tb[slot]);
+            cache_tb[slot] = {};
+        }
+
+        // 分配 + 映射 1GB 窗口（vm_table insert + _4lv_pdpte_1GB_entries_set）
+        vm_interval new_interval = {
+            .vpn    = 0,                    // 0 = 自动分配虚拟地址
+            .ppn    = phybase >> 12,
+            .npages = _1GB_SIZE >> 12,
+            .access = KSPACE_RW_UC_ACCESS,
+        };
+        KURD_t kurd;
+        vaddr_t vbase = Kspace_pinterval_alloc_and_map(new_interval, &kurd);
+        if (vbase == 0 || error_kurd(kurd)) [[unlikely]]
+            return 0;
+
+        // 更新缓存条目
+        cache_tb[slot] = {
+            .vpn    = vbase >> 12,
+            .ppn    = phybase >> 12,
+            .npages = _1GB_SIZE >> 12,
+            .access = KSPACE_RW_UC_ACCESS,
+        };
+        cache_touch(slot);
+
+        return vbase + (addr - phybase);
+    }
 }
 
 // ─── Read ──────────────────────────────────────────────────

@@ -71,7 +71,6 @@ void ipi_start_sched(x64_standard_context* ctx){
     ctx=nullptr;
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<" start scheduling"<<kendl;
-    x2apic::x2apic_driver::write_eoi();
     global_schedulers[self_processor_id].sched();
 }
 
@@ -127,12 +126,80 @@ void create_first_kthread(){
     textconsole_GoP::RuntimeInitServiceThread();
     serial_init_stage2();
     GlobalKernelStatus=SCHEDUL_READY;
-    x2apic::x2apic_driver::broadcast_exself_fixed_ipi(ipi_test);
+
+    // 逐 AP 发送跑飞型 IPI 启动调度器（串行，任意超时即失败）
+    for (uint32_t pid = 1; pid < logical_processor_count; pid++) {
+        ipi_package_t ipi;
+        ipi.arg        = nullptr;
+        ipi.func       = (uint64_t)ipi_start_sched;
+        ipi.id         = pid;
+        ipi.is_apicid  = false;
+        ipi.is_returnable = false;
+
+        uint64_t rc = fly_ipi_send(&ipi);
+        if (rc != 1) {
+            KURD_t fatal = KURD_t(result_code::FATAL, 0,
+                module_code::INTERRUPT, 0, 0,
+                level_code::FATAL, err_domain::CORE_MODULE);
+            fatal.reason = static_cast<uint16_t>(rc);
+            panic_info_inshort inshort = {
+                .is_bug = true, .is_policy = true,
+                .is_hw_fault = false, .is_mem_corruption = false,
+                .is_escalated = false
+            };
+            Panic::panic(default_panic_behaviors_flags,
+                (char*)"create_first_kthread: AP start failed",
+                nullptr, &inshort, fatal);
+            __builtin_unreachable();
+        }
+    }
+
     KURD_t kurd=KURD_t();
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
     per_processor_scheduler&sc=global_schedulers[0];
     sc.sched();
 }
+
+// ─── 核心关机 IPI handler（跑飞型，三指令收工） ────────────
+// 由 fly_ipi_send 投递到目标核，cli + wbinvd + hlt 后永不复返
+
+static uint64_t ipi_shutdown_func(void*)
+{
+    asm volatile("cli; wbinvd; hlt" ::: "memory");
+    __builtin_unreachable();
+    return 1;
+}
+
+// ─── 广播关机 ─────────────────────────────────────────────
+// 遍历除 self 外所有 AP，逐一 fly_ipi_send 关机
+// 50ms 硬上限，超时则跳过剩余 AP，发起者自救
+
+extern "C" void broadcast_shutdown()
+{
+    uint32_t self = fast_get_processor_id();
+    uint32_t nproc = logical_processor_count;
+    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
+
+    for (uint32_t pid = 0; pid < nproc; pid++) {
+        if (pid == self) continue;
+        if (ktime::get_microsecond_stamp() >= deadline)
+            break;
+
+        ipi_package_t ipi;
+        ipi.arg        = nullptr;
+        ipi.func       = (uint64_t)ipi_shutdown_func;
+        ipi.id         = pid;
+        ipi.is_apicid  = false;
+        ipi.is_returnable = false;
+
+        fly_ipi_send(&ipi);  // best-effort
+    }
+
+    // 发起者自救
+    asm volatile("cli; wbinvd; hlt" ::: "memory");
+    __builtin_unreachable();
+}
+
 loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
 XSDT_Table *XSDT;
