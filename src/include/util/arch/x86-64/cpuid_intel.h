@@ -31,4 +31,6 @@ uint64_t read_gs_u64(uint64_t index);
 void gs_u64_write(uint32_t index, uint64_t value);
 uint32_t fast_get_processor_id();//gs_slots[1]的[0:31]存processor_id, [32:63]存x2apicid
 uint32_t fast_get_x2apic_id();
+uint32_t tran_get_x2apic_id(uint32_t processor_id);
+uint32_t tran_get_processor_id(uint32_t x2apic_id);
 }

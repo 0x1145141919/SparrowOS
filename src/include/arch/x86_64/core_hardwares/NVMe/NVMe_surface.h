@@ -6,6 +6,7 @@
 #include <memory/AddresSpace.h>
 #include <Scheduler/per_processor_scheduler.h>
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
+#include <arch/x86_64/Interrupt_system/Interrupt.h>
 struct NVMe_device_private {
     uint32_t controller_id;
     uint32_t nsid;
@@ -118,21 +119,19 @@ private:
     uint64_t* msix_pending_bits_array;
     uint32_t cq_dorbell_read(uint32_t qid);
     uint32_t sq_dorbell_read(uint32_t qid);
-
-    static void ADMIN_CQ_handler(void* ctx, uint8_t vec, uint32_t proc_id);
-    static void IO_CQ_handler(void* ctx, uint8_t vec, uint32_t proc_id);
     static KURD_t Init(uint64_t flags);
     bool wait_for_ready(head_regs_t* regs, bool target, uint32_t timeout_500ms);
     KURD_t second_stage_init();
     KURD_t pre_init();
     KURD_t msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec);
     KURD_t msix_vec_free(uint16_t msix_vec);
-
+    void msix_enable(uint32_t x2apic_id, uint16_t msix_vec,uint8_t cpu_vec);
     // AER
     static constexpr uint8_t AER_batch_size = 16;
     static constexpr uint16_t AER_base_cid = 0xf000;
     vm_interval admin_buffer;
     vm_interval hmb_buffer;
+    static uint64_t interrupt_handle(interrupt_token_t*token);
 public:
     static node* node_array;
     static uint32_t controllers_count;
@@ -232,6 +231,7 @@ public:
 
     // Poll thread
     void start_poll_thread(uint16_t qid, KURD_t& kurd);
+
 };
 
 extern void register_nvme_kshell_commands();

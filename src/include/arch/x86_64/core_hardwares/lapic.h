@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "memory/memory_base.h"
 #include "arch/x86_64/Interrupt_system/fixed_interrupt_vectors.h"
+#include "arch/x86_64/Interrupt_system/Interrupt.h"
 struct x64_standard_context;
 namespace LAPIC_PARAMS_ENUM{
     enum TIMER_MODE_T:uint8_t
@@ -170,20 +171,6 @@ union x2apic_icr_t {
     };
     params param;
 };
-constexpr x2apic_icr_t broadcast_exself_icr{
-    .param{
-        .vector = ivec::IPI,
-        .delivery_mode = LAPIC_PARAMS_ENUM::DELIVERY_MODE_T::FIXED,
-        .destination_mode = LAPIC_PARAMS_ENUM::DESTINATION_T::PHYSICAL,
-        .reserved1 = 0,
-        .level = 0,
-        .trigger_mode=0,
-        .reserved2 = 0,
-        .destination_shorthand=LAPIC_PARAMS_ENUM::DESTINATION_SHORTHAND_T::ALL_EXCLUDING_SELF,
-        .reserved3 = 0,
-        .destination = {.raw = 0xffffffff},
-    }
-};
     // ==================== LVT error 寄存器 ====================
 union lvt_error_entry {
     struct params {
@@ -282,7 +269,7 @@ static_assert(sizeof(lvt_general_entry) == 4, "LVT General must be 4 bytes");
     };
     class lapic_error_handler{
         public:
-        static void handler(x64_standard_context*frame,uint8_t vec,uint32_t processor_id);
+        static uint64_t handler(interrupt_token_t* token);
         static void processor_regist();
     };
     class lapic_timer_tsc_ddline{

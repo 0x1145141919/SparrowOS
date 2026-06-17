@@ -303,6 +303,9 @@ per_processor_scheduler::per_processor_scheduler()
     idle_task->task_lock.unlock();
     idle = idle_task;
 }
+per_processor_scheduler::~per_processor_scheduler()
+{
+}
 namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
 constexpr uint32_t invalid_task_id = ~0u;

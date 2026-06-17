@@ -7,6 +7,7 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "linker_symbols.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/init_memory_info.h"
 #ifdef USER_MODE
@@ -39,7 +40,7 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
 {
     panic_lock.lock();
     if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
-        x2apic::x2apic_driver::broadcast_exself_fixed_ipi(other_processors_froze_handler);
+        broadcast_halt();
     }
     will.kernel_final_state=GlobalKernelStatus;
     GlobalKernelStatus=kernel_state::PANIC;
@@ -187,11 +188,6 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     _exit(-1);
 }
 #endif
-void Panic::other_processors_froze_handler()
-{
-    asm volatile("cli");
-    asm volatile("hlt");
-}
 KURD_t Panic::will_check()
 {
     return KURD_t();

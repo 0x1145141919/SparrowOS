@@ -141,6 +141,77 @@ HCB_v4:
 | Stress 1M cycles | PASS (489K alloc, 484K free, 222ms) |
 | btree_validation ×10 | ALL CLEAN |
 
+## 启动流程与演化阶段
+
+kpoolmemmgr 的初始化贯穿内核启动的两个阶段：
+
+### 阶段 1：单堆时代（BSS 预分配）
+
+在 mem_init.cpp 的 `bsp_init_kurd = kpoolmemmgr_t::multi_heap_enable()` 之前，
+内核只有 `first_linekd_heap` 一个 HCB 可用。它在 BSS 段预占了 4MB 虚拟空间
+（`DEFAULT_FIRST_HEAP_SIZE = 1 << 22`）和对应的 bitmap 空间
+（`DEFAULT_FIRST_BITMAP_SIZE = 4MB / 128 = 32KB`），通过 `linktime_init()`
+初始化底座。
+
+这是最小的引导堆，足够支持早期页分配器、KspacePageTable 等基础设施的初始化。
+
+### 阶段 2：多堆时代（per-processor 热点）
+
+`multi_heap_enable()` 在 mmu_init 阶段末尾被调用，完成：
+
+1. 从 `kspace_vm_table` 分配连续的虚拟地址空间：
+   - data 区：`HCB_DEFAULT_SIZE × processor_count × 4`（每个处理器 4 个 HCB）
+   - bitmap 区：data 区的 1/128
+2. 分配物理页给 HCB_ARRAY（管理结构本身）
+3. 每核 4 个 HCB 的虚拟地址空间保留，物理页按需分配（`alloc_heap()` 时
+   才调 `online()`）
+
+### 阶段 3：宏内核 kalloc（在以上基础之上运行）
+
+`multi_heap_enable()` 之后，`kalloc` 按 3 阶段搜索：
+
+```
+Phase 1: 本 CPU 热点堆（hotspot_start ~ hotspot_end），try_lock，优先
+Phase 2: 其他 CPU 的 HCB，try_lock，偷取
+Phase 3: first_linekd_heap fallback，spin_lock 等待
+```
+
+具体实现见 kpoolmemmgr.cpp `kpoolmemmgr_t::kalloc()`。
+
+```cpp
+uint32_t hotspot_start = id << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2;  // id × 4
+uint32_t hotspot_end   = hotspot_start + (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
+```
+
+每个 CPU 的 4 个热点 HCB 以 try_lock 方式竞争，不互斥等待，
+保证 alloc 路径不会因其他核正在操作同 HCB 而阻塞。
+
+## 分配释放策略
+
+### kalloc 核心策略
+
+1. **CPU 亲和优先**：先扫自己的热点堆，利用 cache 局部性。4 个 HCB 由同一核
+   轮询，减少 buddy tree 锁竞争。
+2. **try_lock 非阻塞**：热点堆和全局扫描全部用 `spintrylock_try_guard`，
+   拿到锁就试，拿不到就下一个，绝不原地旋转。
+3. **懒分配**：`alloc_heap()` 在 kalloc 尝试时按需调用 `HCB_v3::online()`
+   分配物理页，而非在 `multi_heap_enable` 一次性分配。
+
+### kfree 核心策略
+
+1. **地址反查 HCB**：`find_hcb_by_address()` 先检查 first_linekd_heap，
+   再在 `heap_area` 范围内计算线性索引。
+2. **单 HCB 锁定**：只锁定指针所属的那个 HCB，不碰全局结构。
+3. **不做回收**：HCB 全空后不触发 `offline()`，只标记时间戳
+   （见 HCB空闲回收线程设计草案.txt）。
+
+## 未实现：空闲 HCB 回收
+
+kfree 释放最后一笔分配后，HCB 的物理页不会被自动归还。设计了一个
+空闲回收线程方案（详见 HCB空闲回收线程设计草案.txt），但尚未实现。
+当前的 kfree 路径只执行 buddy tree 层面的合并释放，不释放 HCB 级别
+的物理页。
+
 ## 与 BCB_v4 的关系
 
 BCB_v4 和 HCB_v4 共用同一个 `BuddyControlBlock_foundation` 底座，但使用场景不同：
@@ -151,3 +222,5 @@ BCB_v4 和 HCB_v4 共用同一个 `BuddyControlBlock_foundation` 底座，但使
 | max_order 典型值 | 16~24 | 16 |
 | 缓存 | 24×8 多槽, 带 LRU 游标 | 每 order 8 项环形缓冲 |
 | 上层建筑 | all_pages_arr, KspacePageTable | buddy_meta 元数据, alloc_flags, realloc |
+| 锁策略 | 读写锁 + 每核 stat 剥离 | try_lock, 不旋转 |
+| 物理页回收 | 直接释放 | 线程化延迟回收（未实现） |

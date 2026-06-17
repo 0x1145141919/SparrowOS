@@ -1,7 +1,7 @@
 #pragma once
 #include "stdint.h"
 #include "memory/memory_base.h"
-#include "util/BuddyControlBlock_foundation.h"
+#include "util/BCB_fnd_DeepFirst.h"
 
 // ════════════════════════════════════════════════════════════════
 // init_heap_v3 — init.elf 专用单堆伴侣分配器
@@ -34,7 +34,7 @@ class init_heap {
     static constexpr uint64_t MAGIC_ALLOCATED  = 0xDEADBEEFCAFEBABEull;
 
     // ── 成员 ──
-    BuddyControlBlock_foundation fnd;
+    BCB_fnd_DeepFirst fnd;
     vaddr_t  base_       = 0;
     uint32_t total_size_ = 0;
     uint64_t cache_entries_[MAX_ORDER + 1][PER_ORDER_CACHE];

@@ -259,12 +259,12 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
     serial_init_stage1();
     bsp_kout.Init();
     bsp_kout.shift_dec();
-    tsc_regist();
     if (Status!=OS_SUCCESS)
     {
         bsp_kout<<"InitialKernelShellControler Failed\n";return ;
     }
     bsp_kout<<"Kernel Shell Initialed Success\n";
+    tsc_regist();
     GlobalKernelStatus=kernel_state::PANIC_WILL_ANALYZE;
     Panic::will_check();
     bsp_init_kurd=mem_init();

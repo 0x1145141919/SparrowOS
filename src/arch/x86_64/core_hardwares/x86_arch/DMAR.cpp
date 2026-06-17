@@ -11,7 +11,6 @@
 #include "global_controls.h"
 #include "memory/FreePagesAllocator.h"
 #include "memory/phyaddr_accessor.h"
-uint8_t dmar::iommu_fault_alloced_vector;
 extern "C" char iommu_fault_deal;
 dmar::driver** dmar::dmar_table;
 uint32_t dmar::dmars_count;
@@ -26,13 +25,20 @@ void flush_cache_serial(vaddr_t addr){
 void flush_cache_serial_no(vaddr_t addr){
     asm volatile("clflushopt %0": :"m"(addr));
 }
-extern "C" void iommu_fault_cpp_enter(x64_standard_context*regs,uint8_t vec,uint32_t processor_id){
-    (void)vec;
-    (void)processor_id;
-    for(uint32_t i=0;i<dmar::dmars_count;i++){
-        dmar::dmar_table[i]->err_handle();
+extern "C" uint64_t iommu_fault_cpp_enter(interrupt_token_t*token){
+    //[0:63]是dmar::driver的指针，而[64:67]是事件类型
+    //0是Fault
+    //1是Invalidation
+    //2是Page Request Event Interrupt
+    dmar::driver* driver=(dmar::driver*)token->token_private;
+    uint8_t type=(token->token_private>>64)&0xf;
+    switch(type){
+    case 0:
+        {
+            driver->err_handle();
+        }
     }
-    x2apic::x2apic_driver::write_eoi();
+    return 0;
 }
 KURD_t dmar::driver::device_regist(pcie_location location)
 {
@@ -101,16 +107,6 @@ int dmar::Init(acpi::DMAR_head *head)
     const uint8_t* end = dmar_begin + head->Header.Length;
     if (end < cur) {
         return OS_BAD_FUNCTION;
-    }
-    KURD_t iommu_vec_kurd;
-    interrupt_token_t token = { 0, 0, iommu_fault_cpp_enter };
-    dmar::iommu_fault_alloced_vector=out_interrupt_vec_alloc(&token,fast_get_processor_id(),&iommu_vec_kurd);
-    if(dmar::iommu_fault_alloced_vector==0xff||error_kurd(iommu_vec_kurd)){
-        Panic::panic(default_panic_behaviors_flags,"DMAR:iommu vec regist fault",
-            nullptr,
-            nullptr,
-            KURD_t()
-        );
     }
     uint32_t drhd_count = 0;
     uint32_t scope_total = 0;
@@ -330,18 +326,33 @@ dmar::driver::driver(acpi::DRHD_table *drhd)//未完全完成之DMA重映射之�
     command_enable_root_table();
     regs->Interrupt_remapping_table_addr=iremap_ptr_reg_draft;
     set_command_set_iremap_tbptr();
-    uint32_t bsp_x2apicid=query_x2apicid();
-    uint32_t fault_event_data_draft=dmar::iommu_fault_alloced_vector;
-    regs->fault_event_data=fault_event_data_draft;
-    uint8_t bsp_apicid_low=bsp_x2apicid&0xff;
-    uint32_t fault_event_addr_low_draft=0xfee00000|(1<<3)|(bsp_apicid_low<<12);
-    regs->fault_event_addr=fault_event_addr_low_draft;
-    uint32_t bsp_x2apicid_high24bits=bsp_x2apicid&0xffffff00;
-    uint32_t fault_event_addr_high_draft=bsp_x2apicid_high24bits;
-    regs->fault_event_addr_high=fault_event_addr_high_draft;
-    head_regs::fault_event_control_union union_draft={.value=regs->fault_event_control};
-    union_draft.fields.IM=0;
-    regs->fault_event_control=union_draft.value;
+
+    // ── 每 DMAR 单元独立注册 Fault Event Interrupt ──
+    __uint128_t token_priv = (__uint128_t)(uint64_t)this;  // lo=driver*, hi=0 type=Fault
+    interrupt_token_t ftoken = { token_priv, 0, iommu_fault_cpp_enter };
+    KURD_t vec_kurd;
+    this->fault_vec = out_interrupt_vec_alloc(&ftoken, fast_get_processor_id(), &vec_kurd);
+    if (this->fault_vec == 0xFF || error_kurd(vec_kurd)) {
+        panic_context::x64_context ctx = {};
+        panic_info_inshort pinfo = { .is_bug = 1, .is_policy = 0, .is_hw_fault = 1,
+                                     .is_mem_corruption = 0, .is_escalated = 0 };
+        Panic::panic(default_panic_behaviors_flags,
+            (char*)"DMAR: fault vec alloc failed",
+            &ctx, &pinfo, vec_kurd);
+    }
+
+    // 编程 Fault Event Data/Address 寄存器
+    uint32_t x2apicid = query_x2apicid();
+    regs->fault_event_data = this->fault_vec;
+    regs->fault_event_addr = 0xfee00000 | ((x2apicid & 0xff) << 12);
+    regs->fault_event_addr_high = x2apicid >> 8;
+    asm volatile("mfence" ::: "memory");
+
+    // Unmask
+    head_regs::fault_event_control_union ctl = { .value = regs->fault_event_control };
+    ctl.fields.IM = 0;
+    regs->fault_event_control = ctl.value;
+    asm volatile("mfence" ::: "memory");
 }
 KURD_t dmar::driver::regist_interrupt_simp(regist_remmap_struct arg, uint16_t &idx)
 {

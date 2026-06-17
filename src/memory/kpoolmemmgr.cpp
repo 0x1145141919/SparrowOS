@@ -13,6 +13,7 @@
 #include "firmware/ACPI_APIC.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "memory/FreePagesAllocator.h"
 #include "util/kptrace.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"

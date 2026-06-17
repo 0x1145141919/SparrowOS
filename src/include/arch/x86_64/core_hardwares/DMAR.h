@@ -34,7 +34,6 @@ namespace COREHARDWARES_LOCATIONS{
 namespace dmar{
     static constexpr uint32_t interrupt_remapp_table_default_size=1<<20;
     constexpr uint32_t interrupt_remapp_table_default_S=0xF;
-    extern uint8_t iommu_fault_alloced_vector;//中断重映射只会在BSP上被分配，只会发向BSP
     namespace acpi{
     enum sub_table_type:uint16_t{
         DRHD=0,
@@ -219,6 +218,7 @@ namespace dmar{
     KURD_t default_err=set_result_fail_and_error_level(default_kurd);
     KURD_t default_fatal=set_fatal_result_level(default_kurd);
     uint16_t fault_record_regs_count=0;
+    uint8_t fault_vec=0xFF;
 
     struct fault_record_reg_raw{
         uint64_t value[2];
@@ -343,6 +343,7 @@ namespace dmar{
         uint32_t page_request_event_data;
         uint32_t page_request_event_addr;
         uint32_t page_request_event_addr_high;
+
     }__attribute__((packed));
     static_assert(sizeof(head_regs)==0xF0,"head_regs size error");
     head_regs* regs;

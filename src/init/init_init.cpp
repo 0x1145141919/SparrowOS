@@ -23,7 +23,15 @@
 #include "memory/memory_base.h"
 #include "init/init_phase_ctx.h"
 #include "init/init_heap_v3.h"
-
+void wrmsr_func(uint32_t offset, uint64_t value)
+{
+    uint32_t value_high=(value>>32)&0xffffffff, value_low=value&0xffffffff; 
+    asm volatile("wrmsr"
+                 :
+                 : "c" (offset),
+                   "a" (value_low),
+                   "d" (value_high));
+}
 #include <elf.h>
 extern "C" void init_jump_to_kernel(x64_standard_context* ctx);
 // ============================================================================

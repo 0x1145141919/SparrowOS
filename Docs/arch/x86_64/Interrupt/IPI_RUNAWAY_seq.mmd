@@ -1,0 +1,56 @@
+sequenceDiagram
+    %% ── 跑飞型 IPI (IPI_RUNAWAY, vec=254) ──
+    %% IDT 路径：sender → cmpxchg16b 抢占 slot → raw_send → receiver 确认消费→EOI→执行业务→ud2
+    %% 详见 x86_vecs_deliver_mgr.cpp: fly_ipi_send() + case IPI_RUNAWAY
+    %% 源码版本: 2026-06-06 v3.2
+
+    participant S as 发送核 (Sender)
+    participant Slot as local_ipi_complex<br/>16B 原子消息槽
+    participant R as 目标核 (Receiver)
+
+    Note over S: interrupt_guard ON (cli)
+
+    S->>Slot: cmpxchg16b(0 → {fn, arg})
+    alt CAS 失败 (槽被占用)
+        Slot-->>S: false
+        Note over S: interrupt_guard 析构 (sti)
+        S->>S: return BUSY(2)
+    else CAS 成功
+        Slot-->>S: true
+        Note right of Slot: slot = {fn, arg}
+
+        S->>R: raw_send_ipi(ICR, IPI_RUNAWAY)
+
+        Note over R: IDT → vec_demux_entry (stride 16)
+        R->>Slot: fnbox_copy = *slot
+        Note over R: fnbox = 栈上副本
+        R->>Slot: cmpxchg16b({fn,arg} → {1, 0})
+        Note right of Slot: slot = {1, 0}
+        Note over R: lo64=1 标记"已消费"
+        Note over R: EOI 在执行业务前
+        R->>R: write_eoi()
+        R->>R: fnbox.func(fnbox.arg)
+        Note over R: ud2 (永不返回)
+
+        loop 轮询 — 最多 10ms
+            Note over S: cacheline_wait(slot) / pause()
+            S->>Slot: 读 slot.lo64
+            alt lo64 == 1 (收端已确认消费)
+                Slot-->>S: {1, 0}
+                S->>Slot: CAS({1, 0} → 0)
+                Note right of Slot: slot = 0 (空闲)
+                Note over S: interrupt_guard 析构 (sti)
+                S->>S: return SUCCESS(1)
+            else deadline 到期
+                S->>Slot: CAS({fn,arg} → 0) 强占
+                Note right of Slot: slot = 0 (空闲)
+                Note over S: interrupt_guard 析构 (sti)
+                S->>S: return TIMEOUT(3)
+            end
+        end
+    end
+
+    %% ── FRED 路径差异 ──
+    Note over Slot: ─── FRED 路径差异 ───
+    Note over R: 无 write_eoi() — FRED 自动 EOI
+    Note over R: 强制 __builtin_unreachable()

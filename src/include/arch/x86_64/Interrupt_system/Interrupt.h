@@ -12,8 +12,8 @@ struct ipi_descrioptor_t{
 };
 constexpr uint64_t TOKEN_FLAG_MASK_TOKEN_SCHEDULE=0x1;
 struct interrupt_token_t{
+    __uint128_t token_private;
     uint64_t flags;
-    uint64_t token_private;
     uint64_t (*func)(interrupt_token_t*token);
 };
 /**

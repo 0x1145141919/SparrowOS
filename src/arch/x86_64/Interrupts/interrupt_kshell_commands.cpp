@@ -113,10 +113,10 @@ KURD_t cmd_out_int_spec(const line_t* line) {
                      << (uint32_t)pid << " ===" << kendl;
             bool any = false;
             for (uint16_t v = 32; v <= 255; v++) {
-                if (slice[v]) {
+                if (slice[v].func) {
                     bsp_kout << "  [" << (uint32_t)v << "] 0x"
-                             << HEX<<(uint64_t)slice[v] <<DEC<< "  ";
-                    print_sym_name((uint64_t)slice[v]);
+                             << HEX<<(uint64_t)slice[v].func <<DEC<< "  ";
+                    print_sym_name((uint64_t)slice[v].func);
                     bsp_kout << kendl;
                     any = true;
                 }

@@ -121,17 +121,17 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
 
     if (valid) { return error; }
 
-#ifndef TEST_MODE
+
     if (data_va & ((1ULL << 21) - 1)) {
         return error;
     }
-#endif
+
 
     vbase_      = data_va;
     total_size_ = size;
     max_order_  = MAX_ORDER;
 
-#ifndef TEST_MODE
+
     // 分配 data 区域物理页 (2M 对齐)
     buddy_alloc_params params = BUDDY_ALLOC_ALWAYS_TRY;
     params.align_log2 = 21;
@@ -166,7 +166,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
         bitmap_pbase = FreePagesAllocator::alloc(alloc_size, BUDDY_ALLOC_ALWAYS_TRY,
                                                   page_state_t::kernel_pinned, kurd);
         if (!success_all_kurd(kurd)) {
-            KspacePageTable::disable_VMentry(interval);
+            KspacePageTable::disable_VMentry(interval,kurd);
             FreePagesAllocator::free(data_pbase, size);
             data_pbase = 0;
             return kurd;
@@ -185,7 +185,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
         if (!success_all_kurd(kurd)) {
             FreePagesAllocator::free(bitmap_pbase, alloc_size);
             bitmap_pbase = 0; bitmap_allocated_size = 0;
-            KspacePageTable::disable_VMentry(interval);
+            KspacePageTable::disable_VMentry(interval,kurd);
             FreePagesAllocator::free(data_pbase, size);
             data_pbase = 0;
             return kurd;
@@ -194,9 +194,6 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
 
     // 底座初始化
     fnd.init(bitmap_va, max_order_);
-#else
-    fnd.init(bitmap_va, max_order_);
-#endif
 
     for (auto& c : caches_) {
         for (auto& e : c.entries) e = ~0ULL;
@@ -206,7 +203,15 @@ KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bit
     valid = true;
     return success;
 }
-
+KURD_t hcb_unmap_free_tlb(const vm_interval& interval)                                                      
+  {                                                                                                           
+      KURD_t kurd;                                                                                            
+      seg_to_pages_info_pakage_t pak = KspacePageTable::disable_VMentry (interval, kurd);                     
+      if (error_kurd(kurd)) return kurd;                                                                      
+      kurd = FreePagesAllocator::free(interval.pbase(), interval.byte_cnt());                                
+      if (error_kurd(kurd)) return kurd;                                                                      
+      return broadcast_invalidate_tlb(&pak);                                                                  
+  }   
 // ═══ HCB_v3 — offline (归还 data + bitmap 物理页) ═══
 KURD_t kpoolmemmgr_t::HCB_v3::offline()
 {
@@ -217,8 +222,6 @@ KURD_t kpoolmemmgr_t::HCB_v3::offline()
     error.event_code   = EVENT_CODE_OFFLINE;
 
     if (!valid) { return error; }
-
-#ifndef TEST_MODE
     // 归还 bitmap 物理页
     if (bitmap_pbase != 0 && bitmap_allocated_size != 0) {
         vm_interval bm_interval = {
@@ -227,10 +230,8 @@ KURD_t kpoolmemmgr_t::HCB_v3::offline()
             .npages = bitmap_allocated_size >> 12,
             .access = KspacePageTable::PG_RW,
         };
-        KURD_t kurd = KspacePageTable::disable_VMentry(bm_interval);
-        if (error_kurd(kurd)) return kurd;
-        kurd = FreePagesAllocator::free(bitmap_pbase, bitmap_allocated_size);
-        if (error_kurd(kurd)) return kurd;
+        KURD_t kurd = hcb_unmap_free_tlb(bm_interval);
+        if(error_kurd(kurd))return kurd;
         bitmap_pbase = 0; bitmap_allocated_size = 0;
     }
 
@@ -242,13 +243,11 @@ KURD_t kpoolmemmgr_t::HCB_v3::offline()
             .npages = total_size_ >> 12,
             .access = KspacePageTable::PG_RW,
         };
-        KURD_t kurd = KspacePageTable::disable_VMentry(interval);
-        if (error_kurd(kurd)) return kurd;
-        kurd = FreePagesAllocator::free(data_pbase, total_size_);
+        KURD_t kurd = hcb_unmap_free_tlb(interval);
         if (error_kurd(kurd)) return kurd;
         data_pbase = 0;
     }
-#endif
+
 
     valid = false; total_size_ = 0; vbase_ = 0;
     return success;

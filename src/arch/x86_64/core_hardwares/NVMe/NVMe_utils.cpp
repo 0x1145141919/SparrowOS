@@ -1,6 +1,7 @@
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include <util/arch/x86-64/cpuid_intel.h>
 
 KURD_t NVMe_Controller::default_kurd()
 {
@@ -46,12 +47,34 @@ uint32_t NVMe_Controller::cq_dorbell_read(uint32_t qid)
 {
     return doorbells[((uint32_t)qid * 2 + 1) * doorbell_stride_u32];
 }
+void NVMe_Controller::msix_enable(uint32_t x2apic_id, uint16_t msix_vec, uint8_t cpu_vec)
+{
+    MSIX_entry_t& entry=this->msix_table[msix_vec];
+
+    // 1. Mask 该 entry，编程期间不触发中断
+    entry.vector_control |= 1u;
+    asm volatile("mfence" ::: "memory");
+
+    // 2. 编程 MSI-X Address/Data — 严格遵循 d6749eb7 的硬件时序:
+    //    upper → addr → upper=0 → data
+    uint32_t addr = 0xfee00000 | ((x2apic_id & 0xff) << 12);
+    uint32_t upper_addr = x2apic_id & ~0xff;
+    entry.message_upper_addr = upper_addr;
+    entry.message_addr       = addr;
+    entry.message_upper_addr = 0;
+    entry.message_data       = cpu_vec;
+    asm volatile("mfence" ::: "memory");
+
+    // 3. Unmask
+    entry.vector_control &= ~1u;
+    asm volatile("mfence" ::: "memory");
+}
 KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
 {
     using namespace DEVICES_locs::NVMe_events::msix_vec_alloc_results::fail_reasons;
     KURD_t success=default_success();
     success.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
-    //为了简化特地用cqid就只使用MSIX向量号
+    // msix_vec 0=Admin CQ, ≥1=IO CQ → 与 cq_count 比较确保不越界
     if(msix_vec >= this->cq_count||processor_id >= logical_processor_count){
         KURD_t fail=default_failure();
         fail.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
@@ -59,39 +82,37 @@ KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
         return fail;
     }
     KURD_t kurd;
-    uint8_t vec;
+
+    // ── 构造 interrupt_token ──
+    // token_private 编码:
+    //   lo 64 bits = NVMe_Controller* (this)
+    //   hi 64 bits = CQ ID (= msix_vec, 0=Admin, ≥1=IO CQ)
+    // interrupt_handle 从 token_private 提取两者后统一分发到 cq_interrupt_handler(qid)
+    __uint128_t token_private = (__uint128_t)(uint64_t)this;
+    token_private |= (__uint128_t)(uint64_t)msix_vec << 64;
+    interrupt_token_t token = { token_private, 0, NVMe_Controller::interrupt_handle };
+
+    uint8_t vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
+    if(error_kurd(kurd))return kurd;
+
+    // 跟踪分配状态（offline → msix_vec_free 时使用）
     if(msix_vec == 0){
-        interrupt_token_t token = { 0, 0, ADMIN_CQ_handler };
-        vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
-        if(error_kurd(kurd))return kurd;
         ADmin_queue_belonged_processor=processor_id;
         ADmin_queue_vec=vec;
     }else{
-        interrupt_token_t token = { 0, 0, IO_CQ_handler };
-        vec = out_interrupt_vec_alloc(&token, processor_id, &kurd);
-        if(error_kurd(kurd))return kurd;
         IO_CQ_vecs[processor_id]=vec;
     }
-    // [GS_COMPLEX_TODO] 从 GS slot 读 APIC ID: slot 存储 query_x2apicid() 结果
-    // 临时用 processor_id 代替，仅确保编译通过
-    uint32_t x2apicid = static_cast<uint32_t>(processor_id);
-    MSIX_entry_t& entry=this->msix_table[msix_vec];
 
-    // 1. 先 Mask 该 entry，确保编程期间不会触发中断
-    entry.vector_control |= 1u;
-    asm volatile("mfence" ::: "memory");
-
-    uint32_t addr = 0xfee00000 | ((x2apicid & 0xff) << 12);
-    uint32_t upper_addr= x2apicid&~0xff;
-    entry.message_upper_addr = upper_addr;
-    entry.message_addr      = addr;
-    entry.message_upper_addr = 0;
-    entry.message_data      = vec;
-    asm volatile("mfence" ::: "memory");
-
-    // 3. Unmask
-    entry.vector_control &= ~1u;
-    asm volatile("mfence" ::: "memory");
+    // ── 用 tran_get_x2apic_id 通过 GS slot 获取目标处理器的 x2APIC ID ──
+    uint32_t x2apicid = tran_get_x2apic_id(processor_id);
+    if (x2apicid == 0xFFFFFFFF) {
+        out_interrupt_vec_free(vec, processor_id);
+        KURD_t fail=default_failure();
+        fail.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
+        fail.reason=param_out_of_range;
+        return fail;
+    }
+    msix_enable(x2apicid, msix_vec, vec);
     return success;
 }
 KURD_t NVMe_Controller::msix_vec_free(uint16_t msix_vec)
@@ -101,30 +122,30 @@ KURD_t NVMe_Controller::msix_vec_free(uint16_t msix_vec)
     success.event_code=DEVICES_locs::NVMe_events::msix_vec_dealloc;
     fail.event_code=DEVICES_locs::NVMe_events::msix_vec_dealloc;
     MSIX_entry_t& entry=this->msix_table[msix_vec];
-    uint32_t addr=entry.message_addr;
-    uint32_t addr_upper=entry.message_upper_addr;
-    uint32_t data=entry.message_data;
-    uint8_t vec=data;
-    uint32_t apic_id=(addr_upper&~0xff)|((addr>>12)&0xff);
-    uint32_t processor_id=0;
-    // [GS_COMPLEX_TODO] 从 GS slot 查表: apic_id → processor_id
-    // 临时假定 apic_id == processor_id
-    processor_id = apic_id < logical_processor_count ? apic_id : 0;
-    if(processor_id>=logical_processor_count){
+
+    // ── 从 MSI-X entry 还原 IDT vector 和目标 x2APIC ID ──
+    uint8_t vec = (uint8_t)entry.message_data;
+    uint32_t apic_id = (entry.message_upper_addr << 8)
+                      | ((entry.message_addr >> 12) & 0xff);
+
+    // ── 用 tran_get_processor_id 通过 GS slot 查表: x2apic_id → processor_id ──
+    uint32_t processor_id = tran_get_processor_id(apic_id);
+    if(processor_id == 0xFFFFFFFF){
         fail.reason=DEVICES_locs::NVMe_events::msix_vec_dealloc_results::fail_reasons::processor_not_found;
         return fail;
     }
+
     KURD_t kurd=out_interrupt_vec_free(vec,processor_id);
     if(error_kurd (kurd))return kurd;
+
     if(msix_vec){
         IO_CQ_vecs[processor_id]=0xff;
     }else{
         ADmin_queue_belonged_processor=~0;
         ADmin_queue_vec=0xff;
     }
-    uint32_t ctrl=entry.vector_control;
-    ctrl|=1;
-    entry.vector_control=ctrl;
+    // Mask entry
+    entry.vector_control |= 1u;
     return success;
 }
 

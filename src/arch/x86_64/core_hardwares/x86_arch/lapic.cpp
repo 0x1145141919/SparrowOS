@@ -12,7 +12,6 @@
 #include "util/kout.h"
 #include "ktime.h"
 #include "panic.h"
-extern void timer_cpp_enter(x64_standard_context *frame, uint8_t vec, uint32_t processor_id);
 void x2apic::x2apic_driver::raw_config_timer(timer_lvt_entry entry)
 {
     wrmsr_func(msr::apic::IA32_X2APIC_LVT_TIMER,entry.raw);
@@ -72,10 +71,16 @@ void x2apic::x2apic_driver::write_eoi()
 {
     wrmsr_func(msr::apic::IA32_X2APIC_EOI,0);
 }
+extern "C" uint64_t lapic_timer_stub_enter(interrupt_token_t* token){
+    (void)token;  // 时钟中断暂时为空桩，仅确认硬件信号到达
+    return 1;
+}
+
 void x2apic::lapic_timer_one_shot::processor_regist()
 {
     KURD_t kurd;
-    uint8_t vec = out_interrupt_vec_alloc(timer_cpp_enter, fast_get_processor_id(), &kurd);
+    interrupt_token_t token = { 0, 0, lapic_timer_stub_enter };
+    uint8_t vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
     if (vec == 0xff||error_kurd(kurd)) {
         //panic
     }
@@ -118,7 +123,7 @@ void x2apic::lapic_timer_one_shot::processor_regist()
 void x2apic::lapic_timer_tsc_ddline::processor_regist()
 {
     KURD_t kurd;
-    interrupt_token_t token = { TOKEN_FLAG_MASK_TOKEN_SCHEDULE, 0, timer_cpp_enter };
+    interrupt_token_t token = { 0, 0, lapic_timer_stub_enter };
     uint8_t vec = out_interrupt_vec_alloc(&token, fast_get_processor_id(), &kurd);
     if (vec == 0xff||error_kurd(kurd)) {
         panic_context::x64_context ctx = {};
@@ -133,9 +138,10 @@ void x2apic::lapic_timer_tsc_ddline::processor_regist()
     x2apic_driver::raw_config_timer(ddl);
 }
 
-void x2apic::lapic_error_handler::handler(x64_standard_context*frame,uint8_t vec,uint32_t processor_id)
+uint64_t x2apic::lapic_error_handler::handler(interrupt_token_t* token)
 {
-    (void)frame; (void)vec;
+    (void)token;
+    uint32_t processor_id = fast_get_processor_id();
     /* dummy read to latch ESR, then real read */
     rdmsr(msr::apic::IA32_X2APIC_ESR);
     uint32_t esr = (uint32_t)rdmsr(msr::apic::IA32_X2APIC_ESR);
@@ -150,6 +156,7 @@ void x2apic::lapic_error_handler::handler(x64_standard_context*frame,uint8_t vec
     if (esr & ESR_MASKS::RECEIVE_ILLEGAL_VECTOR) bsp_kout << " RECEIVE_ILLEGAL_VEC";
     if (esr & ESR_MASKS::ILLEGAL_REGISTER_ADDR)  bsp_kout << " ILLEGAL_REG_ADDR";
     bsp_kout << kendl;
+    return 0;
 }
 
 void x2apic::lapic_error_handler::processor_regist()

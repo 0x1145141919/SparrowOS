@@ -1,0 +1,55 @@
+sequenceDiagram
+    %% ── 返回型 IPI (IPI_RETURNABLE, vec=253) ──
+    %% IDT 路径：sender → cmpxchg16b 抢占 slot → raw_send → receiver 执行并写回 → sender 回收
+    %% 详见 x86_vecs_deliver_mgr.cpp: ret_ipi_send() + case IPI_RETURNABLE
+    %% 源码版本: 2026-06-06 v3.2
+
+    participant S as 发送核 (Sender)
+    participant Slot as local_ipi_complex<br/>16B 原子消息槽
+    participant R as 目标核 (Receiver)
+
+    Note over S: interrupt_guard ON (cli)
+
+    S->>Slot: cmpxchg16b(0 → {fn, arg})
+    alt CAS 失败 (槽被占用)
+        Slot-->>S: false
+        Note over S: interrupt_guard 析构 (sti)
+        S->>S: return {0, BUSY(2)}
+    else CAS 成功
+        Slot-->>S: true
+        Note right of Slot: slot = {fn, arg}
+
+        S->>R: raw_send_ipi(ICR, IPI_RETURNABLE)
+
+        Note over R: IDT → vec_demux_entry (stride 16)
+        R->>Slot: fnbox_copy = *slot
+        Note over R: fnbox = (fnbox_t*)slot
+        R->>R: result = fnbox->func(fnbox->arg)
+        R->>Slot: cmpxchg16b({fn,arg} → {1, result})
+        Note right of Slot: slot = {1, result}
+        Note over R: lo64=1 标记"结果就绪"
+        R->>R: write_eoi()
+        Note over R: 中断返回
+
+        loop 轮询 — 最多 10ms
+            Note over S: cacheline_wait(slot) / pause()
+            S->>Slot: 读 slot.lo64
+            alt lo64 == 1 (收端已写回)
+                Slot-->>S: {1, result}
+                S->>Slot: CAS({1, result} → 0)
+                Note right of Slot: slot = 0 (空闲)
+                Note over S: interrupt_guard 析构 (sti)
+                S->>S: return {result, SUCCESS(1)}
+            else deadline 到期
+                S->>Slot: CAS({fn,arg} → 0) 强占
+                Note right of Slot: slot = 0 (空闲)
+                Note over S: interrupt_guard 析构 (sti)
+                S->>S: return {0, TIMEOUT(3)}
+            end
+        end
+    end
+
+    %% ── FRED 路径差异 ──
+    Note over Slot: ─── FRED 路径差异 ───
+    Note over R: 无 write_eoi() — FRED 自动 EOI
+    Note over R: cmpxchg16b(slot, &msg, result_box) — msg 为 switch 前统一捕获

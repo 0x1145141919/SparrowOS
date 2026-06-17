@@ -53,6 +53,15 @@ NVMe_Controller::cmd_submit_and_process(
         return sq.block_tokens[cid].sq_entry;
     }
 }
+uint64_t NVMe_Controller::interrupt_handle(interrupt_token_t *token)
+{
+    //那token_private的[0:63]是NVMe_Controller*指针，而[64:79]是cq_id
+    __uint128_t token_private = token->token_private;
+    NVMe_Controller* dev = (NVMe_Controller*)token_private;
+    uint16_t cqid= token->token_private >> 64;
+    dev->cq_interrupt_handler(cqid);
+    return 1;//符合那个TOKEN_FLAG_MASK_TOKEN_SCHEDULE，触发调度
+}
 
 // ============================================================
 // 通用 CQ 中断处理
@@ -109,57 +118,6 @@ NVMe_Controller::ADMIN_cmd_submit_and_process(
     NVMe::command::submit_command_common cmd, KURD_t& kurd)
 {
     return cmd_submit_and_process(0, cmd, kurd);
-}
-
-void NVMe_Controller::ADMIN_CQ_interrupt_handler()
-{
-    cq_interrupt_handler(0);
-}
-
-void NVMe_Controller::ADMIN_CQ_handler(void* ctx, uint8_t vec,
-                                        uint32_t proc_id)
-{
-    uint16_t i = 0;
-    for (; i < controllers_count; i++) {
-        if (!node_array[i].controller) continue;
-        if (node_array[i].controller->ADmin_queue_belonged_processor == proc_id &&
-            node_array[i].controller->ADmin_queue_vec == vec) {
-            node_array[i].controller->ADMIN_CQ_interrupt_handler();
-            break;
-        }
-    }
-    if (i == controllers_count) {
-        bsp_kout << "[ERROR] ADMIN_CQ_handler: No matching NVMe controller for vec=";
-        bsp_kout.shift_hex();
-        bsp_kout << (uint32_t)vec;
-        bsp_kout.shift_dec();
-        bsp_kout << ", proc_id=" << proc_id << kendl;
-    }
-}
-
-void NVMe_Controller::IO_CQ_handler(void* ctx, uint8_t vec,
-                                     uint32_t proc_id)
-{
-    uint16_t i = 0;
-    for (; i < controllers_count; i++) {
-        if (!node_array[i].controller) continue;
-        if (node_array[i].controller->IO_CQ_vecs[proc_id] == vec) {
-            node_array[i].controller->IO_CQ_interrupt_handler(proc_id);
-            break;
-        }
-    }
-    if (i == controllers_count) {
-        bsp_kout << "[ERROR] IO_CQ_handler: No matching NVMe controller for vec=";
-        bsp_kout.shift_hex();
-        bsp_kout << (uint32_t)vec;
-        bsp_kout.shift_dec();
-        bsp_kout << ", proc_id=" << proc_id << kendl;
-    }
-}
-
-void NVMe_Controller::IO_CQ_interrupt_handler(uint32_t proc_id)
-{
-    cq_interrupt_handler(proc_id + 1);
 }
 
 // ============================================================

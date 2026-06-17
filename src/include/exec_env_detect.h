@@ -1,3 +1,4 @@
+#pragma once
 #include "stdint.h" 
 /* === Runtime environment detection === */
 enum runtime_env : uint8_t {

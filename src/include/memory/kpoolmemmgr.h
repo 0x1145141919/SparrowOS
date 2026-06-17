@@ -1,6 +1,6 @@
 #pragma once
 #include "stdint.h"
-#include "util/BCB_fnd_ShallowFirst.h"
+#include "util/BCB_fnd_DeepFirst.h"
 #include "memmodule_err_definitions.h"
 #include "abi/boot.h"
 #include <util/lock.h>
@@ -71,7 +71,8 @@ namespace MEMMODULE_LOCAIONS {
         }
     }
 }
-
+constexpr uint64_t HCB_evict_span=20000;
+constexpr uint64_t HCB_evictor_sleep_cycle=1000000;
 // ════════════════════════════════════════════════════════════════
 // HCB_v3 — BCB-based Heap Control Block (replaces HCB_v2)
 //
@@ -146,7 +147,7 @@ private:
 
     private:
         friend class kpoolmemmgr_t;
-        BCB_fnd_ShallowFirst fnd;
+        BCB_fnd_DeepFirst fnd;
         BuddyCache      caches_[MAX_ORDER + 1];
         vaddr_t         vbase_  = 0;
         phyaddr_t       data_pbase = 0;

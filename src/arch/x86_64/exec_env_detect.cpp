@@ -18,10 +18,8 @@ runtime_env probe_env(void)
      * All four registers are architecture-defined for leaf 0x40000000.
      * Match the full quad to avoid false positives from leaf aliasing.
      */
-
     /* KVM: "KVMKVMKVM\0\0\0"  EAX=0x40000001 */
-    if (cpuid.eax == 0x40000001 &&
-        cpuid.ebx == 0x4B4D564B &&
+    if (cpuid.ebx == 0x4B4D564B &&
         cpuid.ecx == 0x564B4D56 &&
         cpuid.edx == 0x0000004D)
         return ENV_KVM;

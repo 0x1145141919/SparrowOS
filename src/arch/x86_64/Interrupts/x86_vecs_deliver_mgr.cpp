@@ -54,7 +54,8 @@ static KURD_t demux_default_fatal()
 }
 void cpu_froze(x64_standard_context* ctx){
     ctx=nullptr;
-    asm volatile("cli;hlt");
+    asm volatile("cli");
+    asm volatile("hlt");
 }
 /* ===================================================================
  * FRED STKLVLS 配置 (Linux 7.0.6 复刻)
@@ -265,10 +266,10 @@ uint8_t vec_demux::alloc_vec(interrupt_token_t* token,
 
     gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + processor_id * GS_COMPLEX_STRIDE);
     interrupt_token_t* slice = cx->tokens;
-
+    uint16_t vec = 32;
     {
         spinlock_interrupt_about_guard l(cx->tokens_lock);
-        uint16_t vec = 32;
+        
         for (; vec <= 255; vec++) {
             if(!fred_support_catch_bit)if (soft_interrupt_functions[vec] != nullptr) continue;
             if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
@@ -403,10 +404,10 @@ uint8_t vec_demux::alloc_vec_by_apicid(interrupt_token_t *token, uint32_t x2_api
     }
 
     interrupt_token_t* slice = cx->tokens;
-
+    uint16_t vec = 32;
     {
         spinlock_interrupt_about_guard l(cx->tokens_lock);
-        uint16_t vec = 32;
+        
     for (;vec <= 255; vec++){
         if(!fred_support_catch_bit)if (soft_interrupt_functions[vec] != nullptr) continue;
         if (vec >= ipi_vecs::IPI_RESCHED && vec <= SUPRIOUS_INTERRUPT) continue;

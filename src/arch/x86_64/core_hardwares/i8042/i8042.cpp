@@ -266,10 +266,11 @@ void led_set(){
     ack = inb(0x60);
     if (ack != 0xfa) return;
 }
-extern "C" void i8042_cpp_enter(x64_standard_context* frame,uint8_t vec,uint32_t processor_id){
-    (void)frame;
+extern "C" uint64_t i8042_cpp_enter(interrupt_token_t* token){
+    (void)token;  // i8042 为单例设备，不需要 token_private 识别
     uint8_t scancode= inb(0x60);
     feed_scancode_byte(scancode);
+    return 0;
 }
 
 extern "C" bool i8042_read_event_by_seq(uint64_t seq, ps_2_keyboard_event* out_event)
@@ -348,6 +349,7 @@ void i8042_interrupt_enable(){
         i8042_event_ring_readonly_view = i8042_event_ring;
     }
     interrupt_token_t token = { 0, 0, i8042_cpp_enter };
+    // i8042 是单例设备, token_private 保持 0
     uint8_t vec= out_interrupt_vec_alloc(&token, fast_get_processor_id(), &ring_phy_kurd);
     if(vec==0xff||error_kurd(ring_phy_kurd)){
         //panic

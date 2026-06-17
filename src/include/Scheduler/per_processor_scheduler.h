@@ -230,11 +230,6 @@ class task{
     reentrant_spinlock_cpp_t task_lock;
     ~task();//析构函数,原本是想只有dead才能运行，但是受abi制约，行为是无条件折构，只不过非dead状态会warning记录到日志
     void assign_valid_tid(uint64_t tid);
-    static constexpr uint8_t task_not_in_term=0;
-    static constexpr uint8_t task_in_term=1;
-    u8ka task_in_term_flag;//标记任务是否在被迁移的途中
-    static constexpr uint8_t task_not_on_queue=0;
-    static constexpr uint8_t task_on_queue=1;
     task_blocked_reason_t blocked_reason;
     miusecond_time_stamp_t accumulated_time;
     miusecond_time_stamp_t lastest_run_stamp;
@@ -336,6 +331,18 @@ class task_pool{
     static KURD_t release_tid(uint64_t tid);
     static int Init();
 };
+// ── DTS Gantt 日志条目标准格式 ─────────────────────────────────
+struct dts_gantt_entry {
+    uint64_t tsc;                // rdtsc 时间戳
+    uint32_t tid;                // 被调度到的任务
+    uint16_t dts_timeslice_us;   // 分配的时间片(μs)
+    uint8_t  reason : 4;         // 调度原因
+    uint8_t  preempt_cnt : 2;    // 当时的 dts_preempt_cnt
+    uint8_t  voluntary_cnt : 2;  // 当时的 dts_voluntary_cnt
+    uint8_t  io_urgency : 2;     // 引起调度的中断紧迫度
+} __attribute__((packed));
+static_assert(sizeof(dts_gantt_entry) == 16, "dts_gantt_entry size mismatch");
+
 class alignas(64) per_processor_scheduler { 
     private:
     KURD_t default_kurd();
@@ -344,6 +351,9 @@ class alignas(64) per_processor_scheduler {
     KURD_t default_fatal();
     task* idle;
     public:
+    static constexpr uint32_t GANTT_CAPACITY = 4096;
+    dts_gantt_entry* dts_gantt = nullptr;    // 按需分配，NULL=关闭
+    uint32_t         dts_gantt_head = 0;
     Ktemplats::list_doubly<task*> ready_queue;//FIFO,除了从睡眠队列拿出来的是push_head,其他都是push_tail，但是运行一个任务都是在队列上pop_head
     class sleep_queue_t:Ktemplats::list_doubly<task*>
     {
@@ -365,7 +375,14 @@ class alignas(64) per_processor_scheduler {
     void sched();//会内部修改ready_queue数据结构用ready_queues_lock保护，然后对应的task也会用锁保护其状态改变
     KURD_t insert_ready_task(task*task_ptr, bool front=false);
     void sleep_tasks_wake();
+
+    // ── DTS Gantt 接口 ──
+    KURD_t dts_gantt_enable();   // 按需分配 Gantt 缓冲区
+    void   dts_gantt_disable();  // 释放缓冲区，置 NULL
+    void   dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
+
     per_processor_scheduler();
+    ~per_processor_scheduler(); // 析构时确保 gantt 释放
 };
 extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;

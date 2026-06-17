@@ -181,6 +181,7 @@ virtualization_bare_enter:
 
 global fred_user_enter
 extern fred_user_cpp_enter
+extern fred_base
 align 4096
 fred_base:
     push rbp
@@ -278,7 +279,7 @@ fred_supervisor_entry:
 ; C 入口: vec_demux_entry(x64_vec_demux_frame*) — 内部转标准帧
 ; ===================================================================
 
-extern vec_demux_entry
+extern idt_vec_demux_entry
 global vec_demux_table
 vec_demux_table:
 %assign __vec 32
@@ -319,7 +320,7 @@ vec_demux_common:
     and rsp, -16
     sub rsp, 8
     push rax
-    mov rax, vec_demux_entry
+    mov rax, idt_vec_demux_entry
     call rax
     pop rsp
     mov rax, [rsp + VEC_OFFSET + 16]   ; CS

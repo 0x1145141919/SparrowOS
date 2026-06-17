@@ -144,6 +144,7 @@ add_executable(kernel.elf
     src/arch/x86_64/Processor/early_bsp_resources.cpp
     src/scheduler/per_processor_scheduler.cpp
     src/scheduler/kthread_interfaces.cpp
+    src/arch/x86_64/exec_env_detect.cpp   
     src/scheduler/yield.asm
     $<TARGET_OBJECTS:i8042_module>
     $<TARGET_OBJECTS:PCIe_module>
@@ -157,6 +158,7 @@ add_executable(kernel.elf
     $<TARGET_OBJECTS:NVMe_module>
     src/arch/x86_64/boot/mem_init.cpp
     src/utils/BuddyControlBlock_foundation.cpp
+    src/utils/BCB_fnd_DeepFirst.cpp 
 )
 add_executable(init.elf
     src/init/init_init.cpp
@@ -175,14 +177,13 @@ add_executable(init.elf
     src/init/panic.cpp
     src/init/util/kout.cpp
     src/utils/util.cpp
-    src/utils/lock.cpp
+    src/utils/BCB_fnd_DeepFirst.cpp 
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp
     src/arch/x86_64/Processor/runtime_processor_regist.asm
     src/os_error_definitions.cpp
     src/init/info_fill.cpp
     src/init/mem_loads.cpp
-    src/utils/arch/x86_64/intel_cpuid.cpp
 )
 
 # =====================================================

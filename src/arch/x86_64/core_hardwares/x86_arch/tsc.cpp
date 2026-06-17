@@ -5,9 +5,9 @@
 #include "exec_env_detect.h"
 #include "ktime.h"
 #include "util/kout.h"
-#include "init/util/OS_utils.h"
+#include "util/OS_utils.h"
 #include "abi/boot.h"
-
+#include "exec_env_detect.h"
 uint32_t tsc_fs_per_cycle;
 bool is_tsc_ddline_avaliabe;
 bool is_tsc_reliable;
@@ -118,7 +118,12 @@ void tsc_regist()
     time_complex *complex = new time_complex;
     gs_u64_write(TIME_COMPLEX_GS_INDEX, (uint64_t)complex);
     complex->lapic_fs_per_cycle = 0;
-
+    cpuid_tmp cpuid0(0x40000000, 0);
+    bsp_kout <<"eax " <<(void*)cpuid0.eax<<kendl;
+    bsp_kout <<"ebx " <<(void*)cpuid0.ebx<<kendl;
+    bsp_kout <<"ecx " <<(void*)cpuid0.ecx<<kendl;
+    bsp_kout <<"edx " <<(void*)cpuid0.edx<<kendl;
+    bsp_kout << "  g_env:              " << (uint32_t)g_env << "\n";
     // ── TCG: TSC 不靠谱，直接退出 ──
     if (g_env == ENV_TCG) {
         is_tsc_reliable       = false;

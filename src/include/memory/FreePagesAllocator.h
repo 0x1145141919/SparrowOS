@@ -4,7 +4,7 @@
 #include "memory/memory_base.h"
 #include "util/lock.h"
 #include "util/Ktemplats.h"
-#include "util/BCB_fnd_ShallowFirst.h"
+#include "util/BCB_fnd_DeepFirst.h"
 #include "memory/all_pages_arr.h"
 class KspacePageTable;
 struct fpa_stats {
@@ -173,7 +173,7 @@ public:
         bool cache_pick(uint8_t order, uint64_t& out_idx);
 
         // ── v4 伙伴系统底座 ──
-        BCB_fnd_ShallowFirst fnd;
+        BCB_fnd_DeepFirst fnd;
 
         struct BCB_statistics {
             uint64_t suggest_hit[DESINGED_MAX_SUPPORT_ORDER];
