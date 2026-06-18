@@ -15,7 +15,7 @@ ROOT_PARTION="${VM_RESOURCES}/arch-root.qcow2"
 EFI_PARTION="${VM_RESOURCES}/efi_partion.img"
 
 # QEMU 配置
-MECHAIN_CONFIG="-bios $OVMF_PATH -smp 6  -drive file=$EFI_PARTION,format=raw,if=none,id=efi_disk -device nvme,serial=beefdead,drive=efi_disk -machine q35,kernel-irqchip=split -device intel-iommu,intremap=on,caching-mode=on,aw-bits=39,eim=on,device-iotlb=on -cpu max,+x2apic -device virtio-net-pci,bus=pcie.0,netdev=net0 -device intel-hda,bus=pcie.0 -drive file=$ROOT_PARTION,format=qcow2,if=none,id=nvme_disk -device nvme,serial=deadbeef,drive=nvme_disk -netdev user,id=net0 -m 8192 -device vfio-pci,host=01:00.0"
+MECHAIN_CONFIG="-bios $OVMF_PATH -smp 6  -drive file=$EFI_PARTION,format=raw,if=none,id=efi_disk -device nvme,serial=beefdead,drive=efi_disk -machine q35,kernel-irqchip=split -device intel-iommu,intremap=on,caching-mode=on,aw-bits=39,eim=on,device-iotlb=on -cpu max,+x2apic -device virtio-net-pci,bus=pcie.0,netdev=net0 -device intel-hda,bus=pcie.0 -drive file=$ROOT_PARTION,format=qcow2,if=none,id=nvme_disk -device nvme,serial=deadbeef,drive=nvme_disk -netdev user,id=net0,hostfwd=tcp::2222-:22 -m 8192 -device vfio-pci,host=01:00.0"
 
 # 设置错误处理
 set -euo pipefail
@@ -106,8 +106,11 @@ sudo losetup -d /dev/loop5 || {
 
 # 启动QEMU
 echo "启动QEMU..."
+
+# SSH 转发: host:2222 → guest:22
+NET_SSH=",hostfwd=tcp::2222-:22"
 if [ "$1" = "Release" ]; then
     sudo qemu-system-x86_64 -no-reboot $MECHAIN_CONFIG -enable-kvm -serial stdio
 else
-    sudo qemu-system-x86_64 -no-reboot $MECHAIN_CONFIG  -s -S -serial stdio -D fault_log.txt -d cpu_reset,int,guest_errors
+    sudo qemu-system-x86_64 -no-reboot $MECHAIN_CONFIG -s -S -serial stdio -D fault_log.txt -d cpu_reset,int,guest_errors
 fi 

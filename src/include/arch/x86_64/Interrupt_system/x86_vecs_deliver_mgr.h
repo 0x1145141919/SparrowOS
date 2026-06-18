@@ -1,16 +1,6 @@
 #pragma once
 #include "Interrupt.h"
 #include "arch/x86_64/abi/pt_regs.h"
-
-// IDT 向量递送栈帧 — trampoline 在 GPR 与 iretq 之间插入了 vec
-// 与 x64_standard_context 的区别：vec 位于 rbp 与 iret_complex 之间
-struct x64_vec_demux_frame {
-    uint64_t rax, rbx, rcx, rdx, rsi, rdi;
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15, rbp;
-    uint64_t vec;
-    iret_complex_context iret;
-};
-
 namespace Interrupt_module{
     constexpr uint8_t modloc_vec_demux=1;
     namespace vec_demux_events{
@@ -62,7 +52,7 @@ class vec_demux{
 constexpr uint8_t INVALID_INTERRUPT_VEC=0xFF;
 
 // IDT 向量解复用入口 — asm vec_demux_common 调用此处
-extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* frame);
+extern "C" void idt_vec_demux_entry(x64_standard_context_v2* frame);
 struct ipi_package_t{
     void*arg;
     uint64_t func;//函数指针刻意转成整数以避免类型系统干预

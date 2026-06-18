@@ -6,6 +6,7 @@
 
 ; --- 异常入口宏（无错误码） ---
 %macro EXCEPTION_ENTRY 2
+    sub rsp, 8
     push rbp
     push r15
     push r14
@@ -56,6 +57,7 @@
     pop r14
     pop r15
     pop rbp
+    add rsp, 8
     iretq
 %endmacro
 

@@ -14,6 +14,15 @@ struct iret_complex_context{
     uint64_t rsp;    // 长模式强制无条件压入
     uint64_t ss;     // 长模式强制无条件压入
 };
+struct idt_core_ctx{
+    union{
+        uint64_t vec;
+        uint64_t errocode;
+        uint64_t no_errcode_exception_shim;
+    }num;
+    iret_complex_context iret;
+    uint64_t reserved[2];
+};
 struct fred_complex{
     uint64_t errcode:16;
     uint64_t reserved1:48;
@@ -112,6 +121,27 @@ struct x64_standard_context{
     uint64_t r15;
     uint64_t rbp;
     iret_complex_context iret_complex;
+};
+struct x64_standard_context_v2{
+    uint64_t rax;
+    uint64_t rbx;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
+    uint64_t rbp;
+    union {
+        fred_complex fred;
+        idt_core_ctx idtctx;
+    }core_ctx;
 };
 struct x64_errcode_exception_frame {
     uint64_t rax;

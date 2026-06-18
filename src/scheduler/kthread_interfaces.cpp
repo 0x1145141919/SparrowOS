@@ -185,11 +185,11 @@ uint64_t create_kthread(void *(*entry)(void *), void *arg, KURD_t *out_kurd)
     scheduler.sleep_tasks_wake();
     scheduler.sched();
 }
-extern "C" [[noreturn]] void resched(x64_standard_context *frame)
+extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 {
     per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
     task* interrupted_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
-    bool is_user_context=((frame->iret_complex.cs&3)==3);
+    bool is_user_context=((frame->core_ctx.idtctx.iret.cs&3)==3);
     {
         reentrant_spinlock_guard g(interrupted_task->task_lock);
         if(!is_user_context){

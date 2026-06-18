@@ -8,6 +8,7 @@
 #include "util/lock.h"
 #include "ktime.h"
 #include "memory/all_pages_arr.h"
+#include "memory/AddresSpace.h"
 namespace Scheduler{
     constexpr uint8_t self_scheduler=1;
     constexpr uint8_t scheduler_task_pool=2;
@@ -165,11 +166,6 @@ namespace Scheduler{
         }
     }
 };
-enum task_type_t:uint8_t{
-    kthreadm,
-    userthread,
-    vCPU
-};
 enum task_state_t:uint8_t{
     init=0,
     ready,
@@ -195,57 +191,68 @@ namespace kthread_call_num{
     constexpr uint64_t block_to_queue_if_equal=6;
 };
 constexpr uint64_t INVALID_TID=~0ull;
-constexpr uint8_t DEFAULT_STACK_PG_COUNT=7;
-constexpr uint32_t DEFAULT_STACK_SIZE=DEFAULT_STACK_PG_COUNT*4096;
-struct kthread_context{
-    x64_standard_context regs;
-    vaddr_t stack_bottom;
-    uint16_t stacksize;
-};
-struct userthread_context{
-    x64_standard_context regs;
-    //预留给cr3,pcid
-    //预留给XSAVE等等
-};
-struct vCPU_context{
-    //预留给VMCS等等
-};
 constexpr miusecond_time_stamp_t DEFALUT_TIMER_SPAN_MIUS=20000;
 constexpr uint64_t INIT_DEFAULT_RFLAGS=0x202;
 extern "C" void secure_hlt();
+struct u_ctx_t{
+    x64_standard_context_v2 xtd_ctx;
+    AddressSpace*as;
+    uint32_t xcr0_mask;
+    uint64_t cr4_mask;
+    uint64_t drs[8];
+    vaddr_t gs_base;
+    vaddr_t fs_base;
+    void*xsave_area;//从extend_ctx开始的4k空间，头部挖去后若剩下的足够，则align_up(this+sizoef(extend_ctx),64)后作为FPU通过XSAVEC保存，不够则走__wrapped_pgs_alloc分配页框存放
+    uint64_t xsave_size;
+};
 class task{
     private:
     task_state_t task_state;
-    task_type_t task_type;
     uint32_t belonged_processor_id;
     uint64_t tid;
     public:
-    task(task_type_t task_type,void*context);//原子性初始化一个task
-    void atomic_load();//原子性状态切换到running并且加载对应的上下文（必然会切换到上下文制定的rsp与rip）
+    static  task* basic_constructor();
+    void launch();//加载priv_ctx的上下文启动程序
+    void resume();//根据被中断的上下文的种类，是在特权上下文还是在非特权上下文被中断，自动选择恢复手段
     bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
     bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
     bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
     bool set_zombie();//合法前驱仅限running,blocked,ready
     bool set_running();
     reentrant_spinlock_cpp_t task_lock;
-    ~task();//析构函数,原本是想只有dead才能运行，但是受abi制约，行为是无条件折构，只不过非dead状态会warning记录到日志
     void assign_valid_tid(uint64_t tid);
     task_blocked_reason_t blocked_reason;
-    miusecond_time_stamp_t accumulated_time;
-    miusecond_time_stamp_t lastest_run_stamp;
-    miusecond_time_stamp_t lastest_span_length;
-    miusecond_time_stamp_t sleep_wakeup_stamp;//若状态为blocked,且blocked_reason为sleeping,则sleep_wakeup_stamp有效,系统时间戳大于等于sleep_wakeup_stamp,才允许解除阻塞
+    miusecond_time_stamp_t accumulated_running;
+    miusecond_time_stamp_t accumulated_sleeping;
+    miusecond_time_stamp_t accumulated_io_blocking;
+    miusecond_time_stamp_t accumulated_waiting_other;
+    enum event_type_t{
+        run,
+        sleep,
+        wait_io,
+        wait_other
+    };
+    struct event_record_t{
+        miusecond_time_stamp_t base;
+        uint32_t span_length;
+        event_type_t type;
+    };
+    event_record_t latest_record;
+    miusecond_time_stamp_t min_wakeup_stamp;
     uint32_t get_belonged_processor_id();
     void set_belonged_processor_id(uint32_t pid);
-    union{
-        kthread_context*kthread;
-        userthread_context*userthread;
-        vCPU_context*vCPU;
-    }context;
-    Ktemplats::list_doubly<uint64_t> waiters;//在锁下的，exit的时候都唤醒
-    task_state_t get_state();
-    uint64_t get_tid();
-    task_type_t get_task_type();
+    x64_standard_context_v2 priv_ctx;
+    vaddr_t priv_stack_bottom;
+    vaddr_t priv_stack_top;
+    Ktemplats::list_doubly<task*> waiters;//在锁下的，exit的时候都唤醒
+    u_ctx_t*uctx;//通过task+n*4k的地方，一般推荐this+4k的专门一个页作为拓展上下文页
+    //还有vCPU ctx指针
+    enum ctx_choose{
+        priv,
+        u_ctx,
+        vCPU
+    };
+    ctx_choose choose;
 };
 struct task_in_pool{
     task*task_ptr;
@@ -387,6 +394,8 @@ class alignas(64) per_processor_scheduler {
 extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 extern "C"{
+    task* task_spawn(task_type_t type);
+    KURD_t task_start(uint32_t insert_pid);
     uint64_t create_kthread(void*(*entry)(void*),void*arg,KURD_t*out_kurd);
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();

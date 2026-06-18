@@ -214,10 +214,10 @@ void vec_demux::real_init()
 
     /* ── 清零软中断函数表 ── */
     ksetmem_8(soft_interrupt_functions, 0, sizeof(soft_interrupt_functions));
-    extern void kthread_call_cpp_enter(x64_standard_context *frame);
-    extern void asm_panic_cpp_enter(x64_standard_context *frame);
-    extern void suprious_interrupt_cpp_enter(x64_standard_context *frame);
-    extern void user_abi_cpp_enter(x64_standard_context *frame);
+    extern void kthread_call_cpp_enter(x64_standard_context_v2 *frame);
+    extern void asm_panic_cpp_enter(x64_standard_context_v2 *frame);
+    extern void suprious_interrupt_cpp_enter(x64_standard_context_v2 *frame);
+    extern void user_abi_cpp_enter(x64_standard_context_v2 *frame);
 
     soft_interrupt_functions[x86_softinterrupt_abi::ASM_PANIC]    = &asm_panic_cpp_enter;
     soft_interrupt_functions[x86_softinterrupt_abi::KTHREAD_CALL] = &kthread_call_cpp_enter;
@@ -469,18 +469,9 @@ static inline void frame_to_standard(x64_standard_context* out, const x64_vec_de
     __builtin_memcpy(out, raw, 15 * sizeof(uint64_t));  // GPR: rax..rbp
     out->iret_complex = raw->iret;
 }
-// 写回 handler 修改后的寄存器到原始帧
-static inline void standard_to_frame(x64_vec_demux_frame* raw, const x64_standard_context* src)
+extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
 {
-    __builtin_memcpy(raw, src, 15 * sizeof(uint64_t));  // GPR: rax..rbp
-    raw->iret = src->iret_complex;
-}
-
-extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* raw_frame)
-{
-    uint8_t vec = raw_frame->vec;
-    x64_standard_context ctx;
-    frame_to_standard(&ctx, raw_frame);  
+    uint8_t vec = raw_frame->core_ctx.idtctx.num.vec;
 
     if (vec < 32) {
         KURD_t fatal_k = demux_default_fatal();
@@ -499,7 +490,7 @@ extern "C" void idt_vec_demux_entry(x64_vec_demux_frame* raw_frame)
 
     /* ── 1. 软中断表 (全局, 同步, int N) ── */
     if (soft_interrupt_functions[vec]) {
-        soft_interrupt_functions[vec](&ctx);
+        soft_interrupt_functions[vec](raw_frame);
         asm volatile("ud2");   // 软中断必须不返回
     }
     gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
