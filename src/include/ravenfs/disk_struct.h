@@ -1,0 +1,225 @@
+#pragma once
+
+#include "stdint.h"
+
+/* ═══════════════════════════════════════════════════════
+ * 高位标志位统一定义
+ *
+ * words[0..2] 的高 12 bits [63:52] 是位域
+ * 低 52 bits [51:0]  存数值 (key, len, block addr)
+ * 52 bits × 4K block = 16EB 地址空间，绰绰有余
+ * ═══════════════════════════════════════════════════════ */
+
+#define MASK_LOW52  0x000FFFFFFFFFFFFFULL
+#define MASK_HIGH12 0xFFF0000000000000ULL
+
+/* words[0] 位域 */
+#define KEY_VALID   (1ULL << 63)          /* bit63: entry 有效 */
+#define KEY_TYPE    (0x7FFULL << 52)       /* bits[62:52]: 类型标志 */
+
+/* words[1] 位域 */
+#define LEN_FLAGS   (0xFFFULL << 52)       /* bits[63:52]: len 标志位 */
+
+/* words[2] 位域 */
+#define ADDR_FLAGS  (0xFFFULL << 52)       /* bits[63:52]: 地址标志位 */
+#define ADDR_BTREE  (1ULL << 63)           /* bit63: 块类型 (1=btree node, 0=data) */
+
+/* ═══════════════════════════════════════════════════════
+ * 节点元数据 — entry[0].words[3] 编码
+ * ═══════════════════════════════════════════════════════ */
+union node_meta_t {
+    struct {
+        uint64_t entry_count_minus1 : 8;   /* 有效 entry 数 - 1 */
+        uint64_t is_internal_node   : 1;   /* 0=leaf, 1=internal */
+        uint64_t reserved           : 3;
+        uint64_t parent_ptr         : 52;  /* 父节点物理块号 */
+    } fields;
+    uint64_t raw;
+};
+static_assert(sizeof(node_meta_t) == 8, "");
+
+/* ═══════════════════════════════════════════════════════
+ * 文件块区间（文件内 [fblkbase, fblkbase+len)）
+ * ═══════════════════════════════════════════════════════ */
+struct f_blkitv {
+    uint64_t fblkbase;
+    uint64_t len;
+};
+
+/* ═══════════════════════════════════════════════════════
+ * B+tree entry (32B = 4 × uint64_t)
+ *
+ * 统一布局:
+ *   words[0] = { V:1 | type:11 | key:52 }
+ *   words[1] = { flags:12 | len:52 }
+ *   words[2] = { flags:12 | addr:52 }
+ *   words[3] = entry[0] → node_meta_t
+ *            = 其他 entry → 自由使用 (sibling ptr, flags...)
+ *
+ * ─── 叶子语义 ───
+ *   get_key()      = fblkbase (文件内逻辑块号)
+ *   get_interval() = { fblkbase, len }
+ *   get_pbase()    = pblkbase (物理块号)
+ *
+ * ─── 内部语义 ───
+ *   entry[0].words[2] → child_0 (最左子)
+ *   entries[1..n]:
+ *     get_key()    = 分隔符 (右子树最小 key)
+ *     get_subptr() = child_i
+ *   前 n 个 entry 可索引 n 个 child + n-1 个分隔符
+ * ═══════════════════════════════════════════════════════ */
+struct btree_node_entry_t {
+    uint64_t words[4];
+
+    /* ─── 通用 ─── */
+    bool is_valid() const {
+        return (words[0] & KEY_VALID) != 0;
+    }
+    void set_valid(bool v) {
+        if (v) words[0] |=  KEY_VALID;
+        else   words[0] &= ~KEY_VALID;
+    }
+
+    /* 低 52-bit 的裸 key */
+    uint64_t get_key() const {
+        return words[0] & MASK_LOW52;
+    }
+    void set_key(uint64_t k) {
+        words[0] = (words[0] & MASK_HIGH12) | (k & MASK_LOW52);
+    }
+
+    /* words[0] 高 12 位的类型标志 */
+    uint64_t get_key_flags() const {
+        return words[0] & KEY_TYPE;
+    }
+    void set_key_flags(uint64_t f) {
+        words[0] = (words[0] & ~KEY_TYPE) | (f & KEY_TYPE);
+    }
+
+    /* ─── 叶子语义: 文件 extent ─── */
+    f_blkitv get_interval() const {
+        return { get_key(), words[1] & MASK_LOW52 };
+    }
+    void set_interval(f_blkitv itv) {
+        set_key(itv.fblkbase);
+        words[1] = (words[1] & MASK_HIGH12) | (itv.len & MASK_LOW52);
+    }
+
+    uint64_t get_len() const {
+        return words[1] & MASK_LOW52;
+    }
+    void set_len(uint64_t l) {
+        words[1] = (words[1] & MASK_HIGH12) | (l & MASK_LOW52);
+    }
+
+    uint64_t get_pbase() const {
+        return words[2] & MASK_LOW52;
+    }
+    void set_pbase(uint64_t p) {
+        words[2] = (words[2] & MASK_HIGH12) | (p & MASK_LOW52);
+    }
+
+    /* ─── 内部语义: 子树指针 ─── */
+    uint64_t get_subptr() const {
+        return words[2] & MASK_LOW52;
+    }
+    void set_subptr(uint64_t s) {
+        words[2] = (words[2] & MASK_HIGH12) | (s & MASK_LOW52);
+    }
+
+    /* words[2] 高 12 位的地址标志 */
+    uint64_t get_addr_flags() const {
+        return words[2] & ADDR_FLAGS;
+    }
+    void set_addr_flags(uint64_t f) {
+        words[2] = (words[2] & ~ADDR_FLAGS) | (f & ADDR_FLAGS);
+    }
+
+    /* ─── 元数据访问 (entry[0] 专用) ─── */
+    node_meta_t get_meta() const {
+        node_meta_t m;
+        m.raw = words[3];
+        return m;
+    }
+    void set_meta(node_meta_t m) {
+        words[3] = m.raw;
+    }
+};
+static_assert(sizeof(btree_node_entry_t) == 32, "");
+
+/* ═══════════════════════════════════════════════════════
+ * B+tree 节点 (8K = 256 entries × 32B = 2 × 4K pages)
+ *
+ * entry[0].words[3]  → node_meta_t
+ * entry[0].words[2]  → 最左子 (内部节点时)
+ * entries[1..n]      → 数据 / key+child 对
+ * 
+ * ═══════════════════════════════════════════════════════ */
+struct Bptree_node_t {
+    btree_node_entry_t entries[256];
+
+    /* ─── 元数据快捷访问 ─── */
+    uint8_t  get_entry_count() const {
+        return entries[0].get_meta().fields.entry_count_minus1 + 1;
+    }
+    void set_entry_count(uint8_t c) {
+        node_meta_t m = entries[0].get_meta();
+        m.fields.entry_count_minus1 = (c > 0 ? c - 1 : 0);
+        entries[0].set_meta(m);
+    }
+
+    bool is_internal() const {
+        return entries[0].get_meta().fields.is_internal_node != 0;
+    }
+    void set_internal(bool v) {
+        node_meta_t m = entries[0].get_meta();
+        m.fields.is_internal_node = v ? 1 : 0;
+        entries[0].set_meta(m);
+    }
+
+    uint64_t get_parent_ptr() const {
+        return entries[0].get_meta().fields.parent_ptr;
+    }
+    void set_parent_ptr(uint64_t p) {//parent_ptr为0则表示根节点
+        node_meta_t m = entries[0].get_meta();
+        m.fields.parent_ptr = p & MASK_LOW52;
+        entries[0].set_meta(m);
+    }
+
+    /* ─── 兄弟指针 (同级链表: entry[1/2].words[3]) ─── */
+    uint64_t get_prev_sibling() const {
+        return entries[1].words[3] & MASK_LOW52;
+    }
+    void set_prev_sibling(uint64_t p) {
+        entries[1].words[3] = (entries[1].words[3] & MASK_HIGH12) | (p & MASK_LOW52);
+    }
+
+    uint64_t get_next_sibling() const {
+        return entries[2].words[3] & MASK_LOW52;
+    }
+    void set_next_sibling(uint64_t n) {
+        entries[2].words[3] = (entries[2].words[3] & MASK_HIGH12) | (n & MASK_LOW52);
+    }
+};
+static_assert(sizeof(Bptree_node_t) == 8192, "");
+struct raven_Inode_t{                                                                                                     
+    uint64_t  flags;                  // type + other flags                                                               
+    uint32_t  link_count;                                                                                                 
+    uint32_t  uid;                                                                                                        
+    uint32_t  gid; 
+    uint32_t  m_ns_stamp;
+    uint32_t  c_ns_stamp;
+    uint32_t  a_ns_stamp;
+    uint32_t  user_permission_bits;
+    uint32_t  group_permission_bits;
+    uint32_t  other_permission_bits;                                                                                                       
+    uint64_t  size;                                                                                                       
+    uint64_t  mtime;                                                                                                      
+    uint64_t  ctime;   
+    uint64_t  atime;                                                                                                    
+    uint64_t  data_root;            // 0 = inline                                                                        
+    uint32_t  parent_inode;                                                                                               
+    uint32_t  generation;   
+    uint8_t inline_data[160];
+};
+static_assert(sizeof(raven_Inode_t)==256,"Inode size must met 256B");

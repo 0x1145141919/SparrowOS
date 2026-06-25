@@ -1,0 +1,293 @@
+# RavenFS — 磁盘布局 v1
+
+> 2026-06-25 推倒 v0 草案从头设计。
+> 基于 B+tree 的文件系统，NVMe 驱动验收场景驱动。
+> 设计哲学：跑起来第一，用户自己规划上限。
+
+---
+
+## 1. 分区布局
+
+```
+block 0:              Superblock               ← 固定
+block 1..:            Data Blocks               ← 向前增长
+                      [空闲空间 / 未来扩容]   
+block T-B-I..T-I-1:   Bitmap (B 块)            ← 从尾巴向后分配
+block T-I..T-1:       Inode Array (I 块)        ← 从尾巴向后分配
+
+T = total_blocks
+B = ceil(T / (4096 × 8))
+I = ceil(inode_count × 256 / 4096)
+```
+
+元数据（bitmap、inode array）从分区**尾巴**开始向后分配，数据区从 block 1 向前增长。中间留空作为扩容余量。
+
+### 扩容策略
+
+增加分区大小 Δ 块（T′ = T + Δ）：
+
+```
+旧: bitmap [T-B-I, T-I), inode [T-I, T)
+新: bitmap [T′-B-I, T′-I), inode [T′-I, T′)
+```
+
+1. 读旧 bitmap + 旧 inode array
+2. 写到新尾巴位置
+3. 新 bitmap 中：标记新元数据块为 allocated，旧位置释放为 free
+4. 更新 superblock.total_blocks = T′
+5. 数据块原地不动
+
+最怂但最稳妥——只搬元数据，不动数据。
+
+---
+
+## 2. Superblock（1 block = 4096B）
+
+```c
+struct RavenSuperblock {
+    uint64_t  magic;                // "RAVN" = 0x5241564E
+    uint32_t  version;              // 格式版本号
+    uint32_t  block_size;           // 固定 4096
+
+    uint64_t  total_blocks;         // 分区总块数
+    uint64_t  bitmap_start;         // 位图起始块号
+    uint64_t  bitmap_blocks;        // 位图占用块数
+
+    uint64_t  inode_array_base;     // inode 数组起始块号
+    uint64_t  inode_array_count;    // 用户选定的 inode 上限
+    uint16_t  inode_size;           // 256
+    uint16_t  reserved0;
+
+    uint32_t  root_inode;           // 根目录 inode 编号
+    uint8_t   uuid[16];
+    uint8_t   volume_name[48];
+
+    uint32_t  crc32;
+    uint8_t   pad[];                // 凑满 4096
+};
+```
+
+关键字段由用户 mkfs 时指定：
+```
+mkfs.ravenfs /dev/nvme0n1 --inodes=65536 --inode-ratio=16
+```
+
+---
+
+## 3. Bitmap
+
+尺寸由 mkfs 计算：
+```
+bitmap_blocks = ceil(total_blocks / (4096 × 8))
+```
+
+每个 bit 代表一个 block：
+- 0 = 空闲
+- 1 = 已分配
+
+bitmap 自身占用的 block 在 mkfs 时预先标记为已分配，运营期间不进入自管理。无自指问题。
+
+---
+
+## 4. Inode（256B）
+
+```c
+struct raven_Inode_t {
+    uint64_t  flags;                  // type + tree_height + other flags
+    uint32_t  link_count;
+    uint32_t  uid;
+    uint32_t  gid;
+    uint32_t  m_ns_stamp;            // mtime 纳秒余数
+    uint32_t  c_ns_stamp;            // ctime 纳秒余数
+    uint32_t  a_ns_stamp;            // atime 纳秒余数
+    uint32_t  user_permission_bits;
+    uint32_t  group_permission_bits;
+    uint32_t  other_permission_bits;
+    uint64_t  size;
+    uint64_t  mtime;                  // seconds
+    uint64_t  ctime;                  // seconds
+    uint64_t  atime;                  // seconds
+    uint64_t  data_root;             // 0 = inline, else data address
+    uint32_t  parent_inode;
+    uint32_t  generation;
+    uint8_t   inline_data[160];
+};
+static_assert(sizeof(raven_Inode_t) == 256, "");
+```
+
+### data_root 三态语义
+
+| `size` | `data_root` | `flags.tree_height` | 含义 | I/O 次数 |
+|---------|-------------|---------------------|------|---------|
+| 0~160B | = 0 | 任意 | **内联**，内容在 inline_data[] | 0 |
+| 161~8K | ≠ 0 | = 0 | **直指块**：data_root → 单个 8K 数据块 | 1 |
+| > 8K | ≠ 0 | ≥ 1 | **B+tree**：data_root → btree 根节点 | ≥ 2 |
+
+树高度 0 的语义：不创建 btree 节点，data_root 直接是文件数据块地址。8K 以内的小文件省去一次 btree 根节点 I/O。
+
+### Inode 数组
+
+mkfs 在分区尾部静态分配连续区域：
+```
+inode_blocks = ceil(inode_array_count × 256 / 4096)
+inode_size   = 256  (fixed in v1)
+inode_array_base = total_blocks - bitmap_blocks - inode_blocks
+```
+
+离线扩容工具见 §1。
+
+---
+
+## 5. B+tree 节点（8K = 2 × 4K pages）
+
+### 内存结构
+
+```c
+struct btree_node_entry_t {
+    uint64_t words[4];               // 32B
+    // getter/setter 封装语义
+};
+
+struct Bptree_node_t {
+    btree_node_entry_t entries[256]; // 256 × 32B = 8K
+};
+```
+
+### Entry 位域
+
+```
+words[0]  bits [63]   = VALID  (entry 有效)
+          bits [62:52] = type
+          bits [51:0]  = key    (叶子=fblkbase, 内部=分隔符)
+
+words[1]  bits [63:52] = flags
+          bits [51:0]  = len    (仅叶子)
+
+words[2]  bits [63:52] = addr flags (含 ADDR_BTREE)
+          bits [51:0]  = addr  (叶子=pblkbase, 内部=subptr,
+                                 entry[0]=最左child)
+
+words[3]  entry[0]     = node_meta_t (entry_count, type, parent)
+          entry[1]     = prev_sibling (同级链表前驱)
+          entry[2]     = next_sibling (同级链表后驱)
+          其他 entry   = 自由使用
+```
+
+### Node meta (entry[0].words[3])
+
+```c
+union node_meta_t {
+    struct {
+        uint64_t entry_count_minus1 : 8;   // 有效 entry 数-1
+        uint64_t is_internal_node   : 1;   // 0=leaf, 1=internal
+        uint64_t reserved           : 3;
+        uint64_t parent_ptr         : 52;  // 父节点(0=root)
+    };
+    uint64_t raw;
+};
+```
+
+### 叶子节点
+
+key = `fblkbase`（文件内逻辑块号）
+value = `{ len, pblkbase }`（连续 extent）
+
+```
+entry[0]: { meta | 最左 child(不用于leaf) }
+entry[1]: { V | key_0 | len_0 | pblkbase_0 | prev_sibling }
+entry[2]: { V | key_1 | len_1 | pblkbase_1 | next_sibling }
+entry[3]: { V | key_2 | len_2 | pblkbase_2 | free }
+...
+```
+
+最大 255 个 extent 条目。
+
+### 内部节点（256 阶 B+tree）
+
+m 阶 B+tree：最多 m 个 subptr + m-1 个 key。
+
+```
+entry[0]: { meta | ——无key—— | child_0 }      ← 最左子树
+entry[1]: { V | sep_0 | —— | child_1 }         ← sep_0 分界 child_0↔child_1
+entry[2]: { V | sep_1 | —— | child_2 }
+...
+entry[n]: { V | sep_{n-1} | —— | child_n }
+```
+
+最大 256 child + 255 key。查找：
+
+```cpp
+for (i = 1; i < count; i++)
+    if (target < entries[i].get_key())
+        return entries[i-1].get_subptr();
+return entries[count-1].get_subptr();
+```
+
+### 同级链表
+
+所有叶子节点通过 `entry[1].words[3]`（prev）和 `entry[2].words[3]`（next）连成双向链表。范围遍历无需回溯父节点。
+
+---
+
+## 6. Dentry（分离路线）
+
+inode 与 dentry 分离。目录的 data B+tree 存储目录项：
+
+```c
+struct RavenDentry {
+    uint64_t  hash;              // key = filename hash
+    uint64_t  inode;             // inode 编号
+    uint32_t  group;             // inode 所在块组 (保留)
+    uint8_t   name_len;
+    uint8_t   file_type;
+    uint16_t  _pad;
+    char      name[];            // 变长
+};
+```
+
+目录作为特殊文件，其 `data_root` 指向目录项 B+tree（与文件数据 B+tree 同结构，但 entry 语义不同）。
+
+---
+
+## 7. mkfs 参数化
+
+```
+mkfs.ravenfs <device> [options]
+
+Options:
+  --inode-ratio=N    每 N block 分配 1 个 inode (默认 16)
+  --inode-count=N    直接指定 inode 上限
+  --label=NAME       卷标 (最长 48B)
+```
+
+默认 `--inode-ratio=16` = 1 inode / 64KB。inode 数组空间开销约 0.2%。
+
+`--inode-ratio=4` 用于大量小文件场景（约 0.8% 空间开销）。
+
+---
+
+## 8. 测试方案
+
+```
+host:  mkfs.ravenfs /dev/nvme0n1pX   → 确定性盘面布局（元数据尾部）
+guest: KVM + VFIO passthrough         → 真实 NVMe 驱动路径
+guest: 驱动读盘 → 解析 superblock → 验证布局正确
+       → 查目录 → 读文件 → 跨 extent 大文件
+       → 检查位图一致性
+```
+
+不依赖 mock，不用模拟器，全真 I/O 验证 NVMe 驱动。
+
+扩容测试：mkfs 小分区 → 模拟扩容（离线工具）→ guest 交叉验证元数据搬迁后的正确性。
+
+---
+
+## 9. v1 不做
+
+| 特性 | 原因 |
+|------|------|
+| 硬链接 | link_count 保留字段但无实际支持 |
+| 动态 inode 分配 | mkfs 静态分配 + 离线扩容工具 |
+| 在线碎片整理 | v1 跑通为先 |
+| 事务/日志 | NVMe 验收场景不需要 |
+| 在线扩容 | 离线工具补 |
