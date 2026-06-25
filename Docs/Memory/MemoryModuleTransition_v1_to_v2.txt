@@ -1,0 +1,659 @@
+# v1 → v2 过渡史：上帝类的解剖与脆弱页表的诞生
+
+**时间跨度：2025-10-21 (f346291) → 2025-12-26 (1b910b4)**
+**涉及提交：约 20 次**
+
+> 历史分期说明：
+> - **v1 巅峰** (f346291): KernelSpacePgsMemMgr 全能上帝类，VMA=LMA（恒等映射）
+> - **v1→v2 过渡** (当前文档): 上帝类拆解为 PhyPgsMemMgr + KspacePgsMemMgr + AddressSpace
+>   **引入脆弱页表**：KImgvbase = KImgphybase + PAGE_LEVEL_4，内核首次在高半虚拟地址运行
+> - **v2 巅峰**: PhyPgsMemMgr 成为新的"物理内存上帝类"，kld.ld 畸形约束持续
+> - **v2→v3 过渡**: PhyPgsMemMgr→phymemspace_mgr→all_pages_arr 的死亡过程，
+>   init.elf 两阶段启动解决 MMU 自由（见 `MemoryModuleTransition_v2_to_v3.txt`）
+
+---
+
+## 0. 背景
+
+v1 时代（PgsMemMgr 上帝类）在 2025-10-21 达到巅峰——`KernelSpacePgsMemMgr`
+用 3500 行代码完成了首次 MMU 重建和页表切换。但这只是一个起点，
+接下来 5 个月里，这个上帝类被逐步肢解、抽离、重命名、最终处决。
+
+这是一场"器官移植手术"——把全身耦合的器官逐个摘出来形成独立的子系统，
+同时保证新系统不中断运行。过程中经历了 7 次架构级别的变更。
+
+---
+
+## 1. 时间线纵览
+
+```
+v1 巅峰                                      v2 双神分立
+|                                             |
+f346291                                      1b910b4
+Oct 21            Dec 1  Dec 7  Dec 22       Dec 26
+  │                │      │      │             │
+  ▼                ▼      ▼      ▼             ▼
+┌──────────────────┬──────┬──────┬─────────────┬──────────────►
+│ Phase A: 巅峰期  │  C   │  D   │ Phase E:    │  (后续:      │
+│ 上帝类 + ACPI    │  大   │  新   │ 脆弱页表     │   v2→v3     │
+│ IOAPIC + fs     │  分   │  架   │ + kld.ld 畸 │   PhyPgsMgr  │
+│ MemoryDisk      │  裂   │  构   │ 形时代       │   死亡过程)  │
+│                  │      │      │              │              │
+└──────────────────┴──────┴──────┴──────────────┴──────────────►
+       ↑                    ↑
+   Phase B: 静默期       Phase C: 开始拆
+   FS开发, 中断准备      per-CPU堆, VM_DESC
+   Oct 23 - Nov 30       Dec 1 - Dec 7
+
+⚠️ 本文档覆盖范围：直到 v2 双神分立的确立。
+PhyPgsMemMgr 的→all_pages_arr 消亡、init.elf 两阶段、
+MMU 自由（VMA 独立于 LMA）属于 v2→v3 过渡，在
+`MemoryModuleTransition_v2_to_v3.txt` 中记录。
+```
+
+---
+
+## 2. Phase A: 巅峰期 (f346291, Oct 21)
+
+上帝类 `KernelSpacePgsMemMgr` 的完整面貌已记录于 `MemoryModuleDocv1.txt`。
+此时启动链为：
+
+```
+kernel_entry.asm
+  └→ kernel_start(BootInfoHeader*)
+       ├── Graphics + serial + shell
+       ├── gKpoolmemmgr.Init()
+       ├── gBaseMemMgr.Init(transfer->memory_map)
+       └── gKspacePgsMemMgr.Init()       ← 这一调用包含了：
+             ├── phymemSubMgr.Init()     ← 物理段扫描
+             ├── PgsMemMgr 树构建        ← 管理树
+             ├── enable_new_cr3()        ← 页表构建 + CR3 切换
+             ├── 内核段重映射 + 高半映射
+             └── 运行时段 pgs_remapp()
+       ├── gRuntimeServices.Init()
+       ├── gProcessor_Ks_stacks_mgr.Init()
+       ├── gInterrupt_mgr.Init()
+       └── gAcpiVaddrSapceMgr.Init()
+       └── asm volatile("hlt")
+```
+
+**链接脚本** (`kld.ld`):
+```
+KImgphybase = 0x200000          ← 内核物理基址 2MB
+init_sec_base = 0x100000        ← 初始代码基址 1MB
+__STACK_SIZE = 8M               ← 8MB 栈
+__HEAP_SIZE = 16M               ← 16MB 堆
+__PGTB_HEAP_SIZE = 4M           ← 页表专用堆 4MB
+__KLOG_SIZE = 2M                ← 日志 2MB
+```
+
+**关键问题**：`gKspacePgsMemMgr.Init()` 是一个"黑洞"——进去的每个物理段、
+出来的只有 `hlt` 之后的 panic。没有阶段标记，没有重入能力。
+
+---
+
+## 3. Phase B: 静默期 (Oct 23 → Nov 30)
+
+这段时间表面上在开发文件系统（`MemoryDiskv1`、`initfs`），
+但内存模块在休眠中酝酿着下一波裂变。
+
+```
+dc2a2d1  MemoryDiskv1 驱动
+2ca565d  调整链接脚本 → kld.ld 大改
+2b6e2b3  FS: 簇位图
+2534dfc  IOAPIC 修复
+4b3cda9  更新 README
+07e8278  文件系统模块集成
+f8080d2  FS 基础操作
+8b107b4  中断路径优化
+```
+
+其实 `2ca565d`（Oct 23）就在链接脚本里开始做准备了——
+`KImgphybase` 从 0x200000 改到 0x4000000（64MB），
+`init_sec_base` 从 0x100000 改到 0x1000（4KB）。
+这是为后面的 `init.elf` 两阶段启动铺路。
+
+---
+
+## 4. Phase C: 大分裂——第一刀 (Dec 1 → Dec 7)
+
+这是最关键的 **9 天**。6 次提交，6 把手术刀。
+
+### 4.1 第一刀：7f9f658 "第二阶段初始化" (Dec 1 00:27)
+
+```cpp
+// 引入分阶段初始化
+kpoolmemmgr_t::second_stage_init()   ← 新！
+```
+
+这是 v1 单体 `Init()` 被拆分的开端。之前 kpoolmemmgr 只有
+`Init()`（一次到位），现在拆成 Init + second_stage_init。
+后阶段 init 依赖其他模块（如物理分配器）已经就绪。
+
+### 4.2 第二刀：fc8c5a1 "重构内存管理模块并优化分配策略" (Dec 1 21:07)
+
+**这是第一把真正砍向上帝类的刀。**
+
+变化：
+- `kpoolmemmgr_t::Init()` 取代 `gKpoolmemmgr.Init()` — 命名空间化
+- `second_stage_init` 在 PagetbHeapMgr 中引入
+- 引入 **per-CPU 堆**（cpuid → APIC ID → per-CPU HCB）
+- 读写锁保护 HCB 操作（`rwlock`）
+- `realloc`/`free` 与具体 HCB 的关联逻辑纠正
+- 内核堆分配从"全局一个池"变为"每 CPU 一个堆"
+
+**链接脚本**：此时 `__STACK_SIZE` 从 8MB 降为 **64KB**。
+因为 BSP 栈在 `kernel_entry.asm` 切换后就固定了，
+多核 AP 栈改为动态分配。8MB→64KB 意味着设计思路变了：
+栈不再是"预先在链接脚本里划一块大的"，而是"只给 BSP 基本栈，
+AP 栈后面再动态分配"。
+
+### 4.3 第三刀：9fe479f "VM_DESC + vphypair_t" (Dec 4)
+
+```cpp
+struct vphypair_t {     // ← 新！虚拟-物理地址映射对
+    vaddr_t vaddr;
+    phyaddr_t paddr;
+    uint64_t size;
+};
+
+struct VM_DESC {        // ← 新！虚拟内存描述符
+    vphypair_t mapping;
+    uint64_t flags;
+    // 大段标识, 完整提交状态, 地址分配来源, 越界保护
+};
+```
+
+这是关键抽象——**将"谁映射到哪里"从上帝类中抽离出来**。
+之前这些信息散落在 `vaddr_objs[]` 数组和 `phymemSegsSubMgr` 的子表里，
+现在被统一为 `VM_DESC` 结构。
+
+红黑树管理 `VM_DESC` 的机制也开始搭建
+（`kspace_vm_table = new kspace_vm_table_t()`）。
+
+### 4.4 第四刀：b75487e "页表级别配置与缓存策略" (Dec 6)
+
+```cpp
+struct page_table_level_config {
+    uint8_t level;
+    cache_strategy_t cache;
+    // ...
+};
+```
+
+把页表操作中关于"几级分页"、"用什么缓存策略"的配置
+聚合成结构体，不再依赖 `pgflags` 中散布的位字段。
+
+### 4.5 第五刀：47a5377 "重构地址空间管理类" (Dec 7)
+
+```cpp
+class AddressSpace {    // ← 彻底重写的地址空间
+    // void enable_VM_desc(VM_DESC desc)   ← 新映射接口
+    // void disable_VM_desc(VM_DESC desc)  ← 新取消映射
+    // void unsafe_load_pml4_to_cr3(PCID)  ← 新 CR3 加载
+};
+```
+
+`AddressSpace` 从配角升级为主角。`second_stage_init()`、
+`build_identity_map()`、`unsafe_load_pml4_to_cr3()` 都成为
+AddressSpace 的标准接口。
+
+### 4.6 小结：9 天里的架构变迁
+
+```
+fc8c5a1 前 (Nov 30)                  fc8c5a1 后 (Dec 7)
+───────────────────────────────────  ───────────────────────────────────
+gKspacePgsMemMgr (上帝类)            phymemspace_mgr (物理管理器)
+  ├── PgsMemMgr 树                    ├── 1GB 稀疏数组 (新!)
+  ├── phymemSegsSubMgr                ├── BLACK_HOLE 模型
+  ├── pgtb_heap_mgr_t                 └── PHYSEG 段 (新!)
+  ├── vaddr_objs[4096]                   
+  ├── enable_new_cr3()               KspaceMapMgr (新!)
+  └── Init() → alles                 AddressSpace (重写)
+                                          ├── VM_DESC 红黑树
+  gKpoolmemmgr                        └── unsafe_load_pml4_to_cr3()
+    └── Init()
+                                      kpoolmemmgr_t
+                                        ├── Init()
+                                        └── second_stage_init()
+                                        └── per-CPU 堆
+```
+
+---
+
+## 5. Phase D: 新架构雏形 (Dec 22 → Dec 26)
+
+### 5.1 cbee563 "phygpsmemmgr_t → phymemspace_mgr 重塑" (Dec 22)
+
+**这是标志性提交。** 代码来看：
+
+```diff
+- class PgsMemMgr / KernelSpacePgsMemMgr
++ class phymemspace_mgr
+```
+
+同时引入：
+- **`PHYSEG`** 结构：`{ start, size, type: {DRAM_SEG, MMIO_SEG, ...} }`
+- **`low1mb_mgr_t`**：低 1MB 物理内存专门管理
+- **`phyaddr_accessor`**：物理地址访问器（`PhyAddrAccessor`）
+- **`phymemmgr_statistics_t`**：统计信息
+- 页面状态枚举：`RESERVED` 成为默认初始值（安全改进）
+
+**启动链变为 (cbee563):**
+
+```
+kernel_entry.asm
+  └→ kernel_start(BootInfoHeader* transfer)
+       ├── Graphics + serial + shell
+       ├── kpoolmemmgr_t::Init()
+       ├── gBaseMemMgr.Init(transfer->memory_map)
+       ├── phymemspace_mgr::Init()       ← 瘦身后的物理管理器
+       ├── KspaceMapMgr::Init()          ← 新！独立内核页表管理器
+       ├── gKernelSpace = new AddressSpace()
+       │     └── second_stage_init()
+       ├── gKernelSpace->build_identity_map()
+       └── gKernelSpace->load_pml4_to_cr3()  ← 显式的 CR3 加载！
+       └── asm volatile("hlt")
+```
+
+**关键变化**：
+1. 启动链从 1 个调用（`gKspacePgsMemMgr.Init()`）变成 **5 个独立调用**
+2. CR3 加载现在显式为 `gKernelSpace->load_pml4_to_cr3()`
+3. `gKernelSpace` 从全局静态变量改为动态分配（`new AddressSpace()`）
+4. `enable_new_cr3()` 被拆为 `build_identity_map()` + 显式 CR3 加载
+5. 5 个 phygpsmemmgr 子文件同时存在（膨胀到最大）
+
+### 5.2 1b910b4 "优化内核内存布局和链接脚本配置" (Dec 26)
+
+**链接脚本定型**：
+```
+KImgphybase = 0x4000000          ← 内核基址锁定 64MB
+init_sec_base = 0x1000            ← 初始代码基址低至 4KB
+__STACK_SIZE = 64K                ← BSP 栈瘦身到 64KB
+__HEAP_SIZE = 16M
+__PGTB_HEAP_SIZE = 4M
+```
+
+---
+
+## 6. Phase E: 过渡政府 (Jan → Mar 2026)
+
+这三个月是"双轨制"时期——新旧两种架构并存，`phymemspace_mgr` 
+既保留了上帝类的痕迹，又开始接纳新架构的概念。
+
+### 6.1 关键提交
+
+| 时间 | 提交 | 事件 |
+|------|------|------|
+| Jan 10 | `a5bbd89` | CMake 配置更新，新源文件 |
+| Jan 25 | `3dd96af` | 内存描述符转换工具，AddressSpace 改进 |
+| Jan 27 | `bdbfc83` | AP 初始化异常处理，页面分配器重构 |
+| Jan 28 | `9d5dfc1` | **页面分配器重构，简化数据结构** |
+| Jan 31 | `5520773` | 栈对齐支持，panic 机制 |
+| Feb 4 | `f91746b` | AP 启动支持，**per-CPU 内存池** |
+| Feb 11 | `7072c3f` | 调度器基础功能 |
+| Mar 11 | `fa5cbd8` | **init.elf 构建目标** — 两阶段启动！ |
+| Mar 19 | `3bce5e0` | **page_struct.h 引入，PhyPgsMemMgr 碎片合并** |
+| Mar 22 | `300705d` | **git mv phygpsmemmgr.h → all_pages_arr.h** |
+
+### 6.2 3bce5e0: page_struct 诞生 (Mar 19)
+
+这是 **16 字节 page 结构**的首次出现：
+
+```cpp
+struct page {
+    uint32_t refcount;
+    union { /* is_skipped, is_allocateble */ } page_flags;
+    union {
+        struct { uint64_t type:6; uint64_t ptr:52; uint64_t order:6; } head;
+        struct { uint64_t type:6; uint64_t head_page:52; uint64_t huge_order:6; } tranp;
+    };
+};
+static_assert(sizeof(page) == 16);
+```
+
+同时期 5 个 phygpsmemmgr 碎片文件被合并/删除：
+```
+Deleted: phygpsmemmgr_availabe_search.cpp
+Deleted: phygpsmemmgr_buddy_about.cpp
+Deleted: phygpsmemmgr_pgcount_modify.cpp
+Deleted: phygpsmemmgr_pgs_set.cpp
+Deleted: phygpsmemmgr_seg_managment.cpp
+```
+
+旧的 `pgflags`（14 个 bit 字段）被 `page_state_t` 枚举替代（8 种状态）。
+
+### 6.3 300705d: 处决 (Mar 22)
+
+```diff
+-R099 src/include/memory/phygpsmemmgr.h → src/include/memory/all_pages_arr.h
+-R095 src/memory/phygpsmemmgr.cpp      → src/memory/all_pages_arr.cpp
+```
+
+`phymemspace_mgr` 类名消失。`all_pages_arr` 只负责：
+- `mem_map` 初始化
+- `simp_pages_set()` — 批量标记页状态
+- 提供 `free_segs_get()` — 扫描空闲段（喂给 FreePagesAllocator）
+
+**上帝类终于死了。** 它的职能被 5 个独立模块继承：
+
+| 原上帝类职能 | 继承人 |
+|-------------|--------|
+| 物理页管理 (PgsMemMgr 树) | `all_pages_arr` + `page_struct.h` |
+| 物理段分配 | `FreePagesAllocator` (即将诞生) |
+| 虚拟地址分配 (vaddr_objs[4096]) | `AddressSpace` + `kspace_vm_table` (红黑树) |
+| 页表操作 | `KspacePageTable` + `PhyAddrAccessor` |
+| 堆管理 | `kpoolmemmgr_t` (per-CPU HCB) |
+
+### 6.4 过渡政府的脆弱性
+
+这三个月里的"双轨制"非常脆弱：
+
+```cpp
+// 9d5dfc1 的 kinit.cpp (Jan 28) — 新旧混合
+// 旧: phygpsmemmgr.h (即将废弃)
+#include "memory/phygpsmemmgr.h"
+// 新: 已经部分使用
+#include "memory/AddresSpace.h"
+
+// 启动链 — 新旧杂交
+gBaseMemMgr.Init(...)                ← 旧 (始终未变)
+phymemspace_mgr::Init()              ← 半新 (刚重命名)
+KspaceMapMgr::Init()                 ← 新
+gKernelSpace = new AddressSpace()    ← 新
+gKernelSpace->second_stage_init()    ← 新
+gKernelSpace->build_identity_map()   ← 新
+gKernelSpace->load_pml4_to_cr3()     ← 新
+```
+
+其中 `phymemspace_mgr::Init()` 还是做了大量的工作——
+包括 1GB 稀疏数组初始化、BLACK_HOLE 认领、物理段注册。
+这个函数在过渡期结束时才彻底清空。
+
+**一个 bug 潜伏在过渡期**：`phymemspace_mgr` 在 `3bce5e0` 的文件整理中
+被合并回单个 .cpp 时，`mem_map` 初始化逻辑有了变动——
+之前分散在 5 个文件中的边界检查、段注册、BLACK_HOLE 逻辑
+在合并中可能失效。这只是过渡政府的一个侧面。
+
+---
+
+## 7. v2 双神分立的确立
+
+### 7.1 最终架构 (cbee563 / 1b910b4)
+
+v1→v2 过渡结束时，KernelSpacePgsMemMgr 被拆为三个独立模块：
+
+```
+PhyPgsMemMgr (新"物理内存上帝类")
+  ├── 1GB 稀疏数组 + BLACK_HOLE 模型
+  ├── phymem_segment[] 物理段表
+  ├── phyaddr_accessor 物理地址访问
+  ├── PHYSEG (DRAM_SEG/MMIO_SEG)
+  ├── low1mb_mgr_t
+  ├── 物理页分配/回收/MMIO注册
+  └── 曾经的 8 个 .cpp 文件
+
+KspacePgsMemMgr (内核空间页管理器)
+  ├── kspace_vm_table (红黑树)
+  ├── VM_DESC 虚拟内存描述符
+  └── enable_VMentry / disable_VMentry
+
+AddressSpace
+  ├── second_stage_init()
+  ├── build_identity_map()
+  └── unsafe_load_pml4_to_cr3(PCID)
+
+kpoolmemmgr_t (C++堆管理器)
+  ├── per-CPU 堆
+  ├── second_stage_init()
+  └── multi_heap_enable()
+```
+
+### 7.2 新启动链
+
+```
+kernel_entry.asm
+  └→ kernel_start(BootInfoHeader* transfer)
+       ├── Graphics + serial + shell
+       ├── kpoolmemmgr_t::Init()
+       ├── gBaseMemMgr.Init(transfer->memory_map)
+       ├── phymemspace_mgr::Init()          ← PhyPgsMemMgr
+       ├── KspaceMapMgr::Init()             ← 内核页表
+       ├── gKernelSpace = new AddressSpace()
+       │     └── second_stage_init()
+       │     └── build_identity_map()
+       ├── gKernelSpace->load_pml4_to_cr3()  ← CR3切换
+       └── asm volatile("hlt")
+```
+
+### 7.3 v2 遗留的问题
+
+1. **PhyPgsMemMgr 成了新上帝类** — 8 个 .cpp 文件、~3000 行
+2. **kld.ld 仍然畸形** — 见第 8 章
+3. **没有二级 boot** — bootloader 直接加载 kernel.elf，物理地址必须固定
+4. **CR3 切换后没有返回路径** — 高半映射一失败就死
+5. **临时页表仍脆弱** — PML4[0] 和 [256] 共用一个 PDPT
+
+这些问题将在 v2→v3 过渡期中解决（init.elf 两阶段启动、
+PhyPgsMemMgr 的死亡、MMU 自由）。
+
+---
+
+## 8. 脆弱页表的诞生 — 内核首次上高半
+
+### 8.1 v1 时代：VMA = LMA（恒等映射）
+
+在 God Class 巅峰期（f346291），内核链接脚本的设定是：
+
+```ld
+KImgvbase = KImgphybase   // VMA = LMA，恒等映射
+```
+
+内核代码段的 VMA（虚拟地址）等于 LMA（物理加载地址）。
+kernel_entry.asm 的临时页表只需要恒等映射——
+物理地址 0x200000 的代码，在虚拟地址 0x200000 运行。
+
+```asm
+pml4_table:
+dq pml4_table_pdpt_lowmem_rigon+0x3    ; [0]  = identity
+times 255 dq 0
+dq pml4_table_pd_highmem_rigon+0x3     ; [256] = kernel at KImgphybase
+```
+
+### 8.2 v1→v2 引入：VMA = 物理 + 0xFFFF800000000000
+
+v1→v2 过渡的根本变化——**内核不再在低地址运行，
+必须直接在高半虚拟地址启动**。为什么？因为 AddressSpace 拆分后，
+内核虚拟空间管理期望内核在高半运行（0xFFFF800000000000+），
+低半预留给用户态。
+
+```ld
+// cbee563 / 1b910b4: kld.ld 变形
+KImgphybase = 0x4000000;
+KImgvbase = KImgphybase + PAGE_LEVEL_4;    // 🚫 首次出现
+Koffset = KImgvbase - KImgphybase;          // = 0xFFFF800000000000
+```
+
+kernel_entry.asm 的临时页表被迫畸变：
+
+```asm
+; PML4[0]   → PDPT (恒等映射低512GB)
+; PML4[256] → 同一个 PDPT!  ← 借恒等映射来跑高半
+pml4_table_init:
+dq pml4_table_pdpt_lowmem_rigon+0x3    ; [0]   = identity
+times 255 dq 0
+dq pml4_table_pdpt_lowmem_rigon+0x3    ; [256] = 同一个!
+```
+
+物理地址 0x4000000 同时映射到 0x4000000 和 0xFFFF80040000000。
+`mov rsp, _stack_top` 和 `call kernel_start` 在虚拟地址 0xFFFF80040000000 执行——
+但在临时页表里 0x4000000 也被映射（identity），所以也能跑。
+
+这就是**脆弱页表**的诞生。
+
+### 8.3 核心矛盾：三环锁链
+
+**kld.ld 的 VMA 必须等于物理加载地址 + 固定偏移 0xFFFF800000000000**。
+
+```ld
+// cbee563 / 1b910b4 (Dec 2025)
+KImgphybase = 0x4000000;                        // 物理加载地址
+KImgvbase = KImgphybase + PAGE_LEVEL_4;         // VMA = 物理 + 0xFFFF800000000000
+Koffset = KImgvbase - KImgphybase;              // 固定偏移
+
+SECTIONS {
+    .text_main : AT(KImgphybase) { } > VRAM     // LMA = 物理
+```
+
+bootloader（gnu-efi）把 kernel.elf 加载到 KImgphybase（0x4000000，即 64MB 处）。
+但链接器告诉内核：你的代码在 KImgvbase（0xFFFF80040000000）运行。
+所以 **kernel_entry.asm 的临时页表必须在两个地址之间建立映射**：
+
+```asm
+; kernel_entry.asm @ 1b910b4
+pml4_table_init:
+dq pml4_table_pdpt_lowmem_rigon+0x3    ; PML4[0]  → identity
+...
+dq pml4_table_pdpt_lowmem_rigon+0x3    ; PML4[256] → high half (同个PDPT!)
+
+; 唯一一个 PDPT: 512 × 1GB 大页恒等映射低 512GB
+pml4_table_pdpt_lowmem_rigon:
+%assign i 0
+%rep 512
+    dq i*0x40000000+0x83               ; 1GB huge page, Present+RW+PS
+%endrep
+```
+
+临时页表的畸形态：
+- **PML4[0] 和 PML4[256] 指向同一个 PDPT**（同一个恒等映射表）
+- 物理地址 0x4000000 同时映射到虚拟地址 0x4000000 和 0xFFFF80040000000
+- `mov rsp, _stack_top` 和 `call kernel_start` 都发生在虚拟地址 0xFFFF80040000000
+- 但临时页表里 0x4000000 也被映射了—所以也能跑
+
+### 8.2 为什么说它"畸形"
+
+kld.ld 必须保证三件事精确对齐：
+
+```
+┌────────────────────────────────────────────────────────┐
+│                      kld.ld                           │
+│  KImgphybase = 0x4000000                               │
+│  Kimgvbase   = KImgphybase + PAGE_LEVEL_4              │
+│  Koffset     = PAGE_LEVEL_4                             │
+└──────────┬─────────────────────────────────────────────┘
+           │
+           │ 必须匹配
+           ▼
+┌────────────────────────────────────────────────────────┐
+│                  kernel_entry.asm                      │
+│  pml4_table_pd_highmem_rigon:                          │
+│    dq KImgphybase + n*2M + 0x83  // 硬编码物理基址!    │
+│  _stack_top = KImgphybase + ...  // 导出符号匹配       │
+└──────────┬─────────────────────────────────────────────┘
+           │
+           │ 必须匹配
+           ▼
+┌────────────────────────────────────────────────────────┐
+│                   bootloader                           │
+│  加载 kernel.elf 到物理地址 0x4000000                   │
+│  (否则 KImgphybase 和实际加载地址不符)                   │
+└────────────────────────────────────────────────────────┘
+```
+
+任何一环出错：
+- bootloader 把内核加载到 0x200000 而不是 0x4000000 → kld.ld 的 LMA 全错
+- kernel_entry.asm 的 `pml4_table_pd_highmem_rigon` 如果用了旧的 KImgphybase → 高半映射指错物理地址
+- `PROVIDE(KImgphybase = 0x4000000)` 是为了确保链接器导出符号给 asm 用，但 PROVIDE 只在符号未定义时才生效—容易隐蔽 bug
+
+### 8.3 脆弱页表
+
+kernel_entry.asm 的临时页表不仅承担着"让 C 代码跑起来"的责任，
+还必须在 `enable_new_cr3()` 执行前保持正确。一旦 `enable_new_cr3()`
+建好新页表、切换 CR3，这个临时页表就被废弃了。
+
+脆弱在哪？
+1. **临时页表只有 1 个 PDPT**（512 个 1GB 大页映射低 512GB）
+2. **高半映射借用了同一个 PDPT**（PML4[0] 和 PML4[256] 指向同一个表）
+3. 这只能在 CR3 切换前工作——新页表会完全重建
+4. 如果 `enable_new_cr3()` 失败或中途触发 #PF，回溯时用的还是临时页表
+
+所以 `gKspacePgsMemMgr.Init()` 是一个**不归路**：要么成功切换 CR3，要么死在 EFI 页表上。
+
+### 8.4 脆弱性的后果
+
+这个设计一直维持到 v2→v3 过渡期，直到 `init.elf` 两阶段启动
+才最终解决（见 `MemoryModuleTransition_v2_to_v3.txt`）：
+
+- `808f40e`: KImgvbase 固定为 PAGE_LEVEL_4，不再依赖 KImgphybase
+- init.elf 负责加载 kernel.elf、建立临时页表、传递加载地址
+- kernel.elf 不再需要在编译时知道自己的物理加载地址
+
+### 8.5 链接脚本的演变：直到三环锁链被打破
+
+| 版本 | 时期 | KImgphybase | Kimgvbase | Stack | 脆弱页表 | VMA 特征 |
+|------|------|-------------|-----------|-------|---------|----------|
+| v1 巅峰 | f346291 | 0x200000 | = KImgphybase | 8MB | 无（恒等映射）| ✅ VMA=LMA |
+| v1→v2 | cbee563 | 0x4000000 | +PAGE_LEVEL_4 | 64KB | 🔴 **首次引入** | 🚫 VMA=物理+偏移 |
+| v1→v2 | 1b910b4 | 0x4000000 | +PAGE_LEVEL_4 | **32KB** | 🔴 | 🚫 + init.elf 预留 |
+| v2→v3 | 808f40e | 0x2000000 | =PAGE_LEVEL_4 | 32KB | ✅ **解决** | ✅ VMA 独立 |
+
+v1→v2 恰是**脆弱页表的引入期**——它不是在逃离，而是在建立。
+这是内核第一次必须在高半虚拟地址运行，却还没有能力自由控制
+自己的物理加载地址。
+
+---
+
+## 9. 过渡政府的教训
+
+### 9.1 什么保持稳定
+
+在 5 个月的过渡期中，以下组件**始终不变**：
+- `gBaseMemMgr` — 一直从 EFI 内存表构造物理段视图
+- `kernel_entry.asm` — 初始页表 + 栈切换 + 跳转到 kernel_start
+- `BootInfoHeader` — 从 bootloader 传递信息的数据结构
+- `kpoolmemmgr` 的基本位图堆算法
+
+### 9.2 什么反复变动
+
+- **物理页管理**：PgsMemMgr 树 → PhyPgsMemMgr (首次拆出独立子系统)
+- **虚拟地址管理**：vaddr_objs[4096] → VM_DESC + 红黑树 (完全重写)
+- **CR3 加载**：藏在 Init() 内部 → gKernelSpace->load_pml4_to_cr3() (显式化)
+- **物理分配**：phymemSegsSubMgr → PhyPgsMemMgr 集成 (仍在线性表)
+- **页表模式**：恒等映射 VMA=LMA → 脆弱临时页表 (首次高半加载, VMA=物理+偏移)
+
+### 9.3 为什么会成功
+
+1. **函数指针数组** — 5 个 `PgCBtb_construct_func[]` 让树遍历逻辑与树节点操作解耦，后续可以逐个替换实现而不破坏接口
+2. **BootInfoHeader 协议** — bootloader→kernel 的传递协议从始至终不变，内核内部架构如何变动都不影响接口
+3. **分阶段 Init** — `second_stage_init` 模式允许先建立"能运行的版本"，再升级到"高性能版本"
+
+---
+
+## 10. 数据汇总
+
+```
+过渡期统计
+────────────
+持续时间:        2025-10-21 → 2025-12-26 (66 天, ~2.2 个月)
+总提交数:        约 20
+上帝类首次拆分:  KernelSpacePgsMemMgr → PhyPgsMemMgr + KspacePgsMemMgr + AddressSpace
+新模块诞生:      AddressSpace, KspaceMapMgr, PhyAddrAccessor, VM_DESC, PHYSEG
+堆栈大小变化:    8MB → 32KB (引入 per-CPU 栈)
+内核基址变化:    0x200000 → 0x4000000
+链接脚本版本:    2 次大改
+启动链步骤数:    6 → 9
+VMA 模式变化:    恒等映射 → VMA=物理+0xFFFF800000000000 (首次上高半)
+```
+
+---
+
+*本文档记录的是 v1→v2 过渡——上帝类拆解与脆弱页表诞生。*
+*PhyPgsMemMgr 的死亡、init.elf 两阶段启动、MMU 自由属于 v2→v3 过渡，*
+*在 `MemoryModuleTransition_v2_to_v3.txt` 中记录。*
+
+---
+
+*本文档由 git 考古于 2026-06-20 生成。*
+*"过渡政府"的概念来自这个时期的代码现实：没有一次大手笔重写，*
+*而是通过 40 次小提交、7 次解剖、20 多次愈合，让一个 3500 行的上帝类*
+*平稳过渡到 7 个独立的子系统。*

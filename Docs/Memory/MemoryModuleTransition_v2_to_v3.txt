@@ -1,0 +1,565 @@
+# v2 → v3 过渡史：PhyPgsMemMgr 的死亡、init.elf 革命与 MMU 自由
+
+**时间跨度：2025-12-26 (1b910b4) → 2026-05-23 (b485546)**
+**涉及提交：约 30 次**
+
+**参考文档：**
+- `Docs/init_protocal.txt` (创建于 300705d, 2026-03-22) — v3 boot protocol 完整设计
+- `Docs/Memory/MemoryModuleDocv3.txt` (创建于 300705d) — v3 内存子系统初始化时序
+
+---
+
+## 0. 背景
+
+v2 的架构是"双神分立"——`KernelSpacePgsMemMgr` 被拆成了
+`PhyPgsMemMgr`（物理内存上帝类）和 `KspacePgsMemMgr`（内核空间管理器）
+加 `AddressSpace`。但 `PhyPgsMemMgr` 很快膨胀成了新的上帝类。
+
+v2→v3 过渡的核心推动力有两个：
+
+1. **FPA 安家**：`FreePagesAllocator` 的 BCB 位图需要放在物理内存里。
+   但在脆弱页表时代（VMA=物理+偏移），BCB 位图的物理地址到虚拟地址
+   的映射充满了妥协——BCB 的 `first_BCB_bitmap` 固定数组和 `order_bases`
+   硬编码在一起，看起来"很不美观"。
+
+2. **phymemspace_mgr 的腐朽**：这个类有一个全局锁、一个 1GB 稀疏数组、
+   一个 BLACK_HOLE 模型、一个 PHYSEG 数组——而 95% 的调用只是想分配或释放一个页。
+
+但真正的**解决方案**是 v3 boot protocol 带来的 init.elf 两阶段启动——
+把初始化复杂度甩给 init.elf，kernel.elf 从此自由。
+
+---
+
+## 1. 时间线纵览
+
+```
+v2 双神分立                                v3 分层堆栈 + init.elf
+PhyPgsMemMgr (新上帝)                      all_pages_arr + FPA + BCB
+                                              + MMU 自由 + gBaseMemMgr 退休
+                                              
+1b910b4          fa5cbd8    300705d  808f40e  f34f7f3    b485546
+Dec 26           Mar 11     Mar 22   Apr 2    May 9      May 23
+  │                │          │        │        │          │
+  ▼                ▼          ▼        ▼        ▼          ▼
+┌──────────────────┬──────────┬────────┬────────┬──────────┬─────────►
+│ Phase A: 宫斗期  │Phase B:  │Phase C:│Phase D: │Phase E:  │Phase F: │
+│ 双上帝共存       │init.elf  │处决!   │新秩序   │init_v2   │mem_init │
+│ FPA在脆弱页表    │构建目标  │phygps  │all_pages│bootloader│.cpp     │
+│ 下强行安家       │(代码先)  │mmgr.h  │+ FPAv1  │正式支持  │拆分     │
+│                  │         │→ all   │+ BCBv1  │          │         │
+│                  │         │_pages  │+ 文档   │          │         │
+│                  │         │_arr.h  │(300705d)│          │         │
+│                  │         │+ 文档! │         │          │         │
+└──────────────────┴──────────┴────────┴────────┴──────────┴─────────►
+```
+
+### 1.1 关键锚点
+
+| 日期 | 提交 | 事件 | 证据 |
+|------|------|------|------|
+| Mar 11 | `fa5cbd8` | init.elf 构建目标首次加入 | `CMakeLists.txt` 添加 init.elf |
+| Mar 22 | **`300705d`** | 🎯 **三重事件** | `init_protocal.txt` + `MemoryModuleDocv3.txt` + PhyPgsMemMgr 处决 |
+| Apr 2 | `808f40e` | all_pages_arr + FPA + BCBv1 集成 | 代码落地 |
+| May 9 | `f34f7f3` | UEFI bootloader 正式支持 | init_v2 protocol (header_offset) |
+| May 23 | `b485546` | `mem_init.cpp` 从 `kinit.cpp` 拆分 | 启动链最终形态 |
+
+---
+
+## 2. Phase A: v2 宫斗期 (Dec 26 → Mar 19)
+
+### 2.1 phymemspace_mgr 的全貌
+
+这个类在 v2 时代接管了上帝类的物理页管理职责，长成了新上帝：
+
+```
+class phymemspace_mgr {
+    // 核心数据
+    static page* mem_map;               // 1GB 稀疏数组 → 页框数组
+    static uint64_t mem_map_entry_count;
+
+    // 子管理器
+    free_segs_t* free_segs_get();        // 搜索空闲段
+    // BLACK_HOLE 模型
+    //   BLACK_HOLE_CLAIM_DRAM()         // 注册 DRAM 段
+    //   BLACK_HOLE_CLAIM_MMIO()         // 注册 MMIO 段
+    //   BLACK_HOLE_DEALLCLAIM()         // 注销段
+
+    // 页操作
+    //   alloc_pages(n)                  // 分配 n 个页
+    //   free_pages(addr)                // 释放
+    //   mark_mmio(addr)                 // 标为 MMIO
+
+    // 段管理
+    //   PHYSEG 数组 (排序的物理段)
+    //   query_segment(addr)             // 查询物理段
+
+    // 统计
+    //   statistics: { dram_size, mmio_size,
+    //                 segment_count, ... }
+
+    // 全局锁
+    spinlock_t global_lock;             // ← 所有操作的瓶颈
+};
+```
+
+**源文件膨胀**（在高峰期达到 8 个）：
+```
+phygpsmemmgr.h                  (234 行)
+phygpsmemmgr.cpp                (主实现)
+phygpsmemmgr_availabe_search.cpp (空闲段搜索)
+phygpsmemmgr_buddy_about.cpp    (伙伴系统集成)
+phygpsmemmgr_pgcount_modify.cpp (页计数)
+phygpsmemmgr_pgs_set.cpp        (页状态设置)
+phygpsmemmgr_seg_managment.cpp  (物理段管理)
+phypgsmemmgr_alloc.cpp          (分配释放, 958行)
+```
+
+### 2.2 FPA 在脆弱页表下横切
+
+`FreePagesAllocator`（FPA）是 v2 时就被设计好的伙伴分配器。
+但它的安家方式非常丑陋。
+
+**BCB 位图必须放在物理内存的特定位置**，因为：
+1. kernel.elf 在脆弱页表下运行（VMA=物理+0xFFFF800000000000）
+2. BCB 位图如果用 `new` 分配，虚拟地址到物理地址的映射需要经过
+   phymemspace_mgr 查询 → AddressSpace 映射 → 才能得到物理地址
+3. 但 FPA 是用来分配物理页的——**鸡生蛋问题**：分配器本身需要的
+   位图内存，必须由另一个机制先分配好
+
+解决方案是 `first_BCB_fixed_bitmap`：
+
+```cpp
+// FreePagesAllocator.h
+// 第一个 BCB 的位图是固定数组，不用动态分配
+uint64_t FIRST_BCB_FREE_PAGES_FIXED_BITMAP[...];
+```
+
+但固定位图的大小和位置又受限于脆弱页表：
+- 位图的虚拟地址必须落在已映射区域
+- 物理地址必须是在 kernel.elf 加载时就已知的
+- 无法方便地扩展——想加第二个 BCB 的位图就麻烦了
+
+BCB 的 `order_bases[]` 数组设计（压缩所有 order 的位图到一维数组）：
+```cpp
+uint64_t order_bases[DESINGED_MAX_SUPPORT_ORDER];
+// order_bases[0] = 0
+// order_bases[order+1] = order_bases[order] + 2^(max_order - order)
+```
+
+这实际上是为了**节约位图空间**而做的优化——因为固定大小的位图很金贵。
+而在 v3 的 MMU 自由时代，BCB 位图可以任意分配，不再需要这种压缩。
+
+### 2.3 全局锁的性能灾难
+
+phymemspace_mgr 有一个**全局自旋锁**保护所有操作：
+
+```cpp
+lock_acquire(&phymemspace_mgr::global_lock);
+// → 分配一个 4KB 页
+// → 遍历 1GB 稀疏数组
+// → 找到空闲位
+// → 标记占用
+// → 更新 PHYSEG 子表
+// → 返回物理地址
+lock_release(&global_lock);
+```
+
+性能问题：
+- 分配 4KB 的开销中，实际位操作只占 <10%
+- 90% 的开销在：锁竞争、稀疏数组遍历、段表一致性维护、
+  BLACK_HOLE 状态检查、统计更新
+- 单核勉强，多核下锁成为绝对瓶颈
+
+### 2.4 复杂一致性
+
+phymemspace_mgr 内部维护了多个数据结构，它们必须保持一致性：
+
+```
+1GB 稀疏数组中的每个 4KB 页状态  ←→  PHYSEG 数组中的段记录
+    ↓                                       ↓
+是否可分配？                             段的类型是什么？
+是 DRAM 还是 MMIO？                      段的起始/结束地址？
+```
+
+任何页状态变化必须同步更新两处：
+1. 页框数组的 `page_flags.is_allocateble`
+2. PHYSEG 段的引用计数或子表
+
+BLACK_HOLE 模型更是增加了复杂性：
+- `BLACK_HOLE_CLAIM_DRAM()`: 先查 PHYSEG 是否冲突
+  → 逐页设置状态 → 插入 PHYSEG 段数组（保证排序）
+- `BLACK_HOLE_DEALLCLAIM()`: 先逐页检查是否都是初始状态
+  → 恢复 BLACK_HOLE → 从 PHYSEG 删除
+
+这些操作在单线程下已经难以调试，多线程下更是噩梦。
+
+### 2.5 全局类 gBaseMemMgr 的尴尬处境
+
+gBaseMemMgr 是从 v1（初始提交 `b6b6751`）活到 v2 的元老——
+它负责从 EFI 内存表构造物理段视图、排序、回收 boot services。
+在 v2 中它仍然被 phymemspace_mgr 依赖，但角色日益尴尬：
+
+- v1 时代：`gBaseMemMgr.Init()` → `gKspacePgsMemMgr.Init()`, 唯一路径
+- v2 时代：`gBaseMemMgr.Init()` → `phymemspace_mgr.Init()` → `KspaceMapMgr.Init()`，
+  它的输出是 phymemspace_mgr 的输入，但 phymemspace_mgr 也维护了自己的
+  PHYSEG 数组和 BLACK_HOLE 状态——**两套段描述共存**。
+
+v3 中 init.elf 把 gBaseMemMgr 的 EFI 表处理逻辑完全吞掉了：
+init.elf 用自己的 `basic_allocator` 完成排序、回收、空洞填充，
+然后只输出一个干净的 `phymem_segment[]` 数组给 kernel.elf。
+kernel.elf 不再需要 `gBaseMemMgr`——它再也没有出现过。
+
+---
+
+## 3. Phase B: init.elf 的诞生 (fa5cbd8,  Mar 11)
+
+### 3.1 为什么要有 init.elf
+
+v2 时代 kernel.elf 的负担太重了：
+1. 它要在**脆弱页表**下运行（VMA=物理+0xFFFF800000000000）
+2. 它要自己解析 EFI 内存表（gBaseMemMgr）
+3. 它要自己建立页表（`gKspacePgsMemMgr.Init()` 中的 `enable_new_cr3()`）
+4. 它要加载自己的符号表（ksymmanager）
+5. 它要分配自己的堆和栈
+6. **它的链接脚本必须知道物理加载地址**（kld.ld 的畸形）
+
+**init.elf 的职责**：在 kernel.elf 之前运行，替它做完所有脏活累活：
+
+```
+UEFI bootloader
+    ↓ (加载 init.elf + kernel.elf + ksymbols.bin)
+init.elf (第二阶段)
+    ├── 解析 EFI 内存表 → 构造 physmem_segments[]
+    ├── 自己分配物理页（basic_allocator）
+    ├── 建立页表框架（kernel_mmu）
+    ├── 加载 kernel.elf 的 PT_LOAD 段（任意物理地址!）
+    ├── 分配内核堆/栈/日志/页框数组
+    ├── 构造 init_to_kernel_info 结构体
+    └── shift_kernel() → 跳转到 kernel.elf
+            ↓
+kernel.elf (第三阶段)
+    ├── 接收 init_to_kernel_info（不再需要 EFI 表!）
+    ├── 物理地址自由（init.elf 已经映射好了）
+    ├── all_pages_arr + FreePagesAllocator 直接可用
+    └── 可以专注做正事了
+```
+
+### 3.2 自由的代价
+
+init.elf 解决的核心问题是 **MMU 自由**：
+- kernel.elf 不再需要知道自己的物理加载地址
+- kld.ld 不再需要 `KImgvbase = KImgphybase + PAGE_LEVEL_4`
+- 脆弱页表被废弃——init.elf 建立的页表才是最终页表
+
+**`gBaseMemMgr` 的退休**：
+- v1/v2: `gBaseMemMgr.Init()` 必须在前 20 行执行
+- v3: init.elf 中名为 `basic_allocator` 的内部类做了所有 EFI 表处理
+- kernel.elf 的 `gBaseMemMgr` 就此消失——从未被删除，只是不再需要
+
+### 3.3 启动链对比
+
+```
+v2 启动链 (cbee563):                    v3 启动链 (808f40e):
+                                         bootloader
+                                           ↓
+                                         init.elf
+                                           ├── basic_allocator
+                                           ├── kernel_mmu (页表)
+                                           ├── 加载 kernel.elf
+                                           └── shift_kernel()
+                                             ↓
+kernel_start(BootInfoHeader*)              kernel_start(init_to_kernel_info*)
+  ├── kpoolmemmgr_t::Init()                  ├── kpoolmemmgr_t::Init(heap, bitmap)
+  ├── gBaseMemMgr.Init()                     ├── 复制 phymem_segments / VM_intervals
+  ├── phymemspace_mgr::Init()               ├── all_pages_arr::Init()
+  ├── KspaceMapMgr::Init()                  ├── FreePagesAllocator::Init()
+  ├── AddressSpace::second_stage_init()     ├── KspacePageTable::Init()
+  ├── build_identity_map()                  ├── AddressSpace::second_stage_init()
+  └── load_pml4_to_cr3()                    ├── gKernelSpace→build_identity_map()
+                                             ├── gKernelSpace→load_pml4_to_cr3()
+                                             ├── FreePagesAllocator::second_stage()
+                                             └── kpoolmemmgr_t::multi_heap_enable()
+```
+
+关键差异：
+- `gBaseMemMgr.Init()` → 没了（被 init.elf 消化）
+- `phymemspace_mgr::Init()` → 换成了 `all_pages_arr::Init()`（轻量）
+- `FreePagesAllocator::Init()` → 新增（伙伴系统）
+- 多了 `second_stage` / `multi_heap_enable`（分阶段初始化）
+
+### 3.4 init_to_kernel_info 结构体
+
+这是 init.elf 和 kernel.elf 之间的契约（详见 `Docs/init_protocal.txt`）：
+
+```cpp
+struct init_to_kernel_info {
+    void* gST_ptr;                          // UEFI 系统表
+    phyaddr_t kmmu_root_table;              // 内核页表根物理地址
+    phymem_segment* memory_map;             // 物理内存视图
+    uint64_t phymem_segment_count;
+    loaded_VM_interval* loaded_VM_intervals; // 已分配的 VM 区间
+    uint64_t loaded_VM_interval_count;
+    // ... 符号表、透传设备等
+};
+```
+
+kernel.elf 接收后只需解析这个结构体，不再需要碰 EFI 原生表。
+这就是"MMU 自由"的本质——kernel.elf 从 EFI 的束缚中解放了。
+
+---
+
+## 4. Phase C: 三重事件——300705d (Mar 22)
+
+提交 `300705d` 是 v2→v3 过渡中**最重要的单一提交**。
+在同一次提交中发生了三件事：
+
+### 4.1 PhyPgsMemMgr 处决
+
+```diff
+- R099 src/include/memory/phygpsmemmgr.h → src/include/memory/all_pages_arr.h
+- R095 src/memory/phygpsmemmgr.cpp      → src/memory/all_pages_arr.cpp
+```
+
+`phymemspace_mgr` 类名消失。从此不再有"物理内存上帝类"。
+
+### 4.2 init_protocal.txt 创建
+
+v3 boot protocol 的第一份正式文档。定义了 init.elf 与 kernel.elf 之间
+的契约——`init_to_kernel_info` 结构体、VM_ID 枚举、loaded_VM_interval 格式。
+
+这个文档的创建时间点（300705d）就是 v3 协议的正式生日。
+
+### 4.3 MemoryModuleDocv3.txt 创建
+
+v3 内存子系统初始化时序的第一份文档。记录了从 kernel_start 到
+所有设备就绪的完整流程。
+
+### 4.4 三件事的内在联系
+
+phymemspace_mgr 的死亡不是偶然的——**它之所以能被杀死，
+是因为 init.elf 承担了它的大部分职责**：
+
+| phymemspace_mgr 职责 | v3 中谁负责 |
+|----------------------|-------------|
+| 解析 EFI 内存表 | init.elf (basic_allocator) |
+| 构造物理段视图 | init.elf → phymem_segments[] |
+| 分配页表页 | init.elf (kernel_mmu allocator) |
+| 标记内核占用内存 | init.elf → 写入 phymem_segments |
+| 管理物理页状态 | all_pages_arr (轻量标记) |
+| 分配/释放物理页 | FreePagesAllocator (伙伴系统) |
+
+没有 init.elf 的诞生，phymemspace_mgr 就无法被安全替换——
+因为 kernel.elf 必须在启动初期就有一个能用的物理页分配器。
+init.elf 提供了这个分配器（basic_allocator），让 kernel.elf
+的启动过程完全不需要自己处理 EFI 内存了。
+
+4.5 正式文档时间节点
+
+---
+
+---
+
+## 5. Phase D: page_struct 诞生与碎片合并 (Mar 19, 3bce5e0)
+
+### 5.1 16 字节 page 结构
+
+```cpp
+struct page {
+    uint32_t refcount;
+    union {
+        uint32_t raw;
+        struct { uint32_t is_skipped:1; uint32_t is_allocateble:1; } bitfield;
+    } page_flags;
+    union {
+        struct { uint64_t type:6; uint64_t ptr:52; uint64_t order:6; } head;
+        struct { uint64_t type:6; uint64_t head_page:52; uint64_t huge_order:6; } tranp;
+    };
+};
+static_assert(sizeof(page) == 16);
+```
+
+这替代了原来 phymemspace_mgr 里复杂的 `pgflags`（14 个 bit 字段 + `PgControlBlockHeader` 树节点）。
+`page` 是**扁平**的：就是一个 16 字节的框，没有树节点，没有下级指针。
+
+### 5.2 碎片文件合并
+
+5 个 phygpsmemmgr 子文件被合并回主实现：
+
+```
+Deleted: phygpsmemmgr_availabe_search.cpp
+Deleted: phygpsmemmgr_buddy_about.cpp
+Deleted: phygpsmemmgr_pgcount_modify.cpp
+Deleted: phygpsmemmgr_pgs_set.cpp
+Deleted: phygpsmemmgr_seg_managment.cpp
+```
+
+合并是"清理前奏"——这些文件的功能正在被 `all_pages_arr` 和
+`FreePagesAllocator` 逐步取代，不再需要独立文件。
+
+但它们是在 `300705d` （3 天后）被正式重命名删除的——
+`3bce5e0` 的合并只是给 `300705d` 的处决铺路。
+
+---
+
+## 6. 新秩序：代码落地 (Apr 2, 808f40e)
+
+### 6.1 新架构
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   v3 内存子系统                       │
+│                                                      │
+│  all_pages_arr                                       │
+│    └─ page[] (16B each, flat array)                  │
+│    └─ 只标记状态，不分配                             │
+│                                                      │
+│  FreePagesAllocator                                  │
+│    └─ BCB[] (Buddy Control Blocks)                   │
+│    └─ per-BCB 位图 + per-BCB 锁                      │
+│    └─ alloc/free 就是纯位操作                        │
+│                                                      │
+│  KspacePageTable                                     │
+│    └─ 页表操作（建/拆映射）                           │
+│                                                      │
+│  AddressSpace                                        │
+│    └─ VM_DESC 红黑树                                 │
+│    └─ 按需映射                                      │
+│                                                      │
+│  PhyAddrAccessor                                     │
+│    └─ 物理地址→虚拟地址转换                          │
+│                                                      │
+│  kpoolmemmgr_t                                       │
+│    └─ per-CPU HCB 堆                                 │
+└─────────────────────────────────────────────────────┘
+```
+
+关键变化：**不再有全局上帝类。** 每个子系统只做一件事。
+
+### 6.2 MMU 自由 — 脆弱页表被废除
+
+**`kld.ld` 终于摆脱了畸形。**
+
+```ld
+// 808f40e: KImgvbase 不再依赖 KImgphybase
+KImgphybase = 0x2000000;        // 物理基址 (32MB)
+KImgvbase = PAGE_LEVEL_4;        // 固定 0xFFFF800000000000!
+Koffset = KImgvbase - KImgphybase; // 仅用于偏移计算，不参与 VMA
+```
+
+**使能条件**：
+1. init.elf 已经建立了页表框架（`kmmu_root_table`）
+2. init.elf 已经加载了 kernel.elf 的 PT_LOAD 段到物理内存
+3. init.elf 已经建立了恒等映射和高半映射
+4. init.elf 已经映射好了 `init_to_kernel_info` 结构体和所有 VM 区间
+5. kernel.elf 启动时**已经在正确的虚拟地址上运行**
+
+不再需要 r` 的三环锁链。
+
+### 6.3 性能改善
+
+旧 phymemspace_mgr 分配路径：
+```
+alloc_pages(n)
+  → global_lock.lock()
+  → 遍历 1GB 稀疏数组找到空闲区域
+  → 检查 PHYSEG 段状态
+  → 更新页框数组
+  → 更新 PHYSEG 子表
+  → global_lock.unlock()
+  → 返回物理地址
+```
+
+新 FPA 分配路径：
+```
+FreePagesAllocator::alloc(order)
+  → BCB[target].lock.lock()
+  → 检查 order 的空闲位图 (位操作)
+  → 找到空闲 → 标记占用
+  → 如果需要分裂 → 递归分裂 → 更新位图
+  → BCB[target].lock.unlock()
+  → 返回物理地址
+```
+
+差别：
+- 锁粒度：全局锁 → per-BCB 锁
+- 数据结构复杂度：稀疏数组+段表+子表 → 单一位图
+- 操作量：多处一致性维护 → 纯位操作
+
+### 6.4 init_v2 协议升级 (f34f7f3, May 9)
+
+`init_to_kernel_info` 升级为 `init_to_kernel_header`：
+- 从指针式变为偏移式（支持重定位）
+- 8 个关键区间从 `loaded_VM_interval[]` 容器提升为 header 一等字段
+- 3 个 VM_ID 被彻底消灭（转到了 kernel.elf BSS 中）
+
+### 6.5 mem_init.cpp 拆分 (b485546, May 23)
+
+`mem_init.cpp` 从 `kinit.cpp` 中独立出来，启动链最终形态：
+
+```
+kernel_entry.asm → kernel_start()
+    └→ mem_init.cpp
+         ├── all_pages_arr::Init()
+         ├── FreePagesAllocator::Init()
+         ├── KspacePageTable::Init()
+         ├── AddressSpace::second_stage_init()
+         ├── gKernelSpace→build_identity_map()
+         ├── gKernelSpace→load_pml4_to_cr3()
+         ├── FreePagesAllocator::second_stage()
+         └── kpoolmemmgr_t::multi_heap_enable()
+```
+
+---
+
+## 7. 为什么必须"扬了"
+
+phymemspace_mgr 的死亡不是因为它做错了什么，
+而是因为它**做得太多**。
+
+| 问题 | 症状 | 根因 |
+|------|------|------|
+| 全局锁 | 多核性能差 | 所有操作串行化 |
+| BLACK_HOLE | 逻辑复杂，难调试 | 物理段状态机太精细 |
+| PHYSEG 排序 | 插入/删除 O(n) | 线性表维护 |
+| 混合职责 | 分配+段管理+MMIO+统计 | 功能耦合 |
+| 脆弱页表约束 | BCB 位图安家丑 | 依赖加载地址 |
+
+最终结论是：**让一个类同时管理物理页的分配、物理段的注册、
+MMIO 的标记、内存的统计，本身就是错误的设计。**
+一个物理页分配器只需要知道哪些页空闲、哪些页被占了。
+
+新的设计把"谁空闲"交给 `FreePagesAllocator`（位图），
+把"页是什么类型"交给 `all_pages_arr`（flat struct page 数组），
+把"物理段描述"交给 `phymem_segments[]`（只读的初始化后数组）。
+三者各司其职，不需要全局锁，不需要 BLACK_HOLE 状态机，
+不需要 PHYSEG 排序维护。
+
+---
+
+## 8. 数据汇总
+
+```
+过渡期统计
+────────────
+持续时间:        2025-12-26 → 2026-05-23 (149 天, ~5 个月)
+总提交数:        约 30
+被处决的类:      phymemspace_mgr (phygpsmemmgr.h → all_pages_arr.h)
+继任者:          all_pages_arr + FreePagesAllocator + BCBv1 + init.elf
+源码减少:        ~3000 行 → ~1400 行 (8 文件 → 4 文件)
+锁粒度:          全局锁 → per-BCB 锁
+架构革命:        上帝类 → 分层堆栈
+MMU 自由:        VMA=物理+偏移 → VMA 独立
+启动协议:        gBaseMemMgr 退休 → init_v2 (init_to_kernel_header)
+```
+
+---
+
+**核心文档**：
+- `Docs/init_protocal.txt` — v3 boot protocol 设计（创建于 300705d）
+- `Docs/Memory/MemoryModuleDocv3.txt` — v3 初始化时序（创建于 300705d）
+- `Docs/init_v2/` — init_v2 协议细化（b485546 引入）
+
+**一手资料**：上述 git 提交的快照和 diff 是本文档的所有信息来源。
+
+*v2→v3 的核心教训：上帝类迟早会腐朽。让它只做一件事，做好它。*
+*而 init.elf 的出现让 kernel.elf 终于可以做

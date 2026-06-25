@@ -1,0 +1,805 @@
+# 内存模块文档 v1 — PgsMemMgr 时代
+
+## 文档定位
+
+本文档记录 SparrowOS 内存模块的第一代设计——PgsMemMgr（Page-Segment Memory Manager）时代。
+该时代横跨 2025-08 至 2025-12，以 `KernelSpacePgsMemMgr` 上帝类为核心，
+**首次在内核中完成了 MMU 重建和页表切换**，是 SparrowOS 内存子系统从草图走向工程化的原点。
+
+> 注：此文档在 v2/v3/v4 文档推出之前撰写（2025-09 初稿，2026-06 考古整理）。
+> 本文档也包含了完整的原始源码切片，供后续研究者考古。
+
+---
+
+## 1. 历史背景
+
+### 1.1 启动环境
+
+SparrowOS 采用 UEFI x86_64 启动。UEFI 固件在启动时建立了一个简单的恒等映射页表，
+内核入口点（`_kernel_Init` / 后期 `kernel_start`）最初运行在 **EFI 的页表之下**。
+
+第一代内存管理的核心使命：
+1. 从 EFI_MEMORY_DESCRIPTOR 表中提取物理内存布局
+2. 建立**内核自己的页表系统**（不再是 EFI 的）
+3. 完成页表切换（CR3 写入）
+4. 在切换后管理物理页和虚拟地址空间
+
+### 1.2 时间线
+
+| 时间 | 提交 | 事件 |
+|------|------|------|
+| 2025-08-28 | `b6b6751` | 项目初始化，`BitmapFreeMemmgr_t` 位图分配器 |
+| 2025-09-06 | `ce58356` | PgsMemMgr 首次设计文档，多级页表树 |
+| 2025-09-10 | `c8c51f8` | 重构，代码搬入 src/memory/ |
+| 2025-09-14 | `ea6d5fc` | PgsMemMgr → KernelSpacePgsMemMgr 改名，`enable_new_cr3()` 占位 |
+| 2025-09-18 | `7b7f1c7` | 页表堆管理器 `pgtb_heap_mgr_t`，完整页表构建 |
+| 2025-10-04 | `0489533` | BootInfoHeader 协议，`Init()` 调 `enable_new_cr3()` |
+| 2025-10-21 | `f346291` | 🏆 **巅峰状态** — 完整的上帝类 |
+| 2025-10-22 | `dc2a2d1` | MemoryDisk 驱动 |
+| 2025-11-08 | `07e8278` | 文件系统 |
+| 2025-12-01 | `fc8c5a1` | Per-CPU 堆，分阶段初始化 |
+| 2025-12-22 | `cbee563` | `phygpsmemmgr_t` → `phymemspace_mgr` 重塑 |
+| 2026-03-19 | `3bce5e0` | page_struct.h 引入，碎片文件合并 |
+| 2026-03-22 | `300705d` | **PhyPgsMemMgr 处决** — 重命名为 `all_pages_arr` |
+
+---
+
+## 2. 核心架构：KernelSpacePgsMemMgr 上帝类
+
+### 2.1 设计哲学
+
+> "一个类管所有" — 这一代的设计师相信：内存管理本质上是一个整体问题，
+> 物理页、虚拟地址、页表构建、权限控制应该在一个统一的数据模型下解决。
+
+KernelSpacePgsMemMgr 身兼数职：
+- **物理页管理器**（PhyMemSegsSubMgr_t 嵌套类）
+- **页表构造器**（递归遍历树、构建 CPU 页表）
+- **虚拟地址分配器**（vaddr_objs[4096] 线性表）
+- **物理→虚拟重映射器**（带引用计数）
+- **内存使用查询器**
+
+### 2.2 数据模型：双树结构
+
+#### 2.2.1 PgsMemMgr 管理树
+
+核心数据结构：
+
+```
+PgControlBlockHeader  (树节点)
+  ├── pgflags          (16个bit字段)
+  └── base.union
+      ├── lowerlvPgCBtb*  (非叶节点 → 512子节点)
+      └── phyaddr_t       (叶节点 → 物理地址)
+
+lowerlv_PgCBtb         (512项页表块)
+  └── entries[512]     (PgControlBlockHeader 数组)
+```
+
+每个物理段被拆解为最佳粒度的大页序列（`phymem_pgs_queue`），
+然后用函数指针数组 `PgCBtb_construct_func[5]` 逐级创建树节点。
+
+构建流程：
+```
+phy_memDescriptor [段]
+  → seg_to_queue() [拆为 {4KB,2MB,1GB,512GB,256TB} 序列]
+  → (this->*PgCBtb_construct_func[lv])(addr, flags) [逐级创建树节点]
+```
+
+#### 2.2.2 CPU 页表（硬件格式）
+
+`enable_new_cr3()` 从 PgsMemMgr 树遍历转换：
+
+```
+PgsMemMgr 树                  CPU 页表
+PgControlBlockHeader          uint64_t page_table_entry
+  .flags.is_exist    ──────→  P (Present) bit
+  .flags.is_writable  ──────→  RW bit
+  .flags.is_kernel   ──────→  U/S bit
+  .flags.is_executable ────→  XD bit
+  .flags.cache_strateggy ──→  PWT/PCD/PAT bits
+  .flags.is_global   ──────→  G bit
+  .base.lowerlvPgCBtb ────→  Next level table address
+```
+
+两棵树在内存中并存——管理树 (`rootlv4PgCBtb`) 和硬件树 (`pgtb_heap_ptr->pgtb_root_phyaddr` 指向的页表页)。
+
+### 2.3 两个嵌套子管理器
+
+#### pgtb_heap_mgr_t — 页表专用堆
+
+```
+物理布局: 2 × 2MB 大页 (仅 4MB!)
+内部位图: bitset512_t maps[2] (512页/2MB)
+总容量:   1024 × 4KB 页表页
+
+核心接口:
+  pgalloc() → phyaddr_t   线性扫描位图
+  free(addr)              清除位图位
+  clear(addr)             零初始化页表页
+```
+
+**关键约束**：只有 4MB 页表堆。对于 4 级分页：
+- 1 × PML4 页
+- 1 × PDPT 页/entry
+- 1 × PD 页/entry × 512
+- N × PT 页/entry × 512
+
+全 4KB 粒度映射 8GB 物理内存就需要 ≈ 1027 页 → 堆无法容纳。
+因此必须**依赖 2MB/1GB 大页**才能覆盖全部内存。
+
+#### phymemSegsSubMgr_t — 物理段分配器
+
+```
+最大段数: 64
+每段描述:
+  base                   起始物理地址
+  size_in_numof4kbpgs   总页数
+  subtb[]               已分配的子段 (线性表)
+
+核心接口:
+  alloc(npages, align)       → phyaddr_t   顺序扫描
+  fixedaddr_allocate(base)   → int         固定地址
+  free(base)                 → int         释放
+  fragments_alloc(npages)    → subtb[]     碎片聚合
+  remap_inc/dec(base)        → int         引用计数
+```
+
+实现细节：用 `linearTBSerialInsert` 进行线性表插入/删除操作。
+每次分配/释放都是 O(n) 的 memmove。
+
+### 2.4 虚拟地址管理：vaddr_objs
+
+```
+vaddr_seg_t vaddr_objs[4096];
+
+struct vaddr_seg_t {
+    vaddr_t base;                   // 虚拟基址
+    pgflags flags;                  // 权限标志
+    uint64_t size_in_numof4kbpgs;   // 大小
+    uint16_t max_num_of_subtb_entries;
+    uint16_t num_of_subtb_entries;
+    PHY_MEM_TYPE type;              // 内存类型
+    vaddr_seg_subtb_t* subtb;       // 子表 (物理段记录)
+};
+```
+
+特点：
+- **线性表**，按虚拟基址排序
+- 固定 4096 项上限
+- 不保存空闲区间——只记录已占用的虚拟地址段
+- 新映射从前向后扫描空隙，使用线性表插入
+
+---
+
+## 3. 启动链 (f346291 巅峰状态)
+
+```
+kernel_entry.asm                     ← UEFI 固件加载
+  │
+  └→ kernel_start(BootInfoHeader*)
+      │
+      ├── (1) 图形+串口初始化
+      │     InitialGlobalBasicGraphicInfo()
+      │     serial_init_stage1()
+      │     gkcirclebufflogMgr.Init()
+      │
+      ├── (2) gKpoolmemmgr.Init()    ← C++堆就绪
+      │     静态4MB first_static_heap
+      │     new/delete 可用
+      │
+      ├── (3) KernelShell 初始化
+      │
+      ├── (4) 栈切换
+      │     [已在 kernel_entry.asm 中完成]
+      │     mov rsp, _stack_top     ← 在 asm 阶段已离开 bootloader 栈
+      │     [kinit.cpp 内的相关注释是 7b7f1c7 时代的旧痕迹]
+      │
+      └── (5) gKspacePgsMemMgr.Init()     ← ← 核心！
+            │
+            ├── 5-1: phymemSubMgr.Init()
+            │     扫描 EFI 物理段→填充 64 个可分配段
+            │     
+            ├── 5-2: 检测 CR4.LA57 → cpu_pglv=4/5
+            │
+            ├── 5-3: new rootlv4PgCBtb    ← PgsMemMgr树根
+            │     4级分页: 1个PgControlBlockHeader
+            │     5级分页: 512个
+            │
+            ├── 5-4: new pgtb_heap_ptr   ← 页表堆
+            │     定位到 `_pgtb_heap_lma` 链接符号
+            │
+            ├── 5-5: PAT MSR = 0x407050600070106
+            │     UC=0, WC=1, WT=4, WP=5, WB=6, UC_minus=7
+            │
+            ├── 5-6: 遍历 EFI 描述符
+            │     for 每个段:
+            │         seg_to_queue() → {4KB,2MB,...} 序列
+            │         for 每个粒度:
+            │             PgCBtb_construct_func[lv](addr, flags)
+            │             递归创建 PgsMemMgr 树节点
+            │
+            ├── 5-7: enable_new_cr3()     ← 页表构建+切换
+            │     │
+            │     ├─ a) pgtb_lowaddr_equalmap_construct_4lvpg()
+            │     │    递归遍历 PgsMemMgr 树:
+            │     │    PML4 → PDPT → PD → PT
+            │     │    每级: pgtb_heap_ptr->pgalloc() 分配页表页
+            │     │    pgtb_entry_convert() 写 CPU 格式
+            │     │    大页检测: is_atom→PS bit 置位
+            │     │
+            │     ├─ b) 恒等映射+高半映射
+            │     │    遍历所有物理段:
+            │     │      虚拟地址 = 0xFFFF800000000000 + 累计偏移
+            │     │      填充 vaddr_objs[] 
+            │     │      Inner_fixed_addr_manage() 建立映射
+            │     │
+            │     ├─ c) 内核段重映射 (7个段)
+            │     │    fixedaddr_phy_pgs_allocate() + pgs_remapp()
+            │     │    .text    → RX, is_global=1
+            │     │    .data    → RW, is_global=1
+            │     │    .rodata  → R,  is_global=1
+            │     │    .stack   → RW, is_global=1
+            │     │    .heap    → RW, is_global=1
+            │     │    .pgtb_heap → RW, is_global=1
+            │     │    .klog    → RW, is_global=1
+            │     │
+            │     └─ d) # 🎯 CR3 切换
+            │         new_cr3 = pgtb_heap_ptr->pgtb_root_phyaddr
+            │         new_cr3 |= kernel_sapce_PCID  (=0)
+            │         localcpu.set_cr3(new_cr3)
+            │         localcpu.load_cr3()          ← 生效!
+            │         localcpu.set_ia32_pat(...)
+            │
+            └── 5-8: Init() 收尾
+                  再次遍历 EFI 描述符:
+                    对 EFI_RUNTIME/ACPI/MMIO 段:
+                      pgs_remapp(phyaddr, flags)
+                      → 填入 VirtualStart (给 EFI Runtime 用)
+      │
+      ├── (6) gRuntimeServices.Init()   ← 需 CR3 切换后
+      ├── (7) gBaseMemMgr.DisableBasicMemService()
+      ├── (8) gInterrupt_mgr.Init()     ← GDT/IDT/TSS
+      ├── (9) gAcpiVaddrSapceMgr.Init() ← ACPI 表
+      └── asm volatile("hlt")
+```
+
+---
+
+## 4. 源码切片
+
+本章节提交 `f346291` 的快照源码（精简注释版）。
+这是上帝类的完整面貌——约 3000 行的单体设计。
+
+### 4.1 主头文件 (phygpsmemmgr.h)
+
+```
+提交: f346291
+路径: src/memory/includes/phygpsmemmgr.h
+行数: 438
+```
+
+```cpp
+#pragma once
+#include "stdint.h"
+#include "Memory.h"
+typedef  uint64_t phyaddr_t;
+typedef uint8_t bitset512_t[64];
+
+enum cache_strategy_t:uint8_t
+{
+    UC=0, WC=1, WT=4, WP=5, WB=6, UC_minus=7
+};
+
+union ia32_pat_t
+{
+   uint64_t value;
+   cache_strategy_t  mapped_entry[8];
+};
+
+struct pgaccess
+{
+    uint8_t is_kernel:1;
+    uint8_t is_writeable:1;
+    uint8_t is_readable:1;
+    uint8_t is_executable:1;
+    uint8_t is_global:1;
+    uint8_t is_occupyied:1;
+    cache_strategy_t cache_strategy;
+};
+
+#define PHY_ATOM_PAGE 0
+#define VIR_ATOM_PAGE 1
+
+struct pgflags
+{
+    uint64_t physical_or_virtual_pg:1;
+    uint64_t is_exist:1;
+    uint64_t is_atom:1;
+    uint64_t is_reserved:1;
+    uint64_t is_occupied:1;
+    uint64_t is_kernel:1;
+    uint64_t is_readable:1;
+    uint64_t is_writable:1;
+    uint64_t is_executable:1;
+    uint64_t is_remaped:1;
+    uint64_t pg_lv:3;
+    cache_strategy_t cache_strateggy:3;
+    uint64_t is_global:1;
+};
+
+struct PgControlBlockHeader
+{
+    pgflags flags;
+    union {
+        lowerlv_PgCBtb* lowerlvPgCBtb;
+        phyaddr_t base_phyaddr;
+    } base;
+};
+
+struct lowerlv_PgCBtb
+{
+    uint8_t* pgextention;
+    PgControlBlockHeader entries[512];
+};
+
+class KernelSpacePgsMemMgr
+{
+private:
+    // === 嵌套类型 ===
+    struct phymem_pgs_queue {
+        uint8_t entry_count=0;
+        struct entry_t { uint64_t pgs_count; uint8_t pgs_lv; };
+        entry_t entry[10];
+    };
+
+    // === 页表专用堆 (仅4MB) ===
+    class pgtb_heap_mgr_t {
+        static const uint8_t num_of_2mbpgs=2;
+        bitset512_t maps[num_of_2mbpgs];
+    public:
+        phyaddr_t heap_base;
+        uint64_t* pgtb_root_phyaddr;
+        void* pgalloc();    // 线性扫描位图
+        void free(phyaddr_t addr);
+        void clear(phyaddr_t addr);
+    };
+
+    // === 物理段分配器 (64段) ===
+    class phymemSegsSubMgr_t {
+        static constexpr uint8_t max_entry_count=64;
+        struct allocatable_mem_seg_t {
+            phyaddr_t base;
+            uint64_t size_in_numof4kbpgs;
+            minimal_phymem_seg_t* subtb;
+        };
+        allocatable_mem_seg_t allocatable_mem_seg[max_entry_count];
+    public:
+        void* alloc(uint64_t npages, uint8_t align);
+        int fixedaddr_allocate(phyaddr_t base, size_t npages);
+        int free(phyaddr_t base);
+    };
+
+    // === 虚拟地址对象表 (4096固定上限) ===
+    vaddr_seg_t vaddr_objs[4096];
+    uint16_t vaddrobj_count=0;
+
+    // === 函数指针数组 ===
+    int (KernelSpacePgsMemMgr::*PgCBtb_construct_func[5])(uint64_t,pgflags,phyaddr_t);
+    PgControlBlockHeader& (KernelSpacePgsMemMgr::*PgCBtb_query_func[5])(phyaddr_t);
+
+public:
+    void Init();      // 一切都在这里
+
+    // 12个公共分配接口
+    void *pgs_allocate(size_t sz, pgaccess acc, uint8_t align);
+    int  pgs_fixedaddr_allocate(phyaddr_t addr, size_t sz, pgaccess acc);
+    int  pgs_free(phyaddr_t addr, size_t sz);
+    void *pgs_remapp(phyaddr_t addr, pgflags flags, vaddr_t vbase=0);
+    // ...
+};
+
+extern KernelSpacePgsMemMgr gKspacePgsMemMgr;
+```
+
+### 4.2 Init() 全源码 (phygpsmemmgr_init.cpp)
+
+> 完整源码 676 行，此处节选关键骨架
+
+```cpp
+void KernelSpacePgsMemMgr::Init()
+{
+    // 1. 初始化物理段分配器
+    phymemSubMgr.Init();
+
+    // 2. 检测分页模式
+    asm volatile("mov %%cr4,%0" : "=r"(cr4_tmp));
+    cpu_pglv = (cr4_tmp & (1ULL<<12)) ? 5 : 4;
+
+    // 3. 创建 PgsMemMgr 树根
+    rootlv4PgCBtb = (cpu_pglv==5) 
+        ? new PgControlBlockHeader[512] 
+        : new PgControlBlockHeader;
+
+    // 4. 创建页表堆
+    pgtb_heap_ptr = new pgtb_heap_mgr_t;
+
+    // 5. 配置 PAT
+    cache_strategy_table.value = 0x407050600070106;
+
+    // 6. 构建 PgsMemMgr 管理树
+    for each EFI segment:
+        construct_pgsbasedon_phy_memDescriptor(segment);
+
+    // 7. 构建 CPU 页表 + 切换 CR3
+    enable_new_cr3();
+
+    // 8. 给 EFI Runtime 段重映射
+    for each EFI_RUNTIME/ACPI/MMIO segment:
+        pgs_remapp(segment.PhysicalStart, flags);
+}
+```
+
+### 4.3 enable_new_cr3() 全源码 (phygpsmemmgr_new_cr3.cpp)
+
+> 核心——页表构建+CR3切换的完整实现
+
+```cpp
+void KernelSpacePgsMemMgr::enable_new_cr3()
+{
+    // 1. 从 PgsMemMgr 树构建 CPU 页表
+    pgtb_lowaddr_equalmap_construct_4lvpg();
+    //    → construct_pml4e_level → construct_pdpte_level
+    //    → construct_pde_level → construct_pte_level
+    //    每级用 pgtb_heap_ptr->pgalloc() 分配页表页
+    //    pgtb_entry_convert() 写 CPU 格式
+
+    // 2. 恒等映射 + 高半映射所有物理段
+    for each EFI segment:
+        if type in (CODE, DATA, STACK, ACPI_RECLAIM, MMIO):
+            vaddr = 0xFFFF800000000000 + offset
+            fill vaddr_objs[]
+            Inner_fixed_addr_manage(vaddr, queue, access, phybase, true)
+
+    // 3. 内核各段重映射 (7个段)
+    for each kernel segment (text/data/rodata/stack/heap/pgtb_heap/klog):
+        fixedaddr_phy_pgs_allocate(phyaddr, size);
+        pgs_remapp(phyaddr, flags, vaddr);
+
+    // 4. CR3 切换！
+    LocalCPU localcpu;
+    uint64_t new_cr3 = (uint64_t)pgtb_heap_ptr->pgtb_root_phyaddr;
+    new_cr3 |= kernel_sapce_PCID;  // = 0
+    localcpu.set_cr3(new_cr3);
+    localcpu.load_cr3();
+    localcpu.set_ia32_pat(cache_strategy_table.value);
+
+    kputsSecure("new_cr3 enabled:");
+    kpnumSecure(&new_cr3, UNHEX, 8);
+}
+```
+
+### 4.4 kinit.cpp — 启动入口
+
+```cpp
+extern "C" void kernel_start(BootInfoHeader* transfer)
+{
+    // 图形+串口
+    InitialGlobalBasicGraphicInfo(...);
+    serial_init_stage1();
+    gkcirclebufflogMgr.Init();
+
+    // C++ 堆
+    gKpoolmemmgr.Init();
+    InitialGlobalCharacterSetBitmapControler(...);
+    InitialKernelShellControler(...);
+
+    // EFI 物理段
+    gBaseMemMgr.Init(transfer->memory_map_ptr, transfer->memory_map_entry_count);
+    gBaseMemMgr.printPhyMemDesTb();
+
+    // ← 核心：一个调用触发页表重建+切换
+    gKspacePgsMemMgr.Init();
+
+    // 后续初始化（CR3 切换后）
+    gRuntimeServices.Init(global_gST, efi_map_ver);
+    gBaseMemMgr.DisableBasicMemService();
+    gProcessor_Ks_stacks_mgr.Init();
+    gInterrupt_mgr.Init();
+    gAcpiVaddrSapceMgr.Init(global_gST);
+    gRuntimeServices.rt_shutdown();
+
+    asm volatile("hlt");
+}
+```
+
+---
+
+## 5. 设计评估
+
+### 5.1 历史成就
+
+**这是 SparrowOS 内存模块第一次完成 MMU 重建。** 在 `f346291` 之前，内核跑在 EFI 页表下——虚拟地址完全由固件控制。`gKspacePgsMemMgr.Init()` 执行后，内核拥有了完全属于自己的页表系统：
+
+- ✅ 恒等映射（保证 EFI Runtime 服务可用）
+- ✅ 高半内核映射（0xFFFF800000000000+）
+- ✅ 大页支持（2MB/1GB，通过 `is_atom` 标志控制 PS bit）
+- ✅ 缓存策略控制（PAT MSR 写入，UC/WB/WT/...）
+- ✅ 全局页标志（内核代码/数据不刷 TLB）
+- ✅ PCID 预留（kernel_sapce_PCID=0）
+- ✅ 物理页分配 + 引用计数重映射
+
+### 5.2 致命缺陷
+
+| 问题 | 细节 | 影响 |
+|------|------|------|
+| **上帝类** | 3500 行，1 个头文件 7 个 .cpp | 维护困难，功能耦合 |
+| **4MB 页表堆** | 仅 2×2MB 固定物理页 | 大页依赖，内存不足易出 bug |
+| **vaddr_objs[4096]** | 固定大小线性表 | 虚拟映射上限 4096 个 |
+| **线性表操作** | 分配/释放是 O(n) 搜索+memmove | 性能差 |
+| **双树不一致** | PgsMemMgr 树 + CPU 页表 | 同步逻辑复杂，易出 bug |
+| **硬编码 PCID=0** | kernel_sapce_PCID 固定 0 | 无法支持完整的 PCID 管理 |
+| **无阶段标记** | Init() 全串行 | 不可重入，失败即 panic |
+
+### 5.3 暴死原因
+
+代码库演进的自然规律：
+
+1. **`cbee563` (2025-12-22)** → 第一次解剖：`phygpsmemmgr_t` 被拆为 `phymemspace_mgr`（改名+重构），引入 `PHYSEG`、`low1mb_mgr_t`、`phyaddr_accessor`。类仍然巨大，但功能开始外迁。
+
+2. **`3bce5e0` (2026-03-19)** → 引入 `page_struct.h`（16 字节 `page` 结构），5 个 phygpsmemmgr 子文件被合并/删除。旧 `pgflags`（14 个 bit 字段）被 `page_state_t` 枚举替代。
+
+3. **`300705d` (2026-03-22)** → `git mv phygpsmemmgr.h → all_pages_arr.h`，`phymemspace_mgr` 类名消失。
+
+从上帝类到轻量级 `all_pages_arr` 只用了 5 个月。它完成了最困难的历史使命——第一次让 SparrowOS 拥有自己的页表——然后被更干净的设计取代。
+
+---
+
+## 6. 架构对比：PgsMemMgr → 现代
+
+```
+PgsMemMgr (2025-10)                  现代拆分 (2026-06)
+─────────────────────────────────────────────────────────
+KernelSpacePgsMemMgr
+├── 管理树 (PgControlBlockHeader)       all_pages_arr (mem_map)
+├── phymemSegsSubMgr (物理分配)         FreePagesAllocator + BCB
+├── pgtb_heap (4MB固定)                 FreePagesAllocator pages
+├── vaddr_objs[4096] (虚拟分配)         kspace_vm_table (红黑树)
+├── Inner_fixed_addr_manage             KspacePageTable / AddressSpace
+├── pgs_remapp() (引用计数)             分配器层 + 页表层分离
+├── enable_new_cr3() (全量构建)         分阶段 init + second_stage
+└── 函数指针数组 (PgCBtb_construct_func) 静态派发 + 模板
+```
+
+现代架构将所有功能解耦为独立的子系统，每个子系统有自己的生命周期和测试套件。
+
+---
+
+## 附录 A：文件清单 (提交 f346291)
+
+| 文件 | 行数 | 用途 |
+|------|------|------|
+| `src/memory/includes/phygpsmemmgr.h` | 438 | 主头文件 — 类定义 |
+| `src/memory/phygpsmemmgr_init.cpp` | 676 | Init() + phymemSegsSubMgr 构造 |
+| `src/memory/phygpsmemmgr_new_cr3.cpp` | 482 | 页表构建 + CR3 切换 |
+| `src/memory/phygpsmemmgr_freememmanage.cpp` | 711 | 物理分配/释放/映射 |
+| `src/memory/phygpsmemmgr_freememmanage_vaddrmanage.cpp` | 349 | 虚拟地址管理 |
+| `src/memory/phygpsmemmgr_print.cpp` | 294 | 调试打印 |
+| `src/memory/phymemSegsSubMgr.cpp` | 793 | 物理段子系统 |
+| `src/kinit.cpp` | 110 | 启动入口 |
+| **总计 (上帝类)** | **≈ 3,743** | **类+实现** |
+
+## 附录 B：pgflags 编码表
+
+```
+位域                    bit   用途
+───────────────────────────────────────────
+physical_or_virtual_pg 0     0=物理, 1=虚拟
+is_exist                1     页是否存在
+is_atom                 2     原子节点(叶节点)
+is_reserved             3     保留内存
+is_occupied             4     已占用
+is_kernel               5     内核空间
+is_readable             6     可读
+is_writable             7     可写
+is_executable           8     可执行
+is_remaped              9     已重映射
+pg_lv                   10-12 页级别(0-4)
+cache_strateggy         13-15 缓存策略(3bit)
+is_global               16    全局页
+```
+
+## 附录 C：栈切换的考古订正
+
+首次考古时误判 f346291 阶段未切栈（因 kinit.cpp 内有遗留注释
+"注意，这个函数刚进入时还使用的是bootloader的栈"）。
+后续检查 `kernel_entry.asm` 发现真相：
+
+```asm
+; kernel_entry.asm (自 0489533 引入)
+_kernel_Init:
+    ; ... 建立初始页表 ...
+    mov rsp, _stack_top    ← ← 在 call kernel_start 之前就切了
+    mov rax, kernel_start
+    call rax
+```
+
+## 附录 D：栈的故事——从 EFI 的 64KB 到内核的 8MB
+
+### D.1 为什么栈切换如此重要
+
+一个内核在 UEFI 固件的栈上跑了 21 天。这件事现在看起来荒唐，
+但在当时是合理的：内核初始化阶段只需要少量调用，不会深嵌套，
+连 printf 都没有，64KB 栈绰绰有余。
+
+隐患在哪里？
+- UEFI 栈大小由固件决定（QEMU OVMF 通常给 64KB~128KB）
+- 一旦开始递归页表遍历、串口格式化输出、ACPI 表解析，栈就炸
+- 更致命的是：**中断向量还没接管**——如果在 EFI 栈上触发 #PF，
+  栈回溯会指向一个你完全无法控制的内存区域
+
+### D.2 栈的演化时间线
+
+| 时间 | 提交 | 链接脚本 | 栈大小 | 切栈方式 | 实际运行栈 |
+|------|------|----------|--------|----------|-----------|
+| 2025-08-28 | `b6b6751` | `linker.ld` | 64KB | 无 | **EFI 固件栈** |
+| 2025-09-14 | `ea6d5fc` | `linker.ld` | 64KB | 无（添加注释警示） | **EFI 固件栈** |
+| 2025-09-18 | `7b7f1c7` 🎯 | `linker.ld` | 64KB | `mov $_stack_top, %rsp` in kinit.cpp | **内核栈** |
+| 2025-10-04 | `0489533` | `kld.ld` | **8MB** | `mov rsp, _stack_top` in kernel_entry.asm | **内核栈** |
+| 2025-12-01 | `fc8c5a1` | `kld.ld` | 8MB | kernel_entry.asm | 内核栈（BSP）|
+| 2026-02-04 | `f91746b` | `kld.ld` | 8MB | kernel_entry.asm | **AP 栈开始分配** |
+| 2026-03-22 | `300705d` | 多链接脚本 | 每核动态 | init.elf 两阶段 | 内核栈 |
+| 2026-05-23 | `b485546` | `kld.ld` | ELF PHDR 驱动 | kernel_entry.asm | 内核栈 |
+
+### D.3 第一个栈：linker.ld (64KB)
+
+```ld
+/* b6b6751, Aug 28 */
+MEMORY {
+    STACK (rw) : ORIGIN = 0x400000, LENGTH = 64K
+}
+
+SECTIONS {
+    .stack (NOLOAD) : ALIGN(4096) {
+        _stack_bottom = .;
+        . += 64K;
+        _stack_top = .;
+    } >STACK :stack
+}
+```
+
+栈放在独立内存区域 0x400000，64KB。注意 STACK 是独立的 PT_LOAD 段——
+但 UEFI 加载器只加载了内核主体（0x4000000 处的 128MB），
+这个栈段是否被正确初始化取决于固件行为。很可能根本没分配物理页。
+
+### D.4 觉醒：7b7f1c7
+
+2025-09-18，项目启动第 21 天。你终于意识到还在用 EFI 栈。
+
+```cpp
+// kinit.cpp @ 7b7f1c7 (Sep 18)
+gBaseMemMgr.Init(memDescript, numofDiscriptors);
+
+// 3. 此时所有参数已处理完毕，可以安全切换栈
+asm volatile (
+    "mov $_stack_top, %rsp\n"   // ← 第一次切栈！
+    "mov %rsp, %rbp\n"          //   重置帧指针
+);
+
+LocalCPU bsp_regieters;
+kputsSecure("Welcome to PlayOSKernelShell\n");
+gKspacePgsMemMgr.Init();
+```
+
+注意时序：切栈发生在 **gBaseMemMgr.Init 之后、gKspacePgsMemMgr.Init 之前**。
+这意味着前 4 个步骤（图形、串口、堆、EFI 表）全在旧栈上运行——
+包括 `new` 操作（`kpoolmemmgr` 实现）！
+
+**为什么这个时刻才切？**
+因为接下来要做 `gKspacePgsMemMgr.Init()`——从那开始要递归构建
+PgsMemMgr 树（`construct_pml4e_level→pdpte→pde→pte` 四层递归），
+还要用 `seg_to_queue` 函数做地址分解。EFI 的 64KB 栈肯定扛不住
+这个深度的递归调用。
+
+### D.5 进入正轨：0489533 的 asm 级切栈
+
+2025-10-04，引入 `kernel_entry.asm`。设计从
+
+```asm
+; kernel_entry.asm (0489533 首次引入)
+extern KImgphybase
+extern _stack_top
+extern kernel_start
+global _kernel_Init
+
+SECTION .boottext
+_kernel_Init:
+bits 64
+    ; ... 建立初始页表 ...
+.paging_done:
+    mov rsp, _stack_top      ← ← 切栈现在在 asm 阶段！
+    mov rax, kernel_start
+    call rax                  ← ← 进入 C++ 时已经在新栈上
+```
+
+设计上的关键改进：
+1. **切栈在 asm 阶段完成**，kernel_start 一进来就已经在新栈上
+2. 不再依赖 C++ 内联汇编——减少了编译器的奇偶校验风险
+3. `_stack_top` 从链接脚本导出为外部符号，不再假定固定地址
+4. 同时建立了初始页表（huge page 1GB identity map + kernel at 0xFFFF...）
+
+此时栈大小也从 64KB 暴涨到 **8MB**（`kld.ld` 中 `__STACK_SIZE = 8M`），
+足以应对 PgsMemMgr 的递归页表构建。
+
+### D.6 那 21 天里到底跑了什么在 EFI 栈上？
+
+这是最值得警醒的数字。从 `b6b6751`（项目初始化）到 `7b7f1c7`（第一次切栈），
+共 **21 天、6 次提交、数百行代码**全部在 EFI 固件分配的神秘栈上运行。
+
+具体来说，EFI 栈上跑过：
+
+**图形驱动**
+- `InitialGlobalBasicGraphicInfo()` — 解析帧缓冲区元信息
+- `serial_init()` / `gkcirclebufflogMgr.Init()` — 串口 + 环形日志
+
+**内存管理**
+- `gKpoolmemmgr.Init()` — 初始化 `first_static_heap`（涉及 `setmem`、链表初始化）
+- `InitialGlobalCharacterSetBitmapControler()` — 字符位图分配
+- `InitialKernelShellControler()` — shell 缓冲区分配
+- **`gBaseMemMgr.Init()`** — EFI 内存表排序、裁剪、回收 boot services
+
+其中 `gBaseMemMgr.Init()` 内部调用了：
+- `sortEfiMemoryMapByPhysicalStart()` — 排序（可能递归 qsort）
+- `fillMemoryHolesInEfiMap()` — 填充空洞（遍历数百个描述符）
+- `reclaimBootTimeMemory()` — 回收启动时服务（涉及链表操作）
+- `reclaimLoaderMemory()` — 回收 loader 内存
+
+这些操作加起来可能只有几十次函数调用、几百字节的栈使用。
+但当时的设计者（也就是你）并不知道——因为调试输出也不显示栈指针。
+
+### D.7 为什么栈大小从 64KB 涨到 8MB
+
+`kld.ld` 的 8MB 栈不是随意定的：
+
+| 栈消耗来源 | 估计 | 备注 |
+|------------|------|------|
+| PgsMemMgr 树递归构建 | ~4KB | `construct_pml4e→pdpte→pde→pte` 四层递归，每层 512 迭代 |
+| 页表项转换 | ~2KB | `pgtb_entry_convert()` 内部 switch + 位操作 |
+| seg_to_queue 地址分解 | ~1KB | 拆 {4KB,2MB,1GB} 序列 |
+| 格式化输出 (serial/kputs) | ~8KB | 数字→字符串转换缓冲区 |
+| 嵌套调用链 | ~4KB | Init→construct→new→kpoolmemmgr |
+| **安全余量** | ~8MB | 用于中断、异常处理、嵌套 #PF |
+
+8MB 的主要动机其实是**异常和中断栈空间**。在 CR3 切换后，如果 #PF 触发，
+异常处理程序本身需要栈空间（不会用 IST 之前的栈），8MB 确保任何嵌套
+异常不会栈溢出。这在后来的设计中演化为独立的中断栈（IST）和每 CPU 栈。
+
+### D.8 反思
+
+栈切换这件事在操作系统中是一个"入场券"事件：
+- **切之前**：你还在固件的地盘上，受限于固件的资源
+- **切之后**：你终于在自己的地盘上，可以自由控制一切
+
+从 EFI 栈到内核栈的切换，本质上是**控制权从固件到内核的物理转移**。
+和页表切换（CR3 写入）一样，它是内核完成自立的关键一步。
+
+有趣的是，这个事件在代码里只表现为一行汇编：
+```asm
+mov rsp, _stack_top
+```
+但在工程设计上，它代表了一个认知临界点：
+"我在别人的栈上已经跑了够久了，该搬回自己家了。"
+
+此后，所有后续版本（init.elf 两阶段、per-CPU 堆栈）的栈设计
+都是在此基础上的演进——再也没有回到过固件的栈上。
+
+---
+
+## 附录 E：历史切片文件
+
+本目录下的 `v1_source_archive/` 子目录包含了提交 `f346291` 的完整源码快照，
+供考古查阅。每个文件保留了原始注释和格式。
+
+---
+
+*本文档由 git 考古于 2026-06-20 生成，重建自提交 f346291 及周边提交的分析。*
+*这是 SparrowOS 内存子系统的 "原点"——粗糙、庞大、但有生命力的第一次尝试。*
