@@ -153,27 +153,27 @@ struct Bptree_node_t {
 };
 ```
 
-### Entry 位域
+### Entry 位域（通用）
 
 ```
-words[0]  bits [63]   = VALID  (entry 有效)
+words[0]  bits [63]   = VALID
           bits [62:52] = type
-          bits [51:0]  = key    (叶子=fblkbase, 内部=分隔符)
+          bits [51:0]  = key
 
 words[1]  bits [63:52] = flags
-          bits [51:0]  = len    (仅叶子)
+          bits [51:0]  = value (叶子: len=末端偏移, 闭区间; 内部: unused)
 
 words[2]  bits [63:52] = addr flags (含 ADDR_BTREE)
-          bits [51:0]  = addr  (叶子=pblkbase, 内部=subptr,
-                                 entry[0]=最左child)
+          bits [51:0]  = addr
 
-words[3]  entry[0]     = node_meta_t (entry_count, type, parent)
-          entry[1]     = prev_sibling (同级链表前驱)
-          entry[2]     = next_sibling (同级链表后驱)
-          其他 entry   = 自由使用
+words[3]  自由使用，节点类型特定含义见下文
 ```
 
-### Node meta (entry[0].words[3])
+32B 裸结构（`words[0..3]`）本身无类型语义——**同一个 `btree_node_entry_t` 按节点类型解码为两个不同的视图**，由 `node_meta_t.is_internal_node` 决定。
+
+---
+
+### 节点元数据 (entry[0].words[3])
 
 ```c
 union node_meta_t {
@@ -187,45 +187,80 @@ union node_meta_t {
 };
 ```
 
-### 叶子节点
+仅 entry[0].words[3] 做 node meta。其他 entry 的 words[3] 含义见各节点类型。
 
-key = `fblkbase`（文件内逻辑块号）
-value = `{ len, pblkbase }`（连续 extent）
+---
 
+### 两个解码视角
+
+`btree_node_entry_t.words[0..3]` 按 `is_internal_node` 解码：
+
+#### 叶子节点解码
+
+| Field | words[0] | words[1] | words[2] | words[3] |
+|-------|---------|---------|---------|---------|
+| 语义  | key = fblkbase (区间左端) | len (末端偏移, 闭区间) | pblkbase | 附加元数据 |
+
+words[3] 分配：
+- entry[0] → `node_meta_t`（entry_count, is_internal_node, parent_ptr）
+- entry[1] → `prev_sibling`（同级链表前驱）
+- entry[2] → `next_sibling`（同级链表后驱）
+- entries[3..] → 自由使用
+
+布局示意：
 ```
-entry[0]: { meta | 最左 child(不用于leaf) }
-entry[1]: { V | key_0 | len_0 | pblkbase_0 | prev_sibling }
-entry[2]: { V | key_1 | len_1 | pblkbase_1 | next_sibling }
-entry[3]: { V | key_2 | len_2 | pblkbase_2 | free }
+entry[0]: { key_0  |  len_0  |  pblkbase_0  |  node_meta_t     }
+entry[1]: { key_1  |  len_1  |  pblkbase_1  |  prev_sibling    }
+entry[2]: { key_2  |  len_2  |  pblkbase_2  |  next_sibling    }
+entry[3]: { key_3  |  len_3  |  pblkbase_3  |  free            }
 ...
 ```
 
-最大 255 个 extent 条目。
+最大 256 个 extent (entries[0..255] 的 words[0..2] 都存 extent)。
 
-### 内部节点（256 阶 B+tree）
+#### 内部节点解码
 
-m 阶 B+tree：最多 m 个 subptr + m-1 个 key。
+| Field | words[0] | words[1] | words[2] | words[3] |
+|-------|---------|---------|---------|---------|
+| 语义  | key = 分隔符 | 未使用 | subptr | 自由 |
+
+内部节点是 256 阶 B+tree（方案 A）：所有 entry 统一，key = max_key(child_i)。
+
+**分隔符语义**：`entry[i].key = max_key(child_i)`，每个 entry 的 key 是其 child 整个子树中的最大 key。
 
 ```
-entry[0]: { meta | ——无key—— | child_0 }      ← 最左子树
-entry[1]: { V | sep_0 | —— | child_1 }         ← sep_0 分界 child_0↔child_1
-entry[2]: { V | sep_1 | —— | child_2 }
+entry[0]: { sep_0    |  —  |  child_0       |  node_meta_t    }
+          ← sep_0 = max_key(child_0)
+entry[1]: { sep_1    |  —  |  child_1       |  free           }
+          ← sep_1 = max_key(child_1)
+entry[2]: { sep_2    |  —  |  child_2       |  free           }
+          ← sep_2 = max_key(child_2)
 ...
-entry[n]: { V | sep_{n-1} | —— | child_n }
+entry[n]: { sep_n    |  —  |  child_n       |  free           }
+          ← sep_n = max_key(child_n)
 ```
 
-最大 256 child + 255 key。查找：
+entry[0].words[3] 存 node_meta_t，其余 entry 的 words[3] 自由。
+
+查找：`target ≤ entry[i].key` 即命中 child_i 区间。
 
 ```cpp
-for (i = 1; i < count; i++)
-    if (target < entries[i].get_key())
-        return entries[i-1].get_subptr();
-return entries[count-1].get_subptr();
+for (i = 0; i < get_entry_count(); i++) {
+    if (target <= entries[i].get_key())
+        return entries[i].get_subptr();   // → child_i
+}
+return 0;  // 不应到达
 ```
+
+最大 256 child + 256 key（每个 entry 都带 key）。
+
+---
 
 ### 同级链表
 
-所有叶子节点通过 `entry[1].words[3]`（prev）和 `entry[2].words[3]`（next）连成双向链表。范围遍历无需回溯父节点。
+所有 B+tree 节点（叶子和内部均可用，但 v1 仅在叶子层使用）通过 `entry[1].words[3]`（prev）和 `entry[2].words[3]`（next）连接为双向链表。
+
+范围遍历无需回溯父节点：先沿链表找到起始位置再顺序向前扫描。
 
 ---
 
@@ -286,7 +321,6 @@ guest: 驱动读盘 → 解析 superblock → 验证布局正确
 
 | 特性 | 原因 |
 |------|------|
-| 硬链接 | link_count 保留字段但无实际支持 |
 | 动态 inode 分配 | mkfs 静态分配 + 离线扩容工具 |
 | 在线碎片整理 | v1 跑通为先 |
 | 事务/日志 | NVMe 验收场景不需要 |

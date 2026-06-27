@@ -39,7 +39,8 @@ union node_meta_t {
 static_assert(sizeof(node_meta_t) == 8, "");
 
 /* ═══════════════════════════════════════════════════════
- * 文件块区间（文件内 [fblkbase, fblkbase+len)）
+ * 文件块区间：闭区间 [fblkbase, fblkbase+len]
+ * len = 末端偏移，块数 = len + 1；len=0 表示单块，无空集状态
  * ═══════════════════════════════════════════════════════ */
 struct f_blkitv {
     uint64_t fblkbase;
@@ -61,12 +62,12 @@ struct f_blkitv {
  *   get_interval() = { fblkbase, len }
  *   get_pbase()    = pblkbase (物理块号)
  *
- * ─── 内部语义 ───
- *   entry[0].words[2] → child_0 (最左子)
- *   entries[1..n]:
- *     get_key()    = 分隔符 (右子树最小 key)
+ * ─── 内部语义 (方案 A) ───
+ *   所有 entry 统一:
+ *     get_key()    = max_key(child_i)  (该子树最大文件块号)
  *     get_subptr() = child_i
- *   前 n 个 entry 可索引 n 个 child + n-1 个分隔符
+ *   entry_count = children 数，最大 256
+ *   查找: target ≤ entry[i].get_key() → child_i
  * ═══════════════════════════════════════════════════════ */
 struct btree_node_entry_t {
     uint64_t words[4];
@@ -151,8 +152,8 @@ static_assert(sizeof(btree_node_entry_t) == 32, "");
  * B+tree 节点 (8K = 256 entries × 32B = 2 × 4K pages)
  *
  * entry[0].words[3]  → node_meta_t
- * entry[0].words[2]  → 最左子 (内部节点时)
- * entries[1..n]      → 数据 / key+child 对
+ * 叶子：所有 entry 的 words[0..2] 存 extent (key,len,pblkbase)
+ * 内部：所有 entry 的 words[0] 存 key=max_key(子树), words[2] 存 subptr
  * 
  * ═══════════════════════════════════════════════════════ */
 struct Bptree_node_t {
