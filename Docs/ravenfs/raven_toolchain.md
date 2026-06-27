@@ -12,9 +12,9 @@
 
 | 端 | 运行环境 | 语言 | 用途 | 缓存策略 |
 |:---|:---------|:-----|:-----|:---------|
-| **mkfs.ravenfs** | Linux userspace | C | 格式化分区 | 无需持久缓存，单次顺序操作 |
-| **expandravenfs** | Linux userspace | C | 离线扩容工具 (附只读诊断) | 调试状态可复现 1:1 |
-| **ravendsrv** | Linux userspace | C | 用户态 VFS 小朝廷；直接读写分区镜像，假性"挂载"文件系统；内核端的开发前体 | 私有 buffer cache（同内核策略） |
+| **mkfs.ravenfs** | Linux userspace | C++| 格式化分区 | 无需持久缓存，单次顺序操作 |
+| **expandravenfs** | Linux userspace | C++ | 离线扩容工具 (附只读诊断) | 调试状态可复现 1:1 |
+| **ravendsrv** | Linux userspace | C++ | 用户态 VFS 小朝廷；直接读写分区镜像，假性"挂载"文件系统；内核端的开发前体 | 私有 buffer cache（同内核策略） |
 | **ravenfs.ko** | Linux kernel | C | 挂载读写 | 私有 buffer cache（不走 page cache） |
 | **SparrowOS** | 自有 UEFI 内核 | C/C++ | 挂载读写 | 私有 buffer cache |
 
