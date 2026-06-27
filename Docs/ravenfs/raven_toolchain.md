@@ -13,7 +13,7 @@
 | 端 | 运行环境 | 语言 | 用途 | 缓存策略 |
 |:---|:---------|:-----|:-----|:---------|
 | **mkfs.ravenfs** | Linux userspace | C | 格式化分区 | 无需持久缓存，单次顺序操作 |
-| **xpdfs** | Linux userspace | C | 文件系统调试/诊断 | 调试状态可复现 1:1 |
+| **expandravenfs** | Linux userspace | C | 离线扩容工具 (附只读诊断) | 调试状态可复现 1:1 |
 | **ravendsrv** | Linux userspace | C | 用户态 VFS 小朝廷；直接读写分区镜像，假性"挂载"文件系统；内核端的开发前体 | 私有 buffer cache（同内核策略） |
 | **ravenfs.ko** | Linux kernel | C | 挂载读写 | 私有 buffer cache（不走 page cache） |
 | **SparrowOS** | 自有 UEFI 内核 | C/C++ | 挂载读写 | 私有 buffer cache |
@@ -23,7 +23,8 @@
 ```
 mkfs.ravenfs       — 写盘布局，只是格式化
      ↓
-xpdfs              — 读盘布局，诊断文件系统内部状态
+expandravenfs      — 离线扩容（元数据搬迁：bitmap + inode array）
+                    附只读诊断功能
      ↓
 ravendsrv          — 完整读写，用户态开发内核态文件系统逻辑
                      = ko / SparrowOS 的前体和 runtime precursor
@@ -37,7 +38,7 @@ ravendsrv          — 完整读写，用户态开发内核态文件系统逻辑
 
 ### §1 Superblock
 
-| 操作 | mkfs | xpdfs | ravendsrv | ravenfs.ko | SparrowOS |
+| 操作 | mkfs | expandravenfs | ravendsrv | ravenfs.ko | SparrowOS |
 |:-----|:-----|:------|:----------|:-----------|:-----------|
 | 初始化 | 计算各段 → 填充 → 写 block 0 | — | — | — | — |
 | 读/校验 | — | 读 → 展示字段 | 读 → 校验 | 读 → 校验 | 同左 |
@@ -45,7 +46,7 @@ ravendsrv          — 完整读写，用户态开发内核态文件系统逻辑
 
 ### §2 Bitmap
 
-| 操作 | mkfs | xpdfs | ravendsrv | ravenfs.ko | SparrowOS |
+| 操作 | mkfs | expandravenfs | ravendsrv | ravenfs.ko | SparrowOS |
 |:-----|:-----|:------|:----------|:-----------|:-----------|
 | 初始化 | 元数据块预标记=1，其余=0 | — | — | — | — |
 | alloc_block | — | — | 扫描 → 标记 1 | 同左 | 同左 |
@@ -54,7 +55,7 @@ ravendsrv          — 完整读写，用户态开发内核态文件系统逻辑
 
 ### §3 Inode Array
 
-| 操作 | mkfs | xpdfs | ravendsrv | ravenfs.ko | SparrowOS |
+| 操作 | mkfs | expandravenfs | ravendsrv | ravenfs.ko | SparrowOS |
 |:-----|:-----|:------|:----------|:-----------|:-----------|
 | 初始化 | 连续区域 → all zero → 根 inode | — | — | — | — |
 | alloc_inode | — | — | 扫描空槽 → 初始化 | 同左 | 同左 |
@@ -66,9 +67,9 @@ ravendsrv          — 完整读写，用户态开发内核态文件系统逻辑
 
 #### 4a. 节点 I/O 与缓存
 
-mkfs / xpdfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有一套。
+mkfs / expandravenfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有一套。
 
-| 操作 | mkfs | xpdfs | ravendsrv | ravenfs.ko | SparrowOS |
+| 操作 | mkfs | expandravenfs | ravendsrv | ravenfs.ko | SparrowOS |
 |:-----|:-----|:------|:----------|:-----------|:-----------|
 | 读 | pread → malloc | pread → malloc | pread → 私有 cache | bio_alloc → 私有 cache | NVMe cmd → 私有 cache |
 | 写（刷回） | pwrite → free | 只读 | 标记 DIRTY → flush 时清零借用字段 → pwrite | 标记 DIRTY → flush → submit_bio | 同左 |
@@ -98,7 +99,7 @@ mkfs / xpdfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有
 
 ### §5 Dentry
 
-| 操作 | mkfs | xpdfs | ravendsrv | ravenfs.ko | SparrowOS |
+| 操作 | mkfs | expandravenfs | ravendsrv | ravenfs.ko | SparrowOS |
 |:-----|:-----|:------|:----------|:-----------|:-----------|
 | 创建目录 | 创建 dir inode + 初始化 dentry btree | — | 同左 | 同左 | 同左 |
 | 创建文件 | 创建 file inode + 插入 dentry | — | 同左 | 同左 | 同左 |
@@ -160,7 +161,7 @@ mkfs / xpdfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有
    ↑            ↑
    │            │
    │     ┌──────────┐
-   │     │  xpdfs   │
+   │     │  expandravenfs   │
    │     │ (只读诊断)│
    │     └──────────┘
    │
@@ -173,7 +174,7 @@ mkfs / xpdfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有
 
 ## 起步策略
 
-**先做 mkfs → ravendsrv → xpdfs → ko / SparrowOS**
+**先做 mkfs → ravendsrv → expandravenfs → ko / SparrowOS**
 
 ### 1. mkfs.ravenfs（最轻量，最先做）
 
@@ -196,12 +197,12 @@ mkfs / xpdfs 不做缓存（用完即弃），ravendsrv 和两个内核端各有
 
 建议**先 A 再 B**：先裸 socket 跑通逻辑，再套 FUSE 层获得标准 POSIX 接口。
 
-### 3. xpdfs（诊断工具）
+### 3. expandravenfs（扩容工具 + 只读诊断）
 
-- 只读，检查磁盘布局一致性
-- 展示 superblock、inode 表、B+tree 结构、bitmap 分配统计
+- 主功能: 离线扩容 — 将 bitmap 和 inode array 搬迁到扩容后的尾巴位置
+- 附功能: 只读诊断 — 检查磁盘布局一致性，展示 superblock/inode/B+tree/bitmap 统计
 - 用于调试 mkfs 输出和 ravendsrv 的修改是否破坏布局
-- 类似 ext4 的 `debugfs`
+- 类似 ext4 的 `resize2fs` + `debugfs` 二合一
 
 ### 4. ravenfs.ko（Linux 内核端）
 
@@ -231,7 +232,7 @@ Docs/ravenfs/
 
 raid/                        — 将来可能迁移到独立仓库
   mkfs.ravenfs/               Linux userspace 格式化工具
-  xpdfs/                      Linux userspace 诊断工具
+  expandravenfs/                      Linux userspace 离线扩容 + 诊断工具
   ravendsrv/                  Linux userspace 守护进程（用户态 VFS）
   ravenfs.ko/                 Linux kernel module
   sparrowos/                  SparrowOS 端（或内联进 kernel 镜像）
@@ -245,7 +246,7 @@ raid/                        — 将来可能迁移到独立仓库
     ├── bitmap.c       block allocator
     ├── inode.c        inode array + inode 操作
     ├── btree.c        B+tree 查找/插入/删除/分裂/合并
-    ├── cache.c        私有 buffer cache（mkfs/xpdfs 可无）
+    ├── cache.c        私有 buffer cache（mkfs/expandravenfs 可无）
     ├── dentry.c       dentry B+tree 操作
     ├── vfs_ops.c      VFS 回调 / 对外接口（ko→file_operations, server→socket, OS→自有）
     └── disk_struct.h  软链接或头文件副本
