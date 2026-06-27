@@ -41,15 +41,29 @@ static_assert(sizeof(node_meta_t) == 8, "");
 /* ═══════════════════════════════════════════════════════
  * 文件块区间：闭区间 [fblkbase, fblkbase+len]
  * len = 末端偏移，块数 = len + 1；len=0 表示单块，无空集状态
+ *
+ * 区间序（严格比较器具 fblk_cmp）：
+ *   I < J  ⇔  I.R + 1 ≤ J.L
+ *   fblk_cmp(a,b) = 1  →  a 完全在 b 之前
+ *   fblk_cmp(a,b) = -1 →  b 完全在 a 之前
+ *   fblk_cmp(a,b) = 0  →  重叠 (invariant 违反)
+ *
+ * 叶子 invariant: 同一节点内相邻 extent 满足
+ *   fblk_cmp(entries[i], entries[i+1]) == 1
  * ═══════════════════════════════════════════════════════ */
 struct f_blkitv {
     uint64_t fblkbase;
     uint64_t len;
 };
-int inline fblk_cmp(f_blkitv left,f_blkitv right){
-    if(left.fblkbase+left.len<right.fblkbase)return 1;
-    if(right.fblkbase+right.len<left.fblkbase)return -1;
+int inline fblk_cmp(f_blkitv left, f_blkitv right) {
+    if (left.fblkbase + left.len < right.fblkbase) return 1;
+    if (right.fblkbase + right.len < left.fblkbase) return -1;
     return 0;
+}
+
+/* 区间右端点：闭区间覆盖的最后一个块号 */
+uint64_t inline f_blkitv_end(f_blkitv itv) {
+    return itv.fblkbase + itv.len;
 }
 /* ═══════════════════════════════════════════════════════
  * B+tree entry (32B = 4 × uint64_t)
@@ -62,13 +76,14 @@ int inline fblk_cmp(f_blkitv left,f_blkitv right){
  *            = 其他 entry → 自由使用 (sibling ptr, flags...)
  *
  * ─── 叶子语义 ───
- *   get_key()      = fblkbase (文件内逻辑块号)
+ *   get_key()      = fblkbase (区间左端)
  *   get_interval() = { fblkbase, len }
  *   get_pbase()    = pblkbase (物理块号)
+ *   invariant: fblk_cmp(entries[i], entries[i+1]) == 1
  *
  * ─── 内部语义 (方案 A) ───
  *   所有 entry 统一:
- *     get_key()    = max_key(child_i)  (该子树最大文件块号)
+ *     get_key()    = max_R_subtree (该子树最大右端点 fblkbase+len)
  *     get_subptr() = child_i
  *   entry_count = children 数，最大 256
  *   查找: target ≤ entry[i].get_key() → child_i
@@ -157,7 +172,7 @@ static_assert(sizeof(btree_node_entry_t) == 32, "");
  *
  * entry[0].words[3]  → node_meta_t
  * 叶子：所有 entry 的 words[0..2] 存 extent (key,len,pblkbase)
- * 内部：所有 entry 的 words[0] 存 key=max_key(子树), words[2] 存 subptr
+ * 内部：所有 entry 的 words[0] 存 key=max_R(子树 fblkbase+len), words[2] 存 subptr
  * 
  * ═══════════════════════════════════════════════════════ */
 struct Bptree_node_t {

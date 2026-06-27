@@ -173,6 +173,33 @@ words[3]  自由使用，节点类型特定含义见下文
 
 ---
 
+### f_blkitv 区间比较器具
+
+```c
+/* fblk_cmp: f_blkitv 严格比较器具
+ *   1  = left 完全在 right 之前
+ *   -1 = right 完全在 left 之前
+ *   0  = 重叠 (invariant 违反)
+ *
+ * 区间序：I < J  ⇔  I.R + 1 ≤ J.L
+ * 即 fblkbase_i + len_i + 1 ≤ fblkbase_{i+1}
+ * 保证无重叠、无逆序 */
+int inline fblk_cmp(f_blkitv left, f_blkitv right) {
+    if (left.fblkbase + left.len < right.fblkbase) return 1;
+    if (right.fblkbase + right.len < left.fblkbase) return -1;
+    return 0;
+}
+
+/* 区间右端点 fblkbase + len */
+uint64_t inline f_blkitv_end(f_blkitv itv) {
+    return itv.fblkbase + itv.len;
+}
+```
+
+叶子 invariant：同一节点内相邻 extent 满足 `fblk_cmp(entries[i], entries[i+1]) == 1`。
+
+---
+
 ### 节点元数据 (entry[0].words[3])
 
 ```c
@@ -202,7 +229,7 @@ union node_meta_t {
 | 语义  | key = fblkbase (区间左端) | len (末端偏移, 闭区间) | pblkbase | 附加元数据 |
 
 words[3] 分配：
-- entry[0] → `node_meta_t`（entry_count, is_internal_node, parent_ptr）
+- entry[0] → `node_meta_t`（entry_count_minus1, is_internal_node, parent_ptr）
 - entry[1] → `prev_sibling`（同级链表前驱）
 - entry[2] → `next_sibling`（同级链表后驱）
 - entries[3..] → 自由使用
@@ -222,27 +249,27 @@ entry[3]: { key_3  |  len_3  |  pblkbase_3  |  free            }
 
 | Field | words[0] | words[1] | words[2] | words[3] |
 |-------|---------|---------|---------|---------|
-| 语义  | key = 分隔符 | 未使用 | subptr | 自由 |
+| 语义  | key = max_R_subtree (子树最大右端点=fblkbase+len) | 未使用 | subptr | 自由 |
 
-内部节点是 256 阶 B+tree（方案 A）：所有 entry 统一，key = max_key(child_i)。
+内部节点是 256 阶 B+tree（方案 A）：所有 entry 统一，key = max_R_subtree。
 
-**分隔符语义**：`entry[i].key = max_key(child_i)`，每个 entry 的 key 是其 child 整个子树中的最大 key。
+**key 语义**：`entry[i].key = max_R(child_i)`，即该子树中所有 extent 的最大右端点 `max(fblkbase+len)`。路由判定 `target ≤ max_R_subtree` 保证任何落入该子树覆盖范围的逻辑块号都能正确路由。
 
 ```
-entry[0]: { sep_0    |  —  |  child_0       |  node_meta_t    }
-          ← sep_0 = max_key(child_0)
-entry[1]: { sep_1    |  —  |  child_1       |  free           }
-          ← sep_1 = max_key(child_1)
-entry[2]: { sep_2    |  —  |  child_2       |  free           }
-          ← sep_2 = max_key(child_2)
+entry[0]: { R_0      |  —  |  child_0       |  node_meta_t    }
+          ← R_0 = max_R(child_0)
+entry[1]: { R_1      |  —  |  child_1       |  free           }
+          ← R_1 = max_R(child_1)
+entry[2]: { R_2      |  —  |  child_2       |  free           }
+          ← R_2 = max_R(child_2)
 ...
-entry[n]: { sep_n    |  —  |  child_n       |  free           }
-          ← sep_n = max_key(child_n)
+entry[n]: { R_n      |  —  |  child_n       |  free           }
+          ← R_n = max_R(child_n)
 ```
 
 entry[0].words[3] 存 node_meta_t，其余 entry 的 words[3] 自由。
 
-查找：`target ≤ entry[i].key` 即命中 child_i 区间。
+查找：`target ≤ entry[i].key (= max_R(child_i))` 即命中 child_i 区间。
 
 ```cpp
 for (i = 0; i < get_entry_count(); i++) {
