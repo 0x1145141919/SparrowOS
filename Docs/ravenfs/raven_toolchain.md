@@ -10,11 +10,11 @@
 
 | 端 | 运行环境 | 语言 | 用途 | 缓存策略 |
 |:---|:---------|:-----|:-----|:---------|
-| **mkfs.ravenfs** | Linux userspace | C | 格式化分区 | 无需持久缓存，单次顺序操作 |
-| **expandravenfs** | Linux userspace | C | 离线扩容 + 附只读诊断 | 调试状态可复现 1:1 |
-| **ravendsrv** | Linux userspace | C | 用户态 VFS 守护进程；直接读写分区镜像，对外暴露文件操作接口 | 私有 buffer cache |
+| **mkfs.ravenfs** | Linux userspace | C++ | 格式化分区 | 无需持久缓存，单次顺序操作 |
+| **expandravenfs** | Linux userspace | C++ | 离线扩容 + 附只读诊断 | 调试状态可复现 1:1 |
+| **ravendsrv** | Linux userspace | C++ | 用户态 VFS 守护进程；直接读写分区镜像，对外暴露文件操作接口 | 私有 buffer cache |
 | **ravenfs.ko** | Linux kernel | C | 挂载读写 | 私有 buffer cache（不走 page cache） |
-| **SparrowOS** | 自有 UEFI 内核 | C/C++ | 挂载读写 | 私有 buffer cache |
+| **SparrowOS** | 自有 UEFI 内核 | C++ | 挂载读写 | 私有 buffer cache |
 
 ### 用户空间三端的递进关系
 
