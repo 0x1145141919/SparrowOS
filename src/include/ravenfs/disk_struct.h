@@ -46,7 +46,11 @@ struct f_blkitv {
     uint64_t fblkbase;
     uint64_t len;
 };
-
+int inline fblk_cmp(f_blkitv left,f_blkitv right){
+    if(left.fblkbase+left.len<right.fblkbase)return 1;
+    if(right.fblkbase+right.len<left.fblkbase)return -1;
+    return 0;
+}
 /* ═══════════════════════════════════════════════════════
  * B+tree entry (32B = 4 × uint64_t)
  *
