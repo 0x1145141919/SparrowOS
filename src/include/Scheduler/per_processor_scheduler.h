@@ -242,13 +242,13 @@ class task{
     uint32_t get_belonged_processor_id();
     void set_belonged_processor_id(uint32_t pid);
     x64_standard_context_v2 priv_ctx;
-    vaddr_t priv_stack_base;        // 4K对齐，低12位强制忽略；即栈顶
-    uint32_t priv_stack_pages;      // 总页数（含guard page）
+    vaddr_t priv_stack_base;        // 栈顶（4K对齐），guard page 在 [base-4K, base)
+    uint32_t priv_stack_pages;      // 可用页数（不含 guard page）
     // 栈布局（高位→低位）：
-    //   priv_stack_base                                              — 栈顶
-    //   [priv_stack_base - 4K, priv_stack_base)                        — guard page（未映射，#PF not-present）
-    //   [priv_stack_base - 4K * priv_stack_pages, priv_stack_base - 4K) — 可用栈空间
-    //   初始RSP = priv_stack_base - 64B（留64B作RBP回溯缓冲区，FRED兼容）
+    //   priv_stack_base + 4K * priv_stack_pages - 64B    — 初始RSP
+    //   [priv_stack_base, priv_stack_base + 4K * pages)  — 可用栈空间（向下增长）
+    //   priv_stack_base                                    — 栈顶
+    //   [priv_stack_base - 4K, priv_stack_base)            — guard page（未映射，#PF not-present）
     Ktemplats::list_doubly<task*> waiters;//在锁下的，exit的时候都唤醒
     u_ctx_t*uctx;//通过task+n*4k的地方，一般推荐this+4k的专门一个页作为拓展上下文页
     //还有vCPU ctx指针

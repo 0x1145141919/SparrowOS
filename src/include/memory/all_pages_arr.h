@@ -111,6 +111,6 @@ extern all_pages_arr dram_map;
 extern "C"{
     void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2);
     KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount);
-    vaddr_t stack_alloc(KURD_t*kurd_out,uint64_t _4kbpgscount);//专用栈分配接口，_4kbpgscount = 总页数（含guard page）
-    //返回 priv_stack_base（栈顶，4K对齐），[base-4K, base)为guard page（未映射），[base-4K*pages, base-4K)为可用栈空间
+    vaddr_t stack_alloc(KURD_t*kurd_out,uint64_t _4kbpgscount);//专用栈分配接口，_4kbpgscount = 可用页数（不含guard page）
+    //返回 priv_stack_base（栈顶，4K对齐），[base-4K, base)为guard page，[base, base+4K*pages)为可用栈空间
 }

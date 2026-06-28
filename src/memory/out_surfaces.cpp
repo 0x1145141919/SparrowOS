@@ -467,17 +467,17 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
     return (void*)vbase;
 #endif
 }
-// 栈分配：_4kbpgscount = 总页数（含 guard page）
-// 返回 priv_stack_base（栈顶），4K对齐
+// 栈分配：_4kbpgscount = 可用页数（不含 guard page）
+// 返回 priv_stack_base（栈顶，4K对齐）
 // 布局（高位→低位）：
-//   priv_stack_base                                              — 栈顶
-//   [priv_stack_base - 4K, priv_stack_base)                        — guard page（未映射）
-//   [priv_stack_base - 4K * _4kbpgscount, priv_stack_base - 4K)   — 可用栈空间
-//   初始RSP = priv_stack_base - 64B
+//   base + 4K * _4kbpgscount - 64B     — 初始RSP
+//   [base, base + 4K * _4kbpgscount)   — 可用栈空间（RSP 向下增长到 base）
+//   base                                 — 栈顶（priv_stack_base）
+//   [base - 4K, base)                    — guard page（未映射，#PF not-present）
 vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
 {
 #ifdef USER_MODE
-    if (kurd_out == nullptr || _4kbpgscount < 2) {
+    if (kurd_out == nullptr || _4kbpgscount == 0) {
         if (kurd_out) {
             *kurd_out = KURD_t(result_code::FAIL,
                 OS_INVALID_PARAMETER,
@@ -491,9 +491,12 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
 
-    const uint64_t total_size = _4kbpgscount * 0x1000;
-    void* base = mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (base == MAP_FAILED) {
+    // 总页数 = 1 guard + _4kbpgscount 可用
+    const uint64_t total_pages = _4kbpgscount + 1;
+    void* raw = mmap(nullptr, total_pages * 0x1000,
+                     PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) {
         *kurd_out = KURD_t(result_code::FAIL,
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
             module_code::MEMORY,
@@ -505,9 +508,8 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
 
-    // guard page：最高页，mprotect PROT_NONE
-    void* guard_addr = reinterpret_cast<void*>(reinterpret_cast<vaddr_t>(base) + (_4kbpgscount - 1) * 0x1000);
-    mmap(guard_addr, 0x1000, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // 最低页作为 guard page
+    mmap(raw, 0x1000, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
@@ -516,18 +518,20 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         level_code::INFO,
         err_domain::CORE_MODULE
     );
-    return reinterpret_cast<vaddr_t>(base) + _4kbpgscount * 0x1000;
+    // priv_stack_base = raw + 0x1000
+    return reinterpret_cast<vaddr_t>(raw) + 0x1000;
 #else
     interrupt_guard g;
-    if (_4kbpgscount < 2) return 0;
-    uint64_t usable_pages = _4kbpgscount - 1;
+    if (_4kbpgscount == 0) return 0;
 
+    // 物理：guard page 1 + usable _4kbpgscount 页
+    uint64_t total_phys_pages = _4kbpgscount + 1;
     phyaddr_t phys_base = FreePagesAllocator::alloc(
-        _4kbpgscount * 0x1000,
+        total_phys_pages * 0x1000,
         buddy_alloc_params{
-            .numa=0,
-            .try_lock_always_try=0,
-            .align_log2=12
+            .numa = 0,
+            .try_lock_always_try = 0,
+            .align_log2 = 12
         },
         page_state_t::kernel_pinned,
         *kurd_out
@@ -537,20 +541,24 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     }
 
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    // 虚拟空间：_4kbpgscount 页
-    vaddr_t vbase = kspace_vm_table->alloc_available_space(
-        _4kbpgscount * 0x1000, phys_base % 0x40000000);
-    if (vbase == 0) {
+
+    // 虚拟空间：total_phys_pages 页
+    vaddr_t vaddr = kspace_vm_table->alloc_available_space(
+        total_phys_pages * 0x1000, phys_base % 0x40000000);
+    if (vaddr == 0) {
         // TODO: rollback FreePagesAllocator::alloc
         return 0;
     }
 
-    // 只映射低 usable_pages 页（guard page 不映射）
+    // 最低虚拟页 = guard page（不加入 VM_DESC，不映射）
+    // 从第二页开始映射 usable 部分：
+    vaddr_t base = vaddr + 0x1000;  // priv_stack_base
+
     VM_DESC new_desc = {
-        .start = vbase,
-        .end   = vbase + usable_pages * 0x1000,
+        .start = base,
+        .end   = base + _4kbpgscount * 0x1000,
         .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start = phys_base,
+        .phys_start = phys_base + 0x1000,
         .access = KspacePageTable::PG_RW,
         .committed_full = true,
         .is_vaddr_alloced = true,
@@ -561,14 +569,13 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     }
 
     vm_interval interval = {
-        .vpn    = vbase >> 12,
-        .ppn    = phys_base >> 12,
-        .npages = usable_pages,
+        .vpn    = base >> 12,
+        .ppn    = (phys_base + 0x1000) >> 12,
+        .npages = _4kbpgscount,
         .access = KspacePageTable::PG_RW,
     };
     *kurd_out = KspacePageTable::enable_VMentry(interval);
-    // priv_stack_base = vbase + _4kbpgscount * 0x1000（即 guard page 顶端）
-    return vbase + _4kbpgscount * 0x1000;
+    return base;  // = priv_stack_base
 #endif
 }
 

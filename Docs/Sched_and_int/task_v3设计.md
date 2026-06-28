@@ -121,8 +121,8 @@ class task {
     // 栈布局（高位→低位）：
     //   priv_stack_base                                              — 栈顶
     //   [priv_stack_base - 4K, priv_stack_base)                        — guard page（未映射，#PF not-present）
-    //   [priv_stack_base - 4K * priv_stack_pages, priv_stack_base - 4K) — 可用栈空间
-    //   初始RSP = priv_stack_base - 64B（留64B作RBP回溯缓冲区，FRED兼容）
+    //   [priv_stack_base , priv_stack_base + 4K * priv_stack_pages-64B) — 可用栈空间
+    //   初始RSP = priv_stack_base + 4K * priv_stack_pages-64B（留64B作RBP回溯缓冲区，FRED兼容）
 
     // ── 上下文选择（由 task_save 写入，resume 只读） ──
     enum ctx_choose { priv, u_ctx, vCPU };
