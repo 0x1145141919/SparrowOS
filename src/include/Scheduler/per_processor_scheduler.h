@@ -222,22 +222,21 @@ class task{
     reentrant_spinlock_cpp_t task_lock;
     void assign_valid_tid(uint64_t tid);
     task_blocked_reason_t blocked_reason;
-    miusecond_time_stamp_t accumulated_running;
-    miusecond_time_stamp_t accumulated_sleeping;
-    miusecond_time_stamp_t accumulated_io_blocking;
-    miusecond_time_stamp_t accumulated_waiting_other;
     enum event_type_t{
-        run,
+        init,
+        run_kthread,
+        run_uthread,
+        run_vCPU,
+        offline,
         sleep,
         wait_io,
-        wait_other
+        wait_other,
+        event_type_COUNT
     };
-    struct event_record_t{
-        miusecond_time_stamp_t base;
-        uint32_t span_length;
-        event_type_t type;
-    };
-    event_record_t latest_record;
+    miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
+    void task_event_shift(event_type_t new_event);
+    event_type_t current_event;
+    miusecond_time_stamp_t current_event_start_stamp;
     miusecond_time_stamp_t min_wakeup_stamp;
     uint32_t get_belonged_processor_id();
     void set_belonged_processor_id(uint32_t pid);

@@ -110,10 +110,19 @@ class task {
     // ── 时间账本 ──
     event_record_t          latest_record;
     miusecond_time_stamp_t  min_wakeup_stamp;
-    miusecond_time_stamp_t  accumulated_running;
-    miusecond_time_stamp_t  accumulated_sleeping;
-    miusecond_time_stamp_t  accumulated_io_blocking;
-    miusecond_time_stamp_t  accumulated_waiting_other;
+    // 时间账本：accumulates_bank[event_type]，按事件类型索引
+    enum event_type_t {
+        init,
+        run_kthread,
+        run_uthread,
+        run_vCPU,
+        offline,
+        sleep,
+        wait_io,
+        wait_other,
+        event_type_COUNT
+    };
+    miusecond_time_stamp_t  accumulates_bank[event_type_COUNT];
 
     // ── 内核上下文（调度切换缓冲区，仅切换时有意义） ──
     // inline：每个 task 必然有 priv_ctx，独立分配无意义
