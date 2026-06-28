@@ -467,10 +467,17 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
     return (void*)vbase;
 #endif
 }
+// 栈分配：_4kbpgscount = 总页数（含 guard page）
+// 返回 priv_stack_base（栈顶），4K对齐
+// 布局（高位→低位）：
+//   priv_stack_base                                              — 栈顶
+//   [priv_stack_base - 4K, priv_stack_base)                        — guard page（未映射）
+//   [priv_stack_base - 4K * _4kbpgscount, priv_stack_base - 4K)   — 可用栈空间
+//   初始RSP = priv_stack_base - 64B
 vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
 {
 #ifdef USER_MODE
-    if (kurd_out == nullptr || _4kbpgscount == 0) {
+    if (kurd_out == nullptr || _4kbpgscount < 2) {
         if (kurd_out) {
             *kurd_out = KURD_t(result_code::FAIL,
                 OS_INVALID_PARAMETER,
@@ -484,9 +491,8 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
 
-    const uint64_t real_alloc_phypages = _4kbpgscount + 1;
-    const uint64_t size = real_alloc_phypages * 0x1000;
-    void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    const uint64_t total_size = _4kbpgscount * 0x1000;
+    void* base = mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
         *kurd_out = KURD_t(result_code::FAIL,
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
@@ -499,6 +505,10 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
 
+    // guard page：最高页，mprotect PROT_NONE
+    void* guard_addr = reinterpret_cast<void*>(reinterpret_cast<vaddr_t>(base) + (_4kbpgscount - 1) * 0x1000);
+    mmap(guard_addr, 0x1000, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
         MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
@@ -509,10 +519,11 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     return reinterpret_cast<vaddr_t>(base) + _4kbpgscount * 0x1000;
 #else
     interrupt_guard g;
-    if(_4kbpgscount==0)return 0;
-    uint64_t real_alloc_phypages=_4kbpgscount+1;
-    phyaddr_t result=FreePagesAllocator::alloc(
-        real_alloc_phypages*0x1000,
+    if (_4kbpgscount < 2) return 0;
+    uint64_t usable_pages = _4kbpgscount - 1;
+
+    phyaddr_t phys_base = FreePagesAllocator::alloc(
+        _4kbpgscount * 0x1000,
         buddy_alloc_params{
             .numa=0,
             .try_lock_always_try=0,
@@ -521,37 +532,43 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         page_state_t::kernel_pinned,
         *kurd_out
     );
-    if(result==FreePagesAllocator::INVALID_ALLOC_BASE||error_kurd(*kurd_out)){
-        //尝试用phymemspace_mgr::pages_linear_scan_and_alloc
-            return result;
+    if (phys_base == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(*kurd_out)) {
+        return phys_base;
     }
+
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space((real_alloc_phypages+1)*0x1000,result%0x40000000);
-    if(vbase==0){
+    // 虚拟空间：_4kbpgscount 页
+    vaddr_t vbase = kspace_vm_table->alloc_available_space(
+        _4kbpgscount * 0x1000, phys_base % 0x40000000);
+    if (vbase == 0) {
+        // TODO: rollback FreePagesAllocator::alloc
         return 0;
     }
-    vbase+=0x1000;
-    VM_DESC new_desc={
-        .start=vbase,
-        .end=vbase+real_alloc_phypages*0x1000,
-        .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=result,
-        .access=KspacePageTable::PG_RW,
-        .committed_full=true,
-        .is_vaddr_alloced=true,
+
+    // 只映射低 usable_pages 页（guard page 不映射）
+    VM_DESC new_desc = {
+        .start = vbase,
+        .end   = vbase + usable_pages * 0x1000,
+        .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
+        .phys_start = phys_base,
+        .access = KspacePageTable::PG_RW,
+        .committed_full = true,
+        .is_vaddr_alloced = true,
     };
-    int res=kspace_vm_table->insert(new_desc);
-    if(res!=OS_SUCCESS){
+    int res = kspace_vm_table->insert(new_desc);
+    if (res != OS_SUCCESS) {
         return 0;
     }
-    vm_interval interval={
-        .vpn=vbase>>12,
-        .ppn=result>>12,
-        .npages=real_alloc_phypages,
-        .access=KspacePageTable::PG_RW
+
+    vm_interval interval = {
+        .vpn    = vbase >> 12,
+        .ppn    = phys_base >> 12,
+        .npages = usable_pages,
+        .access = KspacePageTable::PG_RW,
     };
-    *kurd_out=KspacePageTable::enable_VMentry(interval);
-    return vbase+_4kbpgscount*0x1000+0xfc0;
+    *kurd_out = KspacePageTable::enable_VMentry(interval);
+    // priv_stack_base = vbase + _4kbpgscount * 0x1000（即 guard page 顶端）
+    return vbase + _4kbpgscount * 0x1000;
 #endif
 }
 

@@ -129,13 +129,13 @@ class task {
     // ── 内核上下文（调度切换缓冲区，仅切换时有意义） ──
     // inline：每个 task 必然有 priv_ctx，独立分配无意义
     x64_standard_context_v2 priv_ctx;
-    vaddr_t                  priv_stack_base;   // __wrapped_pgs_alloc(pages)，4K对齐
-    uint32_t                 priv_stack_pages;  // 总页数，含首4K guard page
-    // 栈布局:
-    //   [priv_stack_base, priv_stack_base+4K)       — guard page（未映射，#PF not-present）
-    //   [priv_stack_base+4K, priv_stack_base+4K*pages) — 可用栈空间
-    //   priv_stack_bottom = priv_stack_base + 4K*pages - 64B  — 初始RSP（留64B作RBP回溯缓冲区，FRED兼容）
-    //   priv_stack_top    = priv_stack_base                  — guard page起始，栈溢触底处
+    vaddr_t                  priv_stack_base;   // __wrapped_pgs_alloc(pages)，4K对齐，即栈顶
+    uint32_t                 priv_stack_pages;  // 总页数（含 guard page）
+    // 栈布局（高位→低位）：
+    //   priv_stack_base                                              — 栈顶
+    //   [priv_stack_base - 4K, priv_stack_base)                        — guard page（未映射，#PF not-present）
+    //   [priv_stack_base - 4K * priv_stack_pages, priv_stack_base - 4K) — 可用栈空间
+    //   初始RSP = priv_stack_base - 64B（留64B作RBP回溯缓冲区，FRED兼容）
 
     // ── 上下文选择（由 task_save 写入，resume 只读） ──
     enum ctx_choose { priv, u_ctx, vCPU };
@@ -320,8 +320,8 @@ syscall_entry (asm):
   //       标记 gs->fpu_dirty = false（干净，还没动）
 
   // 阶段 3: 切到 priv_stack
-  // priv_stack_bottom = base + 4K*pages - 64B（见§三栈布局）
-  mov rsp, self->priv_stack_bottom
+  // 初始RSP = priv_stack_base - 64B（见§三栈布局）
+  mov rsp, self->priv_stack_base - 64
 
   // 正常处理 syscall，需要 FPU 时先检查：
   //   if (gs->fpu_domain_type == U_CTX)
