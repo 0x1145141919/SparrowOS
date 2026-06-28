@@ -524,10 +524,9 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     interrupt_guard g;
     if (_4kbpgscount == 0) return 0;
 
-    // 物理：guard page 1 + usable _4kbpgscount 页
-    uint64_t total_phys_pages = _4kbpgscount + 1;
+    // 物理：只分配可用页，guard page 没有物理页（无映射，无需分配）
     phyaddr_t phys_base = FreePagesAllocator::alloc(
-        total_phys_pages * 0x1000,
+        _4kbpgscount * 0x1000,
         buddy_alloc_params{
             .numa = 0,
             .try_lock_always_try = 0,
@@ -542,23 +541,24 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
 
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
-    // 虚拟空间：total_phys_pages 页
+    // 虚拟空间：guard 1 页 + usable _4kbpgscount 页
+    uint64_t total_virt_pages = _4kbpgscount + 1;
     vaddr_t vaddr = kspace_vm_table->alloc_available_space(
-        total_phys_pages * 0x1000, phys_base % 0x40000000);
+        total_virt_pages * 0x1000, phys_base % 0x40000000);
     if (vaddr == 0) {
         // TODO: rollback FreePagesAllocator::alloc
         return 0;
     }
 
-    // 最低虚拟页 = guard page（不加入 VM_DESC，不映射）
-    // 从第二页开始映射 usable 部分：
+    // VM_DESC 覆盖整个虚拟区间（含 guard page 的坑位）
+    // [vaddr, vaddr+4K) 站着茅坑不拉屎——VM 已分配但无页表映射
     vaddr_t base = vaddr + 0x1000;  // priv_stack_base
 
     VM_DESC new_desc = {
-        .start = base,
-        .end   = base + _4kbpgscount * 0x1000,
+        .start = vaddr,
+        .end   = vaddr + total_virt_pages * 0x1000,
         .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start = phys_base + 0x1000,
+        .phys_start = phys_base,
         .access = KspacePageTable::PG_RW,
         .committed_full = true,
         .is_vaddr_alloced = true,
@@ -568,9 +568,10 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         return 0;
     }
 
+    // 页表只映射可用部分，guard 页不写 PTE
     vm_interval interval = {
         .vpn    = base >> 12,
-        .ppn    = (phys_base + 0x1000) >> 12,
+        .ppn    = phys_base >> 12,
         .npages = _4kbpgscount,
         .access = KspacePageTable::PG_RW,
     };
