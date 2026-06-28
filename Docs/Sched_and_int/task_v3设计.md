@@ -37,34 +37,21 @@
 ```
 task::basic_constructor() → task 诞生
   uctx = nullptr
-  vcpu = nullptr
-  priv_ctx = 空（首次启动时 setup）
+  vcpu_ctx = nullptr
+  priv_ctx = 空
   priv_stack_base = nullptr
+  priv_stack_pages = 0
 
-task::launch():
-  1. 分配 priv_stack（__wrapped_pgs_alloc，按需大小）
-  2. 填充 priv_ctx：设 RIP = 内核入口函数
-  3. 切换上下文 → 跑内核入口函数
+task::launch() — 纯机械：加载 priv_ctx 开始执行。
+  调用方必须在 launch 前填好 priv_ctx、分配好 priv_stack。
+  launch 本身不做任何分配/填充决策。
 
-内核入口函数:
-  ├─ 如果目标是用户线程:
-  │   ① new u_ctx_t
-  │   ② 分配 uctx→xsave_area（含预留 FPU 状态空间）
-  │   ③ 填充 uctx→xtd_ctx（用户 RIP/CS/RFLAGS/RSP/SS）
-  │   ④ 填充 uctx→as（页表），fs_base, gs_base, drs 等
-  │   ⑤ iretq → 用户态执行
-  │
-  ├─ 如果目标是 vCPU:
-  │   ① 分配 VMCS 页 + vcpu_xsave_area
-  │   ② 配置 VMCS guest-state / host-state
-  │   ③ 分配 vcpu 上下文结构
-  │   ④ VMRESUME → Guest 执行
-  │
-  └─ 如果只是内核业务:
-      直接处理，yield 给下一个 task 或 exit
+  launch 后运行的是 priv_ctx 里的入口代码。该代码：
+  ├─ 可以 new u_ctx_t → 填充 → iretq → 成为用户线程
+  ├─ 可以分配 VMCS + vcpu_ctx → VMRESUME → 成为 vCPU
+  └─ 也可以只做一次性内核业务 → 做完 exit / yield
 
-  ↓ 中断/VM-exit 回来后:
-    处理事件 → 可能再次 iretq/VMRESUME，可能 yield 切走
+  中断/VM-exit 回来 → 处理事件 → 可能再次 iretq/VMRESUME，可能 yield 切走
 ```
 
 **v2 说的"内核线程是主体"在哪错了：**
@@ -101,7 +88,7 @@ v2 认为:  内核线程 → iretq → 用户态 → 中断 → 回来继续
 | **syscall 入口** | 不明确 | 立即保存用户上下文到 uctx |
 | **vCPU 上下文** | 未入设计文档 | VMCS 自动 + VMM 手动混合管理 |
 | **调度器视角** | 知道三种任务类型 | 完全透明，只看 priv_ctx 和 choose |
-| **启动路径** | launch → 内核线程 → 选择去用户/guest | launch → 内核入口 → 决定当用户线程/vCPU/内核一次性业务 |
+| **启动路径** | launch → 内核线程 → 选择去用户/guest | launch 是纯机械加载（不决策），决策在 priv_ctx 的入口代码中 |
 
 ---
 
@@ -150,8 +137,8 @@ class task {
 
     // ── 接口 ──
     static task* basic_constructor();
-    void  launch();       // 加载 priv_ctx → 内核入口
-    void  resume();       // 根据 choose 恢复上下文
+    void  launch();       // 纯机械：从 priv_ctx 加载开始执行
+    void  resume();       // 根据 choose 无脑加载对应上下文
     // 状态转换...
 };
 ```
@@ -244,58 +231,66 @@ task_save(frame):
   6. return self
 ```
 
-### resume — 恢复时只看 choose
+### launch — 纯机械启动
+
+```
+launch():
+  // priv_ctx 已由调用方填好（RIP、RSP），此函数只负责加载执行
+  // 调用方在 launch 前必须保证 priv_stack 已分配、priv_ctx 已就绪
+  switch_to_context(priv_ctx)
+```
+
+调用方范例 —— 创建一个用户线程：
+
+```
+task* t = task::basic_constructor();
+
+t->priv_stack_base  = stack_alloc(&kurd, 3);   // 3页 = 1 guard + 2 可用
+t->priv_stack_pages = 3;
+
+t->priv_ctx.rip = (vaddr_t)user_thread_entry;  // 内核入口函数
+t->priv_ctx.rsp = t->priv_stack_base - 64;     // 初始栈顶
+t->priv_ctx.cs  = KERNEL_CS;                    // CPL0
+// ... 其他必要字段
+
+t->launch();  // 开始执行内核入口
+
+// 内核入口内部：
+//   new u_ctx_t → 填用户上下文 → iretq → 用户态
+```
+
+调用方范例 —— 内核一次性业务：
+
+```
+task* t = task::basic_constructor();
+t->priv_stack_base  = stack_alloc(&kurd, 2);   // 2页 = 1 guard + 1 可用
+t->priv_stack_pages = 2;
+t->priv_ctx.rip = (vaddr_t)some_kernel_job;
+t->priv_ctx.rsp = t->priv_stack_base - 64;
+t->launch();
+// 执行 some_kernel_job → 完成 → exit/yield
+```
+
+### resume — 只看 choose，无脑加载
 
 ```
 resume():
   switch self->choose:
     case priv:
-      // 纯内核上下文，只恢复 GPRs
-      iretq (priv_ctx.core_ctx)
+      iretq(self->priv_ctx)
 
     case u_ctx:
-      // 加载"配置"类字段（内核唯一作者，无 save 语义）
-      load_cr3(self->uctx->as->pml4)
-      wrmsr(FS_BASE, self->uctx->fs_base)
-      wrmsr(GS_BASE, self->uctx->gs_base)
-      load_drs(self->uctx->drs)           // MOV DR0-DR7
-      // FPU → 惰性
-      if (gs->fpu_domain_tid != self->tid) {
-          XRSTOR(self->uctx->xsave_area)
-          gs->fpu_domain_tid  = self->tid
-          gs->fpu_domain_type = U_CTX
-          gs->fpu_dirty       = false
-      }
-      // 铺 xtd_ctx 到栈顶 → iretq
+      load_regs(self->uctx)   // AS、FS/GS base、DR、FPU 等
+      iretq(self->uctx->xtd_ctx)
 
     case vCPU:
-      // 从 vcpu_ctx 恢复需要手动管的
-      wrmsr(IA32_KERNEL_GS_BASE, self->vcpu_ctx->guest_kernel_gs_base)
-      if (gs->fpu_domain_tid != self->tid) {
-          XRSTOR(self->vcpu_ctx->guest_xsave_area)
-          gs->fpu_domain_tid  = self->tid
-          gs->fpu_domain_type = VCPU
-          gs->fpu_dirty       = false
-      }
-      // 其他已验证的 VMCS guest-state 硬件自动加载
+      load_vmcs_host()
+      load_guest_specific(self->vcpu_ctx)  // FPU、KERNEL_GS_BASE 等
       VMRESUME
 ```
 
-### launch — 首次启动
-
-```
-launch():
-  1. alloc priv_stack（__wrapped_pgs_alloc，默认 4KB 或 8KB）
-  2. 设 choose = priv
-  3. 填充 priv_ctx 为内核入口函数
-  4. 恢复 GPRs → iretq → 内核入口函数
-
-内核入口函数:
-  // 内核入口——可以决定成为什么
-  user_thread_init() → new u_ctx_t → 填充 → iretq
-  vcpu_init()        → alloc vcpu_ctx → 配置 VMCS → VMRESUME
-  kthread_business() → 处理完 → exit / yield
-```
+resume 的 load_regs / load_vmcs_host / load_guest_specific 是底层实现细节，
+不属于 resume 的语义：resume 只负责"选一个上下文，让它跑"。
 
 ---
 

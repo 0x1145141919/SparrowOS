@@ -212,8 +212,8 @@ class task{
     uint64_t tid;
     public:
     static  task* basic_constructor();
-    void launch();//加载priv_ctx的上下文启动程序
-    void resume();//根据被中断的上下文的种类，是在特权上下文还是在非特权上下文被中断，自动选择恢复手段
+    void launch();   // 纯机械：从 priv_ctx 加载上下文开始执行
+    void resume();   // 根据 ctx_choose 无脑加载对应上下文
     bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
     bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
     bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
