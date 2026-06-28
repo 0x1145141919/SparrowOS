@@ -538,6 +538,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t total_bytes    = header->logical_processor_count * GS_COMPLEX_STRIDE;
         uint64_t npg            = total_bytes >> 12;
         phyaddr_t pbase         = page_allocator::available_meminterval_probe_keep(npg, 12);
+        page_allocator::pages_set({pbase, npg << 12}, page_state_t::kernel_persisit);
         vaddr_t  vbase          = va_alloc_up(total_bytes, 12);
         ksetmem_8((void*)(uint64_t)pbase, 0, total_bytes);
         iv.arch_info.conjunc_GSs = {
@@ -561,7 +562,9 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t stack_stride   = sizeof(per_processor_hardware_stack_t);  // 含 5 guard 页
         uint64_t total_phys     = header->logical_processor_count * stack_stride + 4096;  // + 尾 guard
         uint64_t total_virt     = total_phys;
-        iv.arch_info.hdstacks_interval_pbase  = page_allocator::available_meminterval_probe_keep(total_phys >> 12, 12);
+        uint64_t hd_pages = total_phys >> 12;
+        iv.arch_info.hdstacks_interval_pbase  = page_allocator::available_meminterval_probe_keep(hd_pages, 12);
+        page_allocator::pages_set({iv.arch_info.hdstacks_interval_pbase, hd_pages << 12}, page_state_t::kernel_persisit);
         iv.arch_info.hdstacks_interval_vbase  = va_alloc_up(total_virt, 12);
         iv.arch_info.hdstacks_4kbpgs_count    = total_phys >> 12;
         bsp_kout << "[Phase3b] hdstacks:   vaddr=" << (void*)(uint64_t)iv.arch_info.hdstacks_interval_vbase
