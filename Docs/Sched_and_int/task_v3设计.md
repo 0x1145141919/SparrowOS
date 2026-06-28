@@ -38,7 +38,7 @@
 task::basic_constructor() → task 诞生
   uctx = nullptr
   vcpu_ctx = nullptr
-  priv_ctx = 空
+  priv_ctx = 全零（basic allocator zero-on-alloc 保证）
   priv_stack_base = nullptr
   priv_stack_pages = 0
 
@@ -135,7 +135,7 @@ class task {
     //   [priv_stack_base , priv_stack_base + 4K * priv_stack_pages-64B) — 可用栈空间
     //   初始RSP = priv_stack_base + 4K * priv_stack_pages-64B（留64B作RBP回溯缓冲区，FRED兼容）
 
-    // ── 上下文选择（由 task_save 写入，resume 只读） ──
+    // ── 交出执行流时的上下文类型（由 task_save 写入，resume 只读） ──
     enum ctx_choose { priv, u_ctx, vCPU };
     ctx_choose              choose;
 
@@ -216,7 +216,7 @@ task_save(frame):
 
   3. 更新时间账本
 
-  4. 判断中断来源并写入 choose:
+  4. 判断交出执行流的上下文类型并写入 choose:
      if VM-exit (fred.errcode[63] or VM-exit info):
        // guest FPU 还在物理寄存器里 → 惰性
        if (gs->fpu_domain_tid == self->tid && gs->fpu_dirty)
