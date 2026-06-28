@@ -242,8 +242,8 @@ class task{
     uint32_t get_belonged_processor_id();
     void set_belonged_processor_id(uint32_t pid);
     x64_standard_context_v2 priv_ctx;
-    vaddr_t priv_stack_bottom;
-    vaddr_t priv_stack_top;
+    vaddr_t priv_stack_base;        // 4K对齐，低12位强制忽略；首4K为guard page（未映射）
+    uint32_t priv_stack_pages;      // 总页数（含guard page），栈空间从base+4K开始
     Ktemplats::list_doubly<task*> waiters;//在锁下的，exit的时候都唤醒
     u_ctx_t*uctx;//通过task+n*4k的地方，一般推荐this+4k的专门一个页作为拓展上下文页
     //还有vCPU ctx指针
@@ -395,8 +395,7 @@ extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 extern "C"{
     task* task_spawn(task_type_t type);
-    KURD_t task_start(uint32_t insert_pid);
-    uint64_t create_kthread(void*(*entry)(void*),void*arg,KURD_t*out_kurd);
+    KURD_t task_start(uint64_t insert_pid);
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();
