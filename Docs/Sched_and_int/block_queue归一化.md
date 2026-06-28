@@ -1,326 +1,237 @@
-# block_queue 归一化草案
+# block_queue 归一化（v2）
 
-> 2026-06-27 — 草稿 / 待定
+> 2026-06-28 — 第二次修订
+> 整合 accumulates_bank、缩减阻塞接口面
 
 ---
 
-## 一、动机
+## 一、动机（同 v1）
 
-### 1.1 NVMe 初始化时序的触发性问题
+### 1.1 NVMe 初始化超时无兜底
 
-现行 `kthread_wait(tid)` 无超时兜底：
+### 1.2 现行两套阻塞机制并行
 
-```
-NVMe_Controller::Init():
-  for i = 0..N:
-    tids[i] = create_kthread(init_thread_entry, ...)
-  for i = 0..N:
-    kthread_wait(tids[i])       ← 若 init 线程卡死（MMIO超时、硬件bug），永久阻塞
-                                  → 整个系统boot卡死，无输出、无恢复路径
-```
-
-### 1.2 扩展性问题
-
-现行阻塞机制有两套：
-
-| 机制 | 队列 | 唤醒方式 | 是否支持超时 |
+| 机制 | 队列 | 唤醒方式 | 超时 |
 |---|---|---|---|
-| `kthread_wait` | `task->waiters` (链表) | exit 时 drain | ❌ |
-| `block_queue` / `block_if_equal` | `tid_wait_queue` (链表) | `release_kthread` / `wakeup_thread` | ❌ |
+| `kthread_wait` | `task->waiters` | exit 时 drain | ❌ |
+| `block_queue` / `block_if_equal` | `tid_wait_queue` | `release_kthread` / `wakeup_thread` | ❌ |
 
-两套做同一件事（task 阻塞等待通知），但语义隔离。锁序也不同。
-
-### 1.3 锁序隐患
-
-```
-kthread_exit_cppenter:
-  waiter_task->task_lock.lock()
-    → target_scheduler.sched_lock.lock()
-      → target_scheduler.insert_ready_task(waiter_task)   // waiter 被唤醒
-
-kthread_wait_cppenter:
-  waited_task->task_lock.lock()
-    → waiter_task->task_lock.lock()
-      → waited_task->waiters.push_back(waiter)
-```
-
-exit 拿 waiter 的锁再拿 scheduler 的锁；wait 拿 waiter 的锁还拿 waited 的锁。不同路径锁序不同。
+### 1.3 锁序交叉（同 v1）
 
 ---
 
-## 二、归一化设计
+## 二、核心思想：只留两个原语
 
-### 2.1 核心思想
-
-统一为单一原语——**全局 wait_queue 句柄系统**：
+`step1` 的 wq 系统仍然成立，但减少暴露的接口：
 
 ```
-block_queue（tid_wait_queue）是唯一的原语。
-  ─ 等待在一个队列上
-  ─ 被别人从队列中唤醒
-  ─ 可设定超时
+所有阻塞效果：
+  ┌─ 条件阻塞   → block_if_equal(wq, checker, expected)
+  └─ 定时阻塞   → kthread_sleep(offset_us)
 
-其他机制都是其特例：
-  kthread_wait   = block on target->exit_wq
-  kthread_exit   = wake_all(self->exit_wq, exit_code)
-  block_queue    = block on custom wq
-  block_if_equal = 条件检查 + block on custom wq
+取消的接口：
+  kthread_wait          → block_if_equal(target->exit_wq, &target->status, DEAD)
+  block_queue           → block_if_equal(wq, NULL, 0)  // 无条件
+  kthread_block         → block_if_equal(self_wq, NULL, 0)
+  kthread_self_blocked  → block_if_equal(self_wq, &flag, NO_WORK)
 ```
 
-### 2.2 全局 wait_queue 句柄
+### 2.1 现存的阻塞接口迭代
 
-中心化注册表，各 CPU 的 `resched()` 都能遍历检查超时：
+**`kthread_wait(tid)`：**
+```
+→ block_if_equal(target->exit_wq, &target->task_state, zombie)
+  - checker 轮询：target→task_state == zombie
+  - 相等则阻塞在 exit_wq 上
+  - 不等则直接返回（target 已经死了）
+```
+
+**`kthread_self_blocked(reason)` vs `wakeup_thread`（textConsole 模式）：**
+```
+// current:
+kthread_self_blocked(no_job);
+
+// future:
+block_if_equal(render_wq, &render_job_pending, false)
+// 当 render_job_pending == false 时阻塞
+// wakeup_thread → render_job_pending = true → wq_wake_one(render_wq)
+```
+
+**`kthread_sleep(offset_us)`：**
+```
+单独保留。区别：
+  sleep 不依赖外部 wake 源，靠 timer 到期自唤醒
+  block_if_equal 依赖 checker 变真或被别人 wq_wake
+```
+
+### 2.2 阻塞与 accumulates_bank 的集成
+
+当 task 因 `block_if_equal` 或 `kthread_sleep` 切走时，**通过 `task_event_shift` 记录时间段**：
+
+```
+// block_if_equal 切走前:
+task_event_shift(wait_io  / wait_other);   // 取决于等待性质
+sched();
+
+// kthread_sleep 切走前:
+task_event_shift(sleep);
+sched();
+
+// 被唤醒、回到 CPU 后:
+task_event_shift(run_kthread);
+// 继续执行
+```
+
+这意味着 `accumulates_bank` 的维护和阻塞接口的调用天然绑定——**不需要单独的"进入阻塞"和"记录时间"两步操作**，`block_if_equal` 内部在切出前自动做 `task_event_shift`，醒来后第一个恢复的是 `task_event_shift(run_*)`。
+
+### 2.3 核心接口设计
 
 ```cpp
-constexpr uint32_t MAX_GLOBAL_WQ = 256;
+// ── 原语 ──
 
-struct wq_slot {
-    // ── 队列本体 ──
-    uint64_t    entries[MAX_ENTRIES];   // 存放 waiter tid
-    uint32_t    head, tail, count;
+// 条件阻塞：当 *checker == expected 时阻塞在 wq 上
+// 若 checker == nullptr 则无条件阻塞（等价旧 block_queue）
+// timeout_us = 0 表示不限时
+//
+// 切出前自动 task_event_shift(wait_type)
+// 唤醒后调用方自行 task_event_shift(run_*) / 重检 checker
+void block_if_equal(
+    tid_wait_queue* wq,
+    uint64_t*       checker,
+    uint64_t        expected,
+    event_type_t    wait_type = wait_other,  // 记录到哪个 accumulate 桶
+    uint64_t        timeout_us = 0
+);
 
-    // ── 超时控制 ──
-    uint64_t    deadline_us;            // 若 count>0，超时截止时间戳
-    // 注意：deadline 按 最长剩余 或 最早到期的条目 设定，
-    //       取决于实现策略（详见§4）
+// 定时睡眠（特殊化，靠 timer 自唤醒）
+// 切出前自动 task_event_shift(sleep)
+void kthread_sleep(miusecond_time_stamp_t offset_us);
 
-    // ── 元数据 ──
-    bool        in_use;
-    // 可扩展：绑定 tid（用于 exit_wq 反向查找）
-};
+// ── 辅助（语法糖，不增加新原语） ──
 
-alignas(64) wq_slot g_wq_table[MAX_GLOBAL_WQ];
+// kthread_exit 现在只需要：
+//   1. wq_wake_all(self->exit_wq, exit_code)
+//   2. 清理资源
+//   3. sched()
 ```
 
-接口：
+---
+
+## 三、textConsole 案例
+
+`src/utils/textConsole.cpp` 现行逻辑：
 
 ```cpp
-wq_handle_t wq_create();          // 注册 → 返回句柄（= table index）
-void        wq_destroy(wq_handle_t);
-
-// 阻塞
-uint64_t    wq_wait(wq_handle_t, uint64_t timeout_us);
-// wq_wait 返回值的语义：
-//   位63 = 0 → 正常唤醒（调用方自行检查业务条件）
-//   位63 = 1 → 超时唤醒（调用方自行决定是否重试/回退）
-//   低位  = 唤醒者传递的值（exit_code / 或其他业务信息）
-
-// 唤醒
-uint64_t    wq_wake_one(wq_handle_t, uint64_t wake_val);
-void        wq_wake_all(wq_handle_t, uint64_t wake_val);
-
-// 超时扫描（各 CPU resched 末尾调用）
-void        wq_check_timeouts();
-```
-
-### 2.3 `task` 结构变化
-
-```cpp
-class task {
-    // ── 移除 ──
-    // Ktemplats::list_doubly<task*> waiters;     ← 砍掉
-
-    // ── 新增 ──
-    wq_handle_t exit_wq;       // 绑定的退出通知队列
-};
-```
-
-每个 task 在 `alloc_tid` 时自动 `exit_wq = wq_create()`；`release_tid` 时 `wq_destroy(exit_wq)`。
-
-### 2.4 现有接口重写
-
-```
-kthread_wait(tid, timeout_us):
-  等价于:
-    task* target = get_by_tid(tid);
-    uint64_t ret = wq_wait(target->exit_wq, timeout_us);
-    return ret;
-    // 位63=0 → exit_code 在低位
-    // 位63=1 → 超时，低位无意义
-
-kthread_exit(uint64_t code):
-  // 原：遍历 waiters → 一一 set_ready + 塞 exit_code
-  // 新：
-    wq_wake_all(self->exit_wq, code);
-    // 退出原语（清理资源等）
-    set_zombie();
-    sched();
-
-block_queue(wq_handle_t hq):
-  等价于 wq_wait(hq, 0);  // 0 = 无限等待
-
-block_if_equal(wq_handle_t hq, uint64_t* checker, uint64_t token):
-  // 原：if (*checker == token) { block; }
-  // 新：
-    if (*checker == token) {
-        ret = wq_wait(hq, timeout_us);
-        // 回来后 *checker 可能已经变了，也可能没变
-        // 调用方自行判断
+// 渲染线程入口:
+for (;;) {
+    if (no_work_to_do) {
+        kthread_self_blocked(task_blocked_reason_t::no_job);  // line 530
     }
-
-wakeup_thread(tid):
-  等价于 wq_wake_one(target->exit_wq, wake_val);
-
-release_kthread(tid):
-  等价于 wq_wake_all(target->exit_wq, exit_code) + 资源释放
-```
-
----
-
-## 三、锁序改善
-
-归一化后所有阻塞操作走同一条路径：
-
-```
-wq_wait:
-  1. self->task_lock.lock()
-  2.   wq_table[wq].lock.lock()
-  3.     entry插入
-  4.   wq_table[wq].lock.unlock()
-  5.   set_blocked()
-  6. self->task_lock.unlock()
-  7. sched()  // 切走
-
-wq_wake_all:
-  1. wq_table[wq].lock.lock()
-  2.   pop 所有 tid
-  3. wq_table[wq].lock.unlock()
-  4. for each tid:
-       target = get_by_tid(tid)
-       target->task_lock.lock()
-         set_ready(target)
-         target->context->rax = wake_val
-       target->task_lock.unlock()
-       insert_ready_task(target)
-       // 注：insert_ready_task 需要 target CPU 的 sched_lock
-       //     拿到 task_lock 后才能取 belonged_processor_id 确定目标CPU
-```
-
-exit 不再需要自己遍历 waiters、逐个拿 waiter 的锁、再拿 scheduler 的锁。只需要对 `exit_wq` 做 `wq_wake_all`——wq 内部统一了锁序。
-
-**固定的锁序纪律：**
-
-```
-wq_table[wq].lock  →  task_lock  →  sched_lock
-         (1)             (2)            (3)
-```
-
-不再有 "exit: waiter→lock then sched_lock" 和 "wait: waited→lock then waiter→lock" 的交叉。
-
----
-
-## 四、超时检测时机与语义
-
-### 4.1 检测触发
-
-不依赖专用定时器线程。**各 CPU 在 `resched(ctx)` 末尾调用 `wq_check_timeouts()`**：
-
-```cpp
-// resched() 内部:
-  cpu_self = fast_get_processor_id();
-  {
-     reentrant_spinlock_guard g(self_scheduler.sched_lock);
-     // 正常调度逻辑...
-  }
-  wq_check_timeouts();      // ← 新增：当前 CPU 顺手扫一次
-  scheduler.sched();        // 切走
-```
-
-扫描频率取决于 `resched()` 被调用的频率。在 timer tick / syscall / yield / exit 等路径上都会触发。
-
-### 4.2 deadline 设定策略
-
-最简单的实现——**每个 wait_queue 记录一个 `deadline_us`，取队列中所有条目的最早到期时间**：
-
-```cpp
-wq_wait(hq, timeout_us):
-  if (timeout_us > 0) {
-      deadline = now + timeout_us;
-      if (deadline < wq->deadline_us)
-          wq->deadline_us = deadline;  // 更新为更早的到期时间
-  }
-
-wq_check_timeouts():
-  now = get_microsecond_stamp();
-  for each wq_slot in use:
-      if (wq->count > 0 && now >= wq->deadline_us) {
-          // 遍历 entries，检查每个 entry 的实际 deadline
-          // 到期者 → 从队列移除 → set_ready → 位63置1
-          // 重新计算下一个 deadline
-      }
-```
-
-### 4.3 返回值语义
-
-```cpp
-// 调用方示例 — NVMe init 场景:
-
-uint64_t ret = kthread_wait(tids[i], 5'000'000);  // 5秒超时
-if (ret & WAKE_CAUSE_TIMEOUT) {
-    // 超时了。业务条件（init 成功？）自行判断
-    // 通常意味着该盘初始化失败
-    bsp_kout << "[NVMe] node " << i << " init timeout" << kendl;
-    fail_count++;
-} else {
-    // 正常被退出唤醒
-    ok_count++;
+    render_frame();
 }
 
-// 调用方示例 — block_if_equal:
-uint64_t ret = wq_wait(hq, 100'000);  // 100ms超时
-if (ret & WAKE_CAUSE_TIMEOUT) {
-    // *checker 可能达到，也可能没达到
-    // 调用方自己判断：
-    if (*checker == expected) {
-        // 实际上在超时前一刻达到了，只是通知延迟
-        goto success;
+// 业务线程:
+submit_render_job();
+wakeup_thread(render_tid);  // line 399
+```
+
+归一化后：
+
+```cpp
+// 渲染线程:
+static tid_wait_queue render_wq;
+static bool           render_pending = false;
+
+for (;;) {
+    if (!render_pending) {
+        // 无条件阻塞的 block_if_equal ≈ 旧 block_queue
+        // 但写法统一：checker=NULL 跳过检查
+        block_if_equal(&render_wq, nullptr, 0, wait_io);
+        // 醒来：render_pending == true
     }
-    // 真的超时了
-    goto timeout_handle;
+    render_pending = false;
+    do_render();
 }
-// 正常唤醒
-if (*checker != expected) {
-    // 被误唤醒？重试或继续等
-    goto retry;
-}
+
+// 业务线程:
+render_pending = true;
+wakeup_thread(render_tid);
+// 或 future:
+wq_wake_one(&render_wq, 0);
+```
+
+优势：
+- 去掉了 `kthread_self_blocked` 这个特殊接口
+- 阻塞原因（`wait_io`）直接体现到 `accumulates_bank` 中
+- 同样的 `wq` 机制，不需要单独维护 `blocked_reason` 状态
+
+---
+
+## 四、锁序纪律
+
+```
+block_if_equal 内部:
+  1. self->task_lock      // 保护 task_state、accumulates_bank
+  2.   task_event_shift(wait_type)
+  3.   set_blocked()
+  4.   wq->lock            // 插入 waiter 条目
+  5.     wq 入队
+  6.   wq->lock.unlock()
+  7. self->task_lock.unlock()
+  8. sched()               // 切走
+
+wq_wake_one/wq_wake_all:
+  1. wq->lock              // 弹出 waiter
+  2. for each tid:
+     target->task_lock
+       set_ready(target)
+     target->task_lock.unlock()
+     target->sched_lock     // insert_ready_task
+       ready queue push
+     target->sched_lock.unlock
+  3. wq->lock.unlock()
+```
+
+固定传递方向：`task_lock → wq_lock → sched_lock`，无交叉。
+
+---
+
+## 五、event_type 与 block 的映射规范
+
+`block_if_equal` 的 `wait_type` 参数决定 `task_event_shift` 归档到哪个桶：
+
+| wait_type | 使用场景 | accumulates_bank 索引 |
+|---|---|---|
+| `wait_io` | NVMe 等待、外设等待、渲染线程空闲 | `accumulates_bank[wait_io]` |
+| `wait_other` | 等另一个 kthread exit、等锁（非 IO） | `accumulates_bank[wait_other]` |
+| `sleep` | 仅 `kthread_sleep` 内部使用 | `accumulates_bank[sleep]` |
+
+调用方根据直觉选 `wait_io` 还是 `wait_other`——这直接决定调度器的行为画像准确性。
+
+---
+
+## 六、textConsole 迁移路线
+
+```
+Phase 0 — 清理 header
+  ─ 砍掉 task::waiters
+  ─ 砍掉 kthread_wait / kthread_block / kthread_self_blocked 声明
+  ─ 保留 block_if_equal + kthread_sleep 为新原语
+
+Phase 1 — wq 子系统（同 v1）
+  ─ wq_create / wq_destroy / wq_wait / wq_wake_one / wq_wake_all
+
+Phase 2 — 接口重写
+  ─ kthread_exit_cppenter → wq_wake_all(self->exit_wq, code)
+  ─ kthread_wait          → block_if_equal(target->exit_wq, &state, zombie)
+  ─ block_queue           → block_if_equal(wq, NULL, 0, wait_type)
+  ─ textConsole.cpp       → block_if_equal(&render_wq, &pending, false, wait_io)
+  ─ kthread_self_blocked  → 删除，所有调用点改为 block_if_equal
+
+Phase 3 — NVMe init 超时
+  ─ block_if_equal(..., timeout_us=5'000'000)
 ```
 
 ---
 
-## 五、遗留问题（草案级别）
-
-1. **`wq_check_timeouts()` 的性能** — 遍历 256 个 slot 每次 resched 可能热。考虑 bitmap 标记非空 wq 来跳过。
-2. **deadline 重算粒度** — 扫描时若 wq 中 entry 很多且到期时间分散，无效检查多。但预计每个 wq 的 entry 数不多（NVMe N ≤ 32）。
-3. **wq_wait 无锁等待** — 当前用 `sched()` 切走，wq 的 lock 在 block 前已释放。如果需要在被唤醒时自动获得 wq 锁？暂时不需要。
-4. **`kthread_wait` 的 timeout 语义** — 超时后 `target->exit_wq` 里还有该 waiter 的残留 entry 吗？需要清除或标记 skip（参考 CAS outcome 仲裁）。
-5. **task 析构时绑定 wq 的释放** — `release_kthread` 需确保 exit_wq 已空（没有人在等了）。
-6. **`MAX_GLOBAL_WQ` 用尽** — 设计上 wq 是静态数组，用完则 `wq_create()` 返回错误。正常情况下每个 task 一个 exit_wq + 少量业务 wq 够用。
-
----
-
-## 六、进度路线（建议）
-
-```
-Phase 1 ─ 新建 wait_queue 子系统
-  ─ wq_table / wq_create / wq_destroy / wq_wait / wq_wake_one / wq_wake_all
-  ─ wq_check_timeouts() + resched 集成
-  ─ 测试：基本阻塞唤醒 + 超时
-
-Phase 2 ─ 现有接口迁移
-  ─ task: 加 exit_wq 字段，去 waiters 字段
-  ─ kthread_exit_cppenter: 改为 wq_wake_all(self->exit_wq, code)
-  ─ kthread_wait: 改为 wq_wait(target->exit_wq, timeout)
-  ─ block_queue / block_if_equal: 改为 wq_wait
-  ─ wakeup_thread: 改为 wq_wake_one(target->exit_wq)
-  ─ release_kthread: 改为 wq_wake_all + wq_destroy
-
-Phase 3 ─ NVMe Init 迁移
-  ─ kthread_wait(tid) → kthread_wait(tid, 5'000'000)
-  ─ 超时处理逻辑
-```
-
-Phase 1 和 Phase 2 可以同步进行（先写新子系统再重写现有入口）。Phase 3 改动极浅，主要是参数调整。
-
----
-
-*此文是草案。Phase 1 落地前锁序、仲裁策略、返回值编码需要实作中验证。*
+*Phase 0 可在当前会话直接落地，不阻塞其他改动。*
