@@ -96,6 +96,8 @@ v2 认为:  内核线程 → iretq → 用户态 → 中断 → 回来继续
 
 ### task
 
+> 📐 栈布局图解见 [`priv_stack_layout.md`](priv_stack_layout.md)
+
 ```cpp
 class task {
     // ── 调度核心字段 ──
