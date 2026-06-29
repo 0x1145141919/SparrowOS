@@ -144,6 +144,7 @@ add_executable(kernel.elf
     src/arch/x86_64/Processor/early_bsp_resources.cpp
     src/scheduler/per_processor_scheduler.cpp
     src/scheduler/kthread_interfaces.cpp
+    src/scheduler/bq_system.cpp
     src/arch/x86_64/exec_env_detect.cpp   
     src/scheduler/yield.asm
     $<TARGET_OBJECTS:i8042_module>

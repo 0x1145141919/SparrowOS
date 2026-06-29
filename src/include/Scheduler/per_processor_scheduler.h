@@ -174,6 +174,11 @@ enum task_state_t:uint8_t{
     zombie,
     dead
 };
+enum task_type_t:uint8_t{
+    kthreadm=0,
+    userthread,
+    vCPU
+};
 enum task_blocked_reason_t:uint8_t{
     invalid,
     sleeping,
@@ -295,10 +300,12 @@ typedef uint64_t bq_id_t;
 constexpr bq_id_t  BQ_ID_INVALID = ~0u;
 // 内部队列（对外不暴露）
 class block_queue{
-    enum state_t { ready, running } state;
+    public:
+    enum state_t { ready, running } state = ready;
     spinlock_cpp_t qlock;
     task::event_type_t queue_event;
     Ktemplats::list_doubly<task*> inner_queue;
+    block_queue();
 };
 /**
  * 
@@ -427,6 +434,7 @@ extern "C"{
     uint64_t bq_wake_all(bq_id_t qid); //唤醒全部
     uint64_t bq_wake_timeouts(bq_id_t qid); //唤醒超时者，很明显是从head开始向后遍历
     //上面三个的返回值是唤醒个数
+    void bq_flush_pending(bq_id_t qid); // 处理 pending_wake 中所有弹出的 task（调用方已释放 bq_lock）
 }
 /**
  * 内核线程接口里面锁顺序纪律：
