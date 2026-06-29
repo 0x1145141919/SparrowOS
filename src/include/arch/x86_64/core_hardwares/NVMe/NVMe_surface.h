@@ -85,10 +85,11 @@ private:
         uint16_t sqid;
         uint16_t num_of_entries;
         uint16_t belonged_cqid;
-        uint16_t tail_idx;
-        Ktemplats::kernel_bitmap* sq_bitmap;
+        spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、block_tokens 的更新一致性
+        uint16_t tail_idx;        // 在 sq_lock 下读写
+        Ktemplats::kernel_bitmap* sq_bitmap;  // 在 sq_lock 下读写
         vm_interval sq_ring;
-        sq_rq_t* block_tokens;
+        sq_rq_t* block_tokens;    // block_token 域：sq_lock 写 WAITING/DONE，wq 内只读 check
     };
 
     struct cq_complex {
@@ -99,6 +100,10 @@ private:
         vm_interval cq_ring;
         bool is_first_time;
         bool unprocessed_entry_expect;
+        // wait_queue 的 lock 只保护 task* 链表头尾的原子出入。
+        // wq 内 task* 具有唯一性 + 只读引用（不可修改）。
+        // 取出后调用方自行取 task_lock 改状态、唤醒。
+        // 约束：不再借 wq 的 lock 保护 sq 或 cq 数据。
         tid_wait_queue wait_queue;
     };
 
