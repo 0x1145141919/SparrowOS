@@ -25,6 +25,21 @@ void     wq_wake_all(wq_id_t qid, uint64_t wake_val);  // 唤醒全部等待者
 - 用户态可复用相同句柄机制（通过 syscall）
 - 内联存储：`block_queue` 对象嵌入 rb_map 节点，不产生额外的动态分配开销
 
+**灵活性（对比旧 `kthread_wait(tid)` 的硬耦合）：**
+
+旧 API 将等待关系绑定到线程 TID 上，只能等特定线程退出。
+句柄系统解耦了"等待关系"和"父子关系"：
+
+- 父线程创建一个 wq，以 `wait_other` 使能，将 `wq_id` + `running_word` 嵌入子 task 的数据域
+- 父线程调用 `block_if_equal(wq_id, &subtask.running_word, word_running, wait_other, timeout_us)`
+- 子线程退出时：原子置 `running_word` 为非 `word_running` → `wq_wake_one(wq_id)`
+- 父线程醒来后，该 wq 句柄可复用于其他线程或其他目的
+
+**优势：**
+- 自由安排哪个线程"具有被 wait 的能力"（而非硬编码为"等 TID 退出"）
+- wq 句柄可复用、可传递，不绑定到特定 task 生命周期
+- 超时由 `block_if_equal` 的 `timeout_us` 直接支持，调度器路径统一监控
+
 ---
 
 ## 2. block_queue 数据结构
