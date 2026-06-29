@@ -108,7 +108,8 @@ class task {
     task_blocked_reason_t   blocked_reason;
 
     // ── 时间账本 ──
-    event_record_t          latest_record;
+    miusecond_time_stamp_t  current_event_start_stamp;
+    event_type_t            current_event;
     miusecond_time_stamp_t  min_wakeup_stamp;
     // 时间账本：accumulates_bank[event_type]，按事件类型索引
     enum event_type_t {
@@ -150,9 +151,49 @@ class task {
     static task* basic_constructor();
     void  launch();       // 纯机械：从 priv_ctx 加载开始执行
     void  resume();       // 根据 choose 无脑加载对应上下文
+    void  task_event_shift(event_type_t new_event);  // 关旧帐、开新帐，见 §三.1
     // 状态转换...
 };
 ```
+
+### 三.1 task_event_shift — 关旧帐、开新帐
+
+```cpp
+void task::task_event_shift(event_type_t new_event)
+{
+    if (new_event == this->current_event)  // 同一事件继续，不计时
+        return;
+
+    miusecond_time_stamp_t now = ktime::get_microsecond_stamp();
+    uint64_t elapsed = now - this->current_event_start_stamp;
+
+    // ① 归帐：旧事件下台，时段写入 accumulates_bank
+    this->accumulates_bank[this->current_event] += elapsed;
+
+    // ② 甘特图拓展（可选）：若当时有 dts_gantt
+    //    此处可写一条 Gantt 日志：old_event → new_event，持续 elapsed
+
+    // ③ 新事件开始计时
+    this->current_event_start_stamp = now;
+    this->current_event = new_event;
+}
+```
+
+**设计思想 — 一个函数完成两个操作：**
+
+1. **关旧帐** — 旧事件下台，将其存活时长计入对应 `accumulates_bank[old]`。
+   若已集成 Gantt 日志，同时写一条事件切换记录到 `dts_gantt`。
+2. **开新帐** — 新事件上场，记录当前时间戳作为起始点。
+
+**关键约定：**
+- `current_event` 在 `basic_constructor` 中被初始化为 `init`，`current_event_start_stamp` 全零。
+  第一次 `task_event_shift` 自动把 `init→run_kthread` 的时段计入 `accumulates_bank[init]`。
+- `current_event` 与 `accumulates_bank` 形成**闭包**：任何执行流切换必须先调 `task_event_shift`，
+  确保不遗漏任何时间的归属。典型的调用点：
+  - `block_if_equal` 切出前 → `task_event_shift(wait_io/wait_other)`
+  - `kthread_sleep` 切出前 → `task_event_shift(sleep)`
+  - 被唤醒调度回来时 → `task_event_shift(run_kthread/run_uthread/run_vCPU)`
+  - `task_save` 中被切走前 → 同上（但 task_save 本身不调 shift，调用方负责）
 
 ### u_ctx_t
 
@@ -215,6 +256,9 @@ task_save(frame):
   2. self->priv_ctx = *frame              // 内核 GPRs → 临时缓冲区
 
   3. 更新时间账本
+     // task_save 的调用方（中断/异常入口）必须已在切出前调 task_event_shift
+     // 关闭当前事件（如 run_uthread/run_vCPU）并归档到 accumulates_bank。
+     // 见 §三.1。此处不重复做 shift——调用方负责。
 
   4. 判断交出执行流的上下文类型并写入 choose:
      if VM-exit (fred.errcode[63] or VM-exit info):
