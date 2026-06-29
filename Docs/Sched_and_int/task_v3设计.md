@@ -198,7 +198,7 @@ void task::task_event_shift(event_type_t new_event)
   - 被唤醒调度回来时 → `task_event_shift(run_kthread/run_uthread/run_vCPU)`
   - `task_save` 中被切走前 → 同上（但 task_save 本身不调 shift，调用方负责）
 
-### 三.2 min_wakeup_stamp — 超时唤醒语义
+### 三.2 min_wakeup_stamp — 超时边界
 
 ```
 ┌───────────────────────────────────────────────────────────┐
@@ -214,30 +214,13 @@ void task::task_event_shift(event_type_t new_event)
 └───────────────────────────────────────────────────────────┘
 ```
 
-**检查时机（由调度器或定时器中断驱动）：**
-
-```
-每个 timer tick / 调度周期:
-  for each blocked task in sleep_queue:
-    if task->min_wakeup_stamp != 0
-       && ktime::get_microsecond_stamp() > task->min_wakeup_stamp
-       && task->current_event ∈ {sleep,wait_io,wait_other,wait_mutex}:
-
-      // 超时 → 强制唤醒
-      task_event_shift(run_kthread)   // 关 wait/sleep 帐，开 run_kthread
-      task->set_ready()
-      insert_ready_task(task)
-```
-
 **设置点：**
-- `kthread_sleep(offset_us)` → `min_wakeup_stamp = now + offset_us; current_event = sleep`
-- `block_if_equal(..., timeout_us)` → `min_wakeup_stamp = now + timeout_us`（timeout_us != 0 时）
-- `block_if_equal(..., timeout_us=0)` → `min_wakeup_stamp = 0`（不限时）
+- `kthread_sleep(offset_us)` → `sleep_queue` 插入，`min_wakeup_stamp = now + offset_us`
+- `block_if_equal(..., timeout_us ≠ 0)` → `block_queue` 插入，`min_wakeup_stamp = now + min(timeout_us, MAX_BLOCK_TIME)`
+- `block_if_equal(..., timeout_us = 0)` → `block_queue` 插入，`min_wakeup_stamp = 0`（不限时）
 - 唤醒后调用方自行 `min_wakeup_stamp = 0`（清除超时边界）
 
-**注意：** `sleep_queue` 的插入排序仍按 `min_wakeup_stamp` 升序排列，
-使调度器可快速找到最早到期任务。但超时唤醒不再仅限于 `sleep` 事件——
-任何 `wait_*` 事件也可设超时。
+超时检查不依赖统一队列扫描——两条路径分离，见 §十。
 
 ### u_ctx_t
 
@@ -580,6 +563,104 @@ vCPU:          basic_constructor  vcpu_ctx            choose=vCPU
                launch()          → VMRESUME→Guest    VMCS 自动+惰性 FPU
                                 → VM-exit           恢复时只管 VMCS 不管的
 ```
+
+---
+
+## 十、超时唤醒机制 — 分散式 BQ 超时扫描
+
+### 10.1 问题：谁检查 min_wakeup_stamp？
+
+v2/v3 初期使用单一 `sleep_queue` 处理所有超时（sleep + wait_* 都在一条排序队列上）。
+这要求 `block_if_equal` 超时任务也放入 sleep_queue，造成两条路径（定时睡眠 vs 条件阻塞）
+共享同一扫描通道。
+
+最新设计：两条路径完全分离。
+
+```
+kthread_sleep → sleep_queue（排序插入 + sched() 前 sleep_tasks_wake 扫描）
+block_if_equal 超时 → block_queue（FIFO + sched() 前随机轮转 BQ 扫描）
+```
+
+### 10.2 MAX_BLOCK_TIME 全局兜底
+
+```cpp
+constexpr uint64_t MAX_BLOCK_TIME_US = 5_000_000;  // 5000ms
+```
+
+`block_if_equal` 的 `timeout_us` 实际生效值：
+
+```
+effective = min(timeout_us, MAX_BLOCK_TIME_US)
+```
+
+防止调用方设置无限制超时，确保系统在任何阻塞场景下都有兜底唤醒。
+
+### 10.3 分散式 BQ 超时扫描（随机轮转临幸法）
+
+`block_if_equal` 超时任务的 `min_wakeup_stamp` 写入后，task 只进入 BQ 的 inner_queue
+（FIFO），不进入 sleep_queue。超时唤醒由各 CPU 在调用 `sched()` 前通过随机轮转扫描实现。
+
+```
+sched() 调用前：
+  bq_timeout_scan_rand()       // 随机选一个 BQ 扫超时
+  sleep_tasks_wake()           // 扫 sleep_queue（kthread_sleep 专用）
+  sched()                      // 取下一个任务
+```
+
+**扫描函数 `bq_timeout_scan_rand()` 逻辑：**
+
+```
+1. 熵源 = 调用者已测得的微秒时间戳（不额外 TSC/MMIO 读）
+   uint32_t entropy = (uint32_t)(micro_stamp ^ (micro_stamp >> 16));
+   uint32_t bq_idx = entropy & (global_bq_count - 1);  // 2^n 约束
+
+2. lock = get_lock(global_bq_table[bq_idx])
+3. if lock == NULL: return
+4. lock->lock()
+5. count = bq_wake_timeouts(global_bq_table[bq_idx])
+     // 从 inner_queue head 向后遍历
+     // 对 min_wakeup_stamp != 0 && now > min_wakeup_stamp 的 task：
+     //   pop_front → 出列
+     //   记入本地列表
+     // 返回 pop 个数
+6. lock->unlock()
+7. for each popped task t:
+     task_lock(t)
+     t->min_wakeup_stamp = 0
+     task_event_shift(t, run_kthread)
+     t->set_ready()
+     task_unlock(t)
+     insert_ready_task(t)
+```
+
+**FIFO O(n) 扫描说明：**
+
+block_queue 按 FIFO 维护，不按 `min_wakeup_stamp` 排序。`bq_wake_timeouts` 必须从 head
+扫到尾。O(n) 复杂度在以下场景可接受：
+- 大多数 BQ 只有 0-1 waiter（per-CID NVMe）
+- 共享 BQ（如 i8042）通常只有 1 waiter
+- 5000ms MAX_BLOCK_TIME 提供充裕宽容度
+
+### 10.4 随机轮转的覆盖率
+
+单个 CPU 每次 `sched()` 只扫描一个 BQ。多个 CPU 并发各自随机扫描，长期来看所有 BQ
+被公平覆盖。不要求每次 `sched()` 都命中目标 BQ——超时本身有 5000ms 的缓冲，
+概率上即使单 CPU 系统也能在几个调度周期内覆盖所有活跃 BQ。
+
+### 10.5 精确性说明
+
+由于随机轮转的分散特性，一个 BQ 的实际超时扫描间隔是不确定的（依赖该 CPU 或其他 CPU
+的 sched 频率）。这不影响正确性——超时是容错的兜底边界，不是精确的时间承诺。
+需要精确时序的场景应使用 `kthread_sleep`（走 sleep_queue + timer 中断扫描，
+排序队列可精确到最早到期任务）。
+
+### 10.6 任务消费的互斥性
+
+`kthread_sleep` → sleep_queue
+`block_if_equal` → block_queue
+
+两条队列互不交叉。同一个 task 不可能同时在两条队列上。`bq_wake_timeouts` 和
+`sleep_tasks_wake` 扫描的无序性是安全的——它们扫描的是不同的任务集。
 
 ---
 
