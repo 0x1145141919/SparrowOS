@@ -110,7 +110,9 @@ class task {
     // ── 时间账本 ──
     miusecond_time_stamp_t  current_event_start_stamp;
     event_type_t            current_event;
-    miusecond_time_stamp_t  min_wakeup_stamp;
+    miusecond_time_stamp_t  min_wakeup_stamp;   // 超时唤醒时间戳。当 current_event 为
+                                                    // sleep/wait_io/wait_other 且当前时间 > 此值
+                                                    // 时，任务应被强制唤醒（超时）。0 表示不限时。
     // 时间账本：accumulates_bank[event_type]，按事件类型索引
     enum event_type_t {
         init,
@@ -121,6 +123,7 @@ class task {
         sleep,
         wait_io,
         wait_other,
+        wait_mutex,
         event_type_COUNT
     };
     miusecond_time_stamp_t  accumulates_bank[event_type_COUNT];
@@ -194,6 +197,47 @@ void task::task_event_shift(event_type_t new_event)
   - `kthread_sleep` 切出前 → `task_event_shift(sleep)`
   - 被唤醒调度回来时 → `task_event_shift(run_kthread/run_uthread/run_vCPU)`
   - `task_save` 中被切走前 → 同上（但 task_save 本身不调 shift，调用方负责）
+
+### 三.2 min_wakeup_stamp — 超时唤醒语义
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  min_wakeup_stamp 是任务阻塞/睡眠的超时边界。              │
+│                                                           │
+│  current_event ∈ {sleep, wait_io, wait_other, wait_mutex}  │
+│  ∧ 当前时间 > min_wakeup_stamp                            │
+│  → 任务应被强制唤醒（超时）                                │
+│                                                           │
+│  min_wakeup_stamp == 0 表示不限时（无超时）               │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
+```
+
+**检查时机（由调度器或定时器中断驱动）：**
+
+```
+每个 timer tick / 调度周期:
+  for each blocked task in sleep_queue:
+    if task->min_wakeup_stamp != 0
+       && ktime::get_microsecond_stamp() > task->min_wakeup_stamp
+       && task->current_event ∈ {sleep,wait_io,wait_other,wait_mutex}:
+
+      // 超时 → 强制唤醒
+      task_event_shift(run_kthread)   // 关 wait/sleep 帐，开 run_kthread
+      task->set_ready()
+      insert_ready_task(task)
+```
+
+**设置点：**
+- `kthread_sleep(offset_us)` → `min_wakeup_stamp = now + offset_us; current_event = sleep`
+- `block_if_equal(..., timeout_us)` → `min_wakeup_stamp = now + timeout_us`（timeout_us != 0 时）
+- `block_if_equal(..., timeout_us=0)` → `min_wakeup_stamp = 0`（不限时）
+- 唤醒后调用方自行 `min_wakeup_stamp = 0`（清除超时边界）
+
+**注意：** `sleep_queue` 的插入排序仍按 `min_wakeup_stamp` 升序排列，
+使调度器可快速找到最早到期任务。但超时唤醒不再仅限于 `sleep` 事件——
+任何 `wait_*` 事件也可设超时。
 
 ### u_ctx_t
 
