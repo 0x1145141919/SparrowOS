@@ -1,0 +1,2 @@
+/usr/bin/ar qc libjson_praser.a CMakeFiles/json_praser.dir/user_utils/json_configs_prase.cpp.o
+/usr/bin/ranlib libjson_praser.a

@@ -86,6 +86,7 @@ private:
         uint16_t num_of_entries;
         uint16_t belonged_cqid;
         spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、block_tokens 的更新一致性
+        //               提交/清理路径直接持有；中断路径在 cq_wq_lock 下嵌套持有
         uint16_t tail_idx;        // 在 sq_lock 下读写
         Ktemplats::kernel_bitmap* sq_bitmap;  // 在 sq_lock 下读写
         vm_interval sq_ring;
@@ -100,10 +101,19 @@ private:
         vm_interval cq_ring;
         bool is_first_time;
         bool unprocessed_entry_expect;
-        // wait_queue 的 lock 只保护 task* 链表头尾的原子出入。
-        // wq 内 task* 具有唯一性 + 只读引用（不可修改）。
-        // 取出后调用方自行取 task_lock 改状态、唤醒。
-        // 约束：不再借 wq 的 lock 保护 sq 或 cq 数据。
+        /*
+         * 锁纪律：cq_wq_lock > sq_lock
+         *
+         * cq_wq_lock：只保护本 wait_queue 的 task* 链表头尾出入。
+         *   持有者：仅中断路径（cq_interrupt_handler）。
+         *   提交/清理路径不碰此锁。
+         *
+         * sq_lock：保护 sq_bitmap、tail_idx、block_tokens 的更新一致性。
+         *   持有者：提交路径（cmd_submit_and_process）与清理路径。
+         *   中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens。
+         *
+         * 禁止逆向（先 sq_lock 再 cq_wq_lock）。
+         */
         tid_wait_queue wait_queue;
     };
 

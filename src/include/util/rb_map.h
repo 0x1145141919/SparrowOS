@@ -8,7 +8,7 @@
 //
 // 典型用途：
 //   rb_map<uint64_t, task*>  tid_map;     // tid → task
-//   rb_map<wq_id_t, tid_wait_queue*> wq_map;  // qid → wait_queue
+//   rb_map<wq_id_t, block_queue> wq_map;  // qid → wait_queue
 
 template<typename K, typename V>
 class rb_map {

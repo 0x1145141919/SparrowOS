@@ -1,0 +1,2 @@
+/usr/bin/ar qc libfs.a CMakeFiles/fs_static.dir/init_fs.cpp.o CMakeFiles/fs_static.dir/initfs_bits_operations.cpp.o CMakeFiles/fs_static.dir/initfs_inode_content_read.cpp.o CMakeFiles/fs_static.dir/initfs_inode_content_write.cpp.o CMakeFiles/fs_static.dir/initfs_inode_operations.cpp.o CMakeFiles/fs_static.dir/initfs_inode_resize_about.cpp.o CMakeFiles/fs_static.dir/initfs_out_surfaces.cpp.o CMakeFiles/fs_static.dir/initfs_pathanalyze_about.cpp.o
+/usr/bin/ranlib libfs.a

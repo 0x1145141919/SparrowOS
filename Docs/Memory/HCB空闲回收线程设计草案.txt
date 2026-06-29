@@ -1,0 +1,123 @@
+HCB 空闲回收线程设计草案
+========================
+2026-06-13
+
+=== 一、动机 ===
+
+kpoolmemmgr_t::kfree() 释放最后一笔分配后，HCB 整体空置但仍占着
+物理页（data 区 + bitmap 区）。此前 offline() 只做了 disable_VMentry
+和 FreePagesAllocator::free，缺少 broadcast_invalidate_tlb，且这些
+操作锁中断、走 IPI 广播，不适合在 kfree 热路径上直接触发（delete
+调用链上可能关中断、持锁）。
+
+=== 二、为什么不直接在 kfree 末尾调 offline() ===
+
+2.1 性能堪忧
+
+  offline() 依赖 hcb_unmap_free_tlb，该函数内包含：
+    - KspacePageTable::disable_VMentry    — 页表遍历、写、segment 拆分
+    - FreePagesAllocator::free            — 全局页分配器操作
+    - broadcast_invalidate_tlb            — 全核 IPI 刷 TLB
+
+  这些操作加在一起是 μs～ms 级开销，且 broadcast_invalidate_tlb 涉及关中断
+  等待所有 AP 回应。kfree 是内存释放的通用入口（对应 C++ 的 delete），
+  不允许如此长的延迟。
+
+2.2 时间局部性
+
+  实践中，HCB 的彻底空置通常意味着内存压力下降，但分配释放剧烈时很可能是
+  短暂的静默期，而非真正的空闲：
+
+    线程 A: free(ptr)  → HCB 空了
+    线程 B: new(...)   → HCB 又被占用了 ← 在 μs～ms 级别
+
+  如果 kfree 调 offline() 释放物理页，线程 B 的 next 次 new 又要 online()
+  重新分配物理页并建立映射，浪费了一次完整的 off+on 循环。
+
+  结论：kfree 热路径只适合做轻量标记，把回收决策推给专门的线程。
+
+=== 三、方案 ===
+
+专职内核线程回收空闲 HCB，热路径只写一个时间戳字段。
+
+3.1 HCB_v3 新增字段
+
+  uint64_t emptied_at = 0;
+
+  语义：HCB 完全空闲的时刻（μs 时间戳）。
+  0 表示未标记（非空，或已被重新占用）。
+
+3.2 kfree 热路径改动
+
+  hcb->free(ptr);
+  if (hcb 现在全空):
+      hcb->emptied_at = ktime::get_microsecond_stamp();
+
+  全空判定：buddy 树 top-level free_count 等于总容量。
+
+  无 IPI，无页表操作，O(1)。
+
+3.3 kalloc 热路径改动
+
+  if (hcb->emptied_at != 0):
+      hcb->emptied_at = 0;
+
+  如果从空了又复用的 HCB 里分配，直接取消回收资格。
+
+3.4 回收线程
+
+  void hcb_reclaimer_thread(void*)
+  {
+      while (true) {
+          kthread_sleep(HCB_RECLAIM_SCAN_PERIOD_US);
+
+          uint64_t now = ktime::get_microsecond_stamp();
+          for (每个 HCB in HCB_ARRAY) {
+              if (!hcb->valid) continue;
+              uint64_t t = hcb->emptied_at;
+              if (!t || (now - t) < HCB_RECLAIM_COOLDOWN_US)
+                  continue;
+
+              // 快速路径已完成，进入慢路径
+              spintrylock_spin_guard g(hcb->hcb_lock);
+              // recheck：持锁后重新确认仍空且时间戳未变
+              if (hcb->emptied_at != t) continue;
+              kpoolmemmgr_t::free_heap(idx);  // 调 offline →
+                                              // hcb_unmap_free_tlb
+          }
+      }
+  }
+
+  recheck 原因：前脚读 emptied_at，后脚 kalloc 可能已经复用该 HCB
+  并清零了 emptied_at。持锁后二次确认防止误回收。
+
+=== 四、参数 ===
+
+  HCB_RECLAIM_COOLDOWN_US = 1_000_000   // 1 秒冷却期
+  HCB_RECLAIM_SCAN_PERIOD_US = 1_000_000 // 1 秒扫描周期
+
+  理由：
+  - 1 秒冷却足够过滤 μs～ms 级的分配-释放-再分配 churn
+  - 扫描周期 = 冷却期，空置 HCB 在 1~2 秒内被回收
+  - HCB_ARRAY 大小 ~核数×4 = 几十个，O(n) 扫描开销可忽略
+
+=== 五、依赖的前置工具 ===
+
+  hcb_unmap_free_tlb(const vm_interval& interval)
+  实现在 kpoolmemmgr.cpp，封装了：
+    disable_VMentry + FreePagesAllocator::free + broadcast_invalidate_tlb
+  offline() 已重构为调用此工具。
+
+=== 六、后续优化（v2）===
+
+  6.1 页面分配失败时唤醒回收线程
+
+    在 __wrapped_pgs_valloc 失败路径中唤醒回收线程，使其立即扫一轮，
+    而非等到下一个 1 秒周期。
+
+    需要一个 KURD retry 信号，caller 收到后重试。
+
+  6.2 唤醒信号
+
+    可用一个原子标志 + kthread_condition 或简单跨核变量通知
+    回收线程立即醒来扫描。

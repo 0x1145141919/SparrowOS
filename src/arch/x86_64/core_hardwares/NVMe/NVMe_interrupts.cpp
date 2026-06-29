@@ -1,3 +1,45 @@
+/* ═══════════════════════════════════════════════════════════════════════
+ * NVMe 中断与提交路径 — 锁纪律
+ *
+ * 三类锁，按 `cq_wq_lock > sq_lock` 方向拿取，允许嵌套，禁止逆向：
+ *
+ *    cq_wq_lock  (tid_wait_queue::lock)
+ *         │
+ *         ├ 保护：wait_queue 的 task* 链表出入（pop/push）
+ *         ├ 仅中断路径持有(cq_interrupt_handler)
+ *         ├ 提交/清理路径不碰此锁
+ *         │
+ *         ▼ 可在临界区内嵌套拿 sq_lock
+ *
+ *    sq_lock    (sq_complex::sq_lock)
+ *         │
+ *         ├ 保护：sq_bitmap、tail_idx、block_tokens[] 的更新一致性
+ *         ├ 提交路径(cmd_submit_and_process)持有
+ *         ├ 清理路径(spinlock_interrupt_about_guard → sq_lock)持有
+ *         ├ 中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens
+ *         └ 中断路径不会先拿 sq_lock→再拿 cq_wq_lock（禁止逆向）
+ *
+ * 路径拆解：
+ *
+ *   [提交] cmd_submit_and_process
+ *     sq_lock → sq_bitmap.set + sq_ring[cid] + block_tokens[cid].init
+ *             → sq_lock.unlock()
+ *     block_if_equal(&cq.wait_queue, &block_token, entry_block_token)
+ *     醒来后：
+ *     spinlock_interrupt_about_guard(sq_lock) → 清 sq_bitmap + 读结果
+ *
+ *   [中断] cq_interrupt_handler
+ *     spinlock_interrupt_about_guard(cq_wq_lock)
+ *       读 CQ ring
+ *       对每完成：sq_lock(对应 SQ) → 写 block_token → sq_lock.unlock()
+ *       wakeup_all()  / 仍在 cq_wq_lock 下确保 pop 不竞争 /
+ *     cq_wq_lock.unlock()
+ *     写 doorbell
+ *
+ *   [清理]（超时后同上提交路径后半段）
+ *     spinlock_interrupt_about_guard(sq_lock) → 清 bitmap + 读结果
+ *
+ * ═══════════════════════════════════════════════════════════════════════ */
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/core_hardwares/NVMe/Identify_structues.h"
 #include "arch/x86_64/core_hardwares/NVMe/io_queue_cmd.h"

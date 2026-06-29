@@ -39,12 +39,12 @@ namespace x86_exceptions{
 // fred/idt 时代都兼容的 ABI
 namespace x86_softinterrupt_abi{
     static constexpr uint8_t ASM_PANIC = 225;        // int 225 — 内核恐慌
-    static constexpr uint8_t KTHREAD_CALL = 226;     // int 226 — 跨核函数调用
+    static constexpr uint8_t KTHREAD_CALL = 226;     // int 226 — 内核线程交出执行流
     static constexpr uint8_t USER_ABI_ENTER = 227;   // int 227 — 用户态入口
             // int 255 — 虚假中断
     // IDT 下 255 完全占用；FRED 下硬件中断不混淆 type=2，255 仍可用于虚假中断检测
 };
-// 跑飞型系统 IPI（soft_interrupt_functions 风格，不返回）
+// IPI（soft_interrupt_functions 风格，不返回）
 namespace ipi_vecs{
     static constexpr uint8_t IPI_RUNAWAY = 254;
     static constexpr uint8_t IPI_RETURNABLE  = 253;

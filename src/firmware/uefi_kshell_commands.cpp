@@ -322,11 +322,8 @@ KURD_t cmd_ueficreset(const line_t* line) {
 }
 
 
-void halt_foever(){
-    asm volatile("cli;hlt");
-}
 // ── legacy_reboot ─────────────────────────────────────────────
-
+extern "C" void broadcast_shutdown();
 KURD_t cmd_legacy_reboot(const line_t* line) {
     KURD_t ok = make_ok();
     ok.event_code = INFR_LOCATIONS::KSHELL_EVENTS::COMMAND_EXECUTE;
@@ -352,10 +349,10 @@ KURD_t cmd_legacy_reboot(const line_t* line) {
     bsp_kout << "[legacy_reboot] Issuing " << (cold ? "cold" : "warm")
              << " reset via port 0xcf9 (val=0x" << HEX << (uint32_t)val << DEC << ")..." << kendl;
 
-    bsp_kout << "[legacy_reboot] Flushing caches..." << kendl;
-    x2apic::x2apic_driver::broadcast_exself_fixed_ipi(halt_foever);
+    bsp_kout << "[legacy_reboot] Halting APs..." << kendl;
+    broadcast_shutdown();
     __asm__ volatile("wbinvd");
-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"((uint16_t)0xcf9));
+    outb(0xcf9, val);
     __asm__ volatile("1: hlt; jmp 1b");
     return ok;
 }

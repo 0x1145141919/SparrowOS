@@ -1,0 +1,91 @@
+bool textconsole_GoP::RuntimeSubmitFlush(bool urgent)
+{
+    if (!ready || !runtime_service_task) return false;
+
+    runtime_ring.lock.lock();
+    const uint32_t next_tail = (runtime_ring.tail + 1) & (TC_RING_CAP - 1);
+    if (next_tail == runtime_ring.head) {
+        runtime_ring.drop_count++;
+        runtime_ring.lock.unlock();
+        return false;
+    }
+    tc_slot& slot = runtime_ring.slots[runtime_ring.tail];
+    slot.head.type = tc_msg_type::flush;
+    slot.head.reserved = 0;
+    slot.head.flags = urgent ? tc_msg_flag_urgent : tc_msg_flag_none;
+    slot.head.producer_cpu = fast_get_processor_id();
+    slot.head.seq = runtime_ring.seq_gen++;
+    runtime_ring.tail = next_tail;
+    runtime_ring.push_count++;
+    wake(task*gop_serv)//背后采用位图数据结构，置1则对应引索的task尝试被唤醒
+    
+    runtime_ring.lock.unlock();
+}
+
+void textconsole_GoP::RuntimeServiceThreadMain(void* data)
+{
+    (void)data;
+    tc_service_local_batch local_batch{};
+    char num_buf[70];
+
+    auto next_index = [](uint32_t idx) -> uint32_t {
+        return (idx + 1) & (TC_RING_CAP - 1);
+    };
+    for (;;) {
+        local_batch.count = 0;
+        runtime_ring.lock.lock();
+        while (runtime_ring.head != runtime_ring.tail &&
+               local_batch.count < TC_SERVICE_POP_BATCH) {
+            local_batch.items[local_batch.count] = runtime_ring.slots[runtime_ring.head];
+            runtime_ring.head = next_index(runtime_ring.head);
+            runtime_ring.pop_count++;
+            local_batch.count++;
+        }
+        
+        runtime_ring.lock.unlock();
+
+        if (local_batch.count == 0) {
+            kthread_self_blocked(task_blocked_reason_t::no_job);//可能对于blocked的行为有不同操作，强制性的或者如果别人意图唤醒则不能blocked的，实质效果为yield或者继续运行
+            continue;
+        }
+
+        bool need_flush = false;
+        for (uint32_t i = 0; i < local_batch.count; ++i) {
+            const tc_slot& slot = local_batch.items[i];
+            switch (slot.head.type) {
+                case tc_msg_type::string:
+                    for (uint64_t j = 0; j < slot.payload.s.len; ++j) {
+                        PutChar(slot.payload.s.string[j]);
+                    }
+                    break;
+                case tc_msg_type::single_character:
+                    PutChar(slot.payload.c.ch);
+                    break;
+                case tc_msg_type::num: {
+                    const uint64_t n = format_num_to_buffer(
+                        num_buf,
+                        slot.payload.n.num_raw,
+                        slot.payload.n.format,
+                        slot.payload.n.radix
+                    );
+                    for (uint64_t j = 0; j < n; ++j) {
+                        PutChar(num_buf[j]);
+                    }
+                    break;
+                }
+                case tc_msg_type::flush:
+                    need_flush = true;
+                    break;
+                default:
+                    break;
+            }
+            if (slot.head.flags & tc_msg_flag_urgent) {
+                need_flush = true;
+            }
+        }
+        if (need_flush) {
+            GfxPrim::Flush();
+        }
+    }
+}
+

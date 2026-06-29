@@ -1,0 +1,8 @@
+uint64_t objCount : 16;     // 位2-17: 当前对象计数
+            uint64_t maxObjCount : 16;  // 位18-33: 最大对象容量
+上面这两个位域可以使用独立变量存储
+[200~    ObjMetaInfo* metaInfoArray;  // 对象元信息数组(按物理基址排序)
+    uint32_t arrayCapacity;      // 元信息数组容量
+    uint32_t arraySize;          // 元信息数组当前大小
+统一改成strut {metaInfoArray[MacObjCountin1sheet],下一个数组节点}...节点
+并且加入meta_sheets_node_count变量统计后面有

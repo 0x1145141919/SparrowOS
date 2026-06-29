@@ -1,0 +1,315 @@
+#include "memory/FreePagesAllocator.h"
+#include "memory/all_pages_arr.h"
+#include "util/kout.h"
+#include "util/OS_utils.h"
+#include "panic.h"
+
+// ════════════════════════════════════════════════════════════════
+// BCB_v4 移植: BuddyControlBlock_foundation 适配
+//   - 移除 mixed_bitmap_v2, 使用 v4 底座 (3×2^N bits, 4-state nodes)
+//   - BCB 层缓存: 单 hint/order（last_free_hint），用 is_free 低成本验证
+//   - 底座负责树操作: find_candidate + split + order_occupy_try + order_return
+// ════════════════════════════════════════════════════════════════
+
+// ================================================================
+// 地址归属
+// ================================================================
+
+bool FreePagesAllocator::BuddyControlBlock::is_addr_belong_to_this_BCB_no_lock(phyaddr_t addr)
+{
+    return (addr >= this->base) && (addr < (this->base + (1ull << (max_supprt_order + 12))));
+}
+
+// ================================================================
+// KURD 模板（空 KURD 占位）
+// ================================================================
+
+KURD_t FreePagesAllocator::BuddyControlBlock::default_success()
+{
+    return KURD_t();
+}
+
+KURD_t FreePagesAllocator::BuddyControlBlock::default_error()
+{
+    return KURD_t();
+}
+
+KURD_t FreePagesAllocator::BuddyControlBlock::default_fatal()
+{
+    return KURD_t();
+}
+
+KURD_t FreePagesAllocator::BuddyControlBlock::default_kurd()
+{
+    return KURD_t();
+}
+
+// ================================================================
+// size_to_order
+// ================================================================
+
+uint8_t FreePagesAllocator::BuddyControlBlock::size_to_order(uint64_t size)
+{
+    if (size == 0) return 0;
+    uint64_t numof_4kbpgs = (size + _4KB_PAGESIZE - 1) / _4KB_PAGESIZE;
+    auto next_pow2 = [](uint64_t n) -> uint64_t {
+        n--; n |= n >> 1; n |= n >> 2; n |= n >> 4; n |= n >> 8; n |= n >> 16; n |= n >> 32; n++;
+        return n;
+    };
+    return 63 - __builtin_clzll(next_pow2(numof_4kbpgs));
+}
+
+// ================================================================
+// 缓存: 单 hint/order, 用 is_free 低成本验证
+// ================================================================
+
+void FreePagesAllocator::BuddyControlBlock::cache_insert(uint8_t order, uint64_t idx)
+{
+    if (order >= DESINGED_MAX_SUPPORT_ORDER) return;
+    // 单 hint: 直接覆盖旧条目（最近释放原则）
+    for (uint8_t i = 0; i < PER_ORDER_CACHE_SUGGEST_COUNT; ++i) {
+        if (suggest_order_free_page_index[order][i] == INVALID_INBCB_INDEX) {
+            suggest_order_free_page_index[order][i] = idx;
+            return;
+        }
+    }
+    uint8_t& cursor = suggest_order_cache_cursor[order];
+    suggest_order_free_page_index[order][cursor] = idx;
+    cursor = (cursor + 1) % PER_ORDER_CACHE_SUGGEST_COUNT;
+}
+
+bool FreePagesAllocator::BuddyControlBlock::cache_pick(uint8_t order, uint64_t& out_idx)
+{
+    if (order >= DESINGED_MAX_SUPPORT_ORDER) return false;
+    for (uint8_t i = 0; i < PER_ORDER_CACHE_SUGGEST_COUNT; ++i) {
+        uint64_t idx = suggest_order_free_page_index[order][i];
+        if (idx == INVALID_INBCB_INDEX) continue;
+        // 快速验证：检查 (order,idx) 在底座中是否仍为 FREE
+        if (!fnd.is_free(order, idx)) {
+            // 过期（因折叠合并），移除
+            suggest_order_free_page_index[order][i] = INVALID_INBCB_INDEX;
+            continue;
+        }
+        out_idx = idx;
+        suggest_order_free_page_index[order][i] = INVALID_INBCB_INDEX;
+        return true;
+    }
+    return false;
+}
+
+// ================================================================
+// can_alloc
+// ================================================================
+
+bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
+{
+    if (dirty_count != 0) return false;
+    return fnd.order_exist_check(order);
+}
+
+// ================================================================
+// 构造
+// ================================================================
+
+FreePagesAllocator::BuddyControlBlock::BuddyControlBlock(phyaddr_t base, uint8_t max_support_order)
+{
+    this->max_supprt_order = max_support_order;
+    this->base = base;
+    for (uint8_t i = 0; i < DESINGED_MAX_SUPPORT_ORDER; i++) {
+        for (uint8_t j = 0; j < PER_ORDER_CACHE_SUGGEST_COUNT; j++)
+            suggest_order_free_page_index[i][j] = INVALID_INBCB_INDEX;
+        suggest_order_cache_cursor[i] = 0;
+    }
+    ksetmem_8(&statistics, 0, sizeof(statistics));
+    // fnd 尚未初始化——由 corebcb_mixedbitmap_base_acclaim 延迟初始化
+}
+
+FreePagesAllocator::BuddyControlBlock::BuddyControlBlock() {}
+
+// ================================================================
+// corebcb_mixedbitmap_base_acclaim — 延迟初始化底座
+// ================================================================
+
+void FreePagesAllocator::BuddyControlBlock::corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr)
+{
+    fnd.init(bitmap_base_addr, max_supprt_order);
+    // 旧版 (v2) 的 free_page_without_merge(0, max_supprt_order) 等价于
+    // 底座 init 已自动将根设为 NODE_FREE, free_count[max_order]=1
+}
+
+// ================================================================
+// allocate_buddy_way — 先试缓存，miss 则 fallback 底座
+// ================================================================
+
+phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(
+    uint64_t size, KURD_t& result, uint8_t align_log2)
+{
+    KURD_t error = default_error();
+
+    uint8_t order = size_to_order(size);
+    uint8_t align_order = align_log2 > 12 ? align_log2 - 12 : 0;
+    order = order > align_order ? order : align_order;
+
+    if (order > max_supprt_order || align_order > max_supprt_order) {
+        result = error;
+        return 0;
+    }
+
+    // ── Phase 1: 试缓存 (从低到高扫 orders) ──
+    for (uint8_t i = order; i <= max_supprt_order; i++) {
+        uint64_t cached_offset = INVALID_INBCB_INDEX;
+        if (!cache_pick(i, cached_offset))
+            continue;
+
+        // 缓存命中：尝试分裂并占用
+        uint64_t final_offset = cached_offset;
+        KURD_t cache_kurd;
+
+        if (i > order) {
+            cache_kurd = fnd.split(i, cached_offset, order);
+            if (!success_all_kurd(cache_kurd))
+                continue;  // 缓存过期（节点不再 FREE），跳过
+            final_offset = cached_offset << (i - order);
+        }
+
+        cache_kurd = fnd.order_occupy_try(order, final_offset);
+        if (!success_all_kurd(cache_kurd))
+            continue;  // 缓存过期，跳过
+
+        statistics.suggest_hit[order]++;
+        statistics.alloc_times_success++;
+
+        phyaddr_t res_addr = base + (final_offset << (order + 12));
+        result = default_success();
+        return res_addr;
+    }
+
+    // ── Phase 2: 缓存全 miss → 底座 find_candidate ──
+    statistics.suggest_miss[order]++;
+    statistics.scan_count++;
+
+    uint8_t base_order = order;
+    uint64_t offset = fnd.find_candidate(base_order, result);
+    if (!success_all_kurd(result)) {
+        statistics.alloc_times_fail++;
+        return 0;
+    }
+
+    // ── Phase 3: 分裂 → 缓存右兄弟链 ──
+    if (base_order > order) {
+        // 先将空闲块分裂到目标 order
+        result = fnd.split(base_order, offset, order);
+        if (!success_all_kurd(result))
+            return 0;
+
+        // 缓存各级右兄弟（分裂时右路保持 FREE）
+        // 右兄弟链：
+        //   level base_order-1: offset*2+1
+        //   level base_order-2: offset*4+1
+        //   ...
+        //   level order+1:     offset * 2^(base_order-order-1) + 1
+        //   同时缓存右路最后一块 (order 级): (offset << (base_order - order)) + 1
+        uint64_t so = offset;
+        for (uint8_t o = base_order; o > order + 1; o--) {
+            cache_insert(o - 1, so * 2 + 1);  // 右兄弟
+            so = so * 2;  // 继续走左路
+        }
+        // 最后一层 (order 级) 的右兄弟
+        cache_insert(order, so * 2 + 1);
+
+        offset <<= (base_order - order);
+    }
+
+    // ── Phase 4: 占用 ──
+    result = fnd.order_occupy_try(order, offset);
+    if (!success_all_kurd(result))
+        return 0;
+
+    statistics.alloc_times_success++;
+    statistics.split_count += (base_order - order);
+
+    phyaddr_t res_addr = base + (offset << (order + 12));
+    result = default_success();
+    return res_addr;
+}
+
+// ================================================================
+// free_buddy_way
+// ================================================================
+
+KURD_t FreePagesAllocator::BuddyControlBlock::free_buddy_way(phyaddr_t addr, uint64_t size)
+{
+    KURD_t error = default_error();
+
+    if (!is_addr_belong_to_this_BCB_no_lock(addr) ||
+        !is_addr_belong_to_this_BCB_no_lock(addr + size - 1)) {
+        return error;
+    }
+
+    uint8_t order = size_to_order(size);
+    uint64_t offset = (addr - this->base) >> (order + 12);
+
+    KURD_t kurd;
+    uint8_t final_order = fnd.order_return(order, offset, kurd);
+    if (final_order >= 0x40)
+        return kurd;  // 错误已由 order_return 填入 kurd
+
+    // 可选：将释放的块塞回缓存
+    cache_insert(order, offset);
+
+    statistics.free_times_success++;
+    return kurd;
+}
+
+// ================================================================
+// free_pages_flush → 底座 btree_validation
+// ================================================================
+
+KURD_t FreePagesAllocator::BuddyControlBlock::free_pages_flush()
+{
+    return fnd.btree_validation();
+}
+
+// ================================================================
+// is_addr_belong_to_this_BCB
+// ================================================================
+
+bool FreePagesAllocator::BuddyControlBlock::is_addr_belong_to_this_BCB(phyaddr_t addr)
+{
+    return is_addr_belong_to_this_BCB_no_lock(addr);
+}
+
+// ================================================================
+// 辅助查询
+// ================================================================
+
+phyaddr_t FreePagesAllocator::BuddyControlBlock::get_base() { return this->base; }
+uint8_t FreePagesAllocator::BuddyControlBlock::get_order() { return this->max_supprt_order; }
+uint8_t FreePagesAllocator::BuddyControlBlock::get_max_order() { return this->max_supprt_order; }
+bool FreePagesAllocator::BuddyControlBlock::is_bcb_avaliable() { return true; }
+
+// ================================================================
+// print 函数
+// ================================================================
+
+void FreePagesAllocator::BuddyControlBlock::print_basic_info_no_lock()
+{
+    bsp_kout << "BCB base=0x" << (void*)(uint64_t)base
+             << " max_order=" << (uint32_t)max_supprt_order << kendl;
+}
+
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_info_no_lock() {}
+void FreePagesAllocator::BuddyControlBlock::print_basic_info()  { print_basic_info_no_lock(); }
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_info() {}
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_order_info_compress_no_lock(uint8_t) {}
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_order_interval_compress_no_lock(uint8_t, uint64_t, uint64_t) {}
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_order_info_compress(uint8_t o) { print_bitmap_order_info_compress_no_lock(o); }
+void FreePagesAllocator::BuddyControlBlock::print_bitmap_order_interval_compress(uint8_t o, uint64_t b, uint64_t l) { print_bitmap_order_interval_compress_no_lock(o, b, l); }
+void FreePagesAllocator::BuddyControlBlock::print_all_statistics()
+{
+    bsp_kout << "  alloc_ok=" << statistics.alloc_times_success
+             << " alloc_fail=" << statistics.alloc_times_fail
+             << " free_ok=" << statistics.free_times_success
+             << " scan=" << statistics.scan_count
+             << " split=" << statistics.split_count << kendl;
+}

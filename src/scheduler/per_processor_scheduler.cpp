@@ -9,6 +9,7 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
+#include "ktime.h"
 task_pool::root_entry task_pool::root_table[root_table_entry_count];
 spinrwlock_cpp_t task_pool::lock;
 uint32_t task_pool::last_alloc_index = 0;
@@ -568,6 +569,18 @@ bool task::set_running()
 }
 task::~task()
 {
+}
+void task::task_event_shift(event_type_t new_event)
+{
+    if(new_event==this->current_event){
+        
+    }else{
+        miusecond_time_stamp_t now_stamp=ktime::get_microsecond_stamp();
+        uint64_t elapse=now_stamp-this->current_event_start_stamp;
+        this->accumulates_bank[this->current_event]+=elapse;
+        this->current_event_start_stamp=now_stamp;
+        this->current_event=new_event;
+    }
 }
 void task::assign_valid_tid(uint64_t tid)
 {

@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/cmake_install.cmake",
+		"/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/build_utils/initramfs_builder/cmake_install.cmake",
+		"/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/src/memory/cmake_install.cmake",
+		"/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/src/arch/x86_64/core_hardwares/NVMe/cmake_install.cmake",
+		"/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/src/fs/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

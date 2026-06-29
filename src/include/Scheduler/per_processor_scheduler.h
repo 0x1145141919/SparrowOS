@@ -231,6 +231,7 @@ class task{
         sleep,
         wait_io,
         wait_other,
+        wait_mutex,
         event_type_COUNT
     };
     miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
@@ -249,7 +250,7 @@ class task{
     //   priv_stack_base                                    — 栈顶
     //   [priv_stack_base - 4K, priv_stack_base)            — guard page（未映射，#PF not-present）
     Ktemplats::list_doubly<task*> waiters;//在锁下的，exit的时候都唤醒
-    u_ctx_t*uctx;//通过task+n*4k的地方，一般推荐this+4k的专门一个页作为拓展上下文页
+    u_ctx_t*uctx;//指向一个页
     //还有vCPU ctx指针
     enum ctx_choose{
         priv,
@@ -286,21 +287,25 @@ public:
     uint64_t used_count() const { return m_used_count; }
 };
 
-class tid_wait_queue:Ktemplats::list_doubly<uint64_t>{
-    bool m_insert_front = false;
-    
-    public:
-    using list_doubly::size;
-    using list_doubly::begin;
-    using list_doubly::end;
-    using list_doubly::push_back;
-    using list_doubly::push_front;
-    using list_doubly::pop_front_value;
-    void set_insert_front(bool b) { m_insert_front = b; }
-    void push(uint64_t tid) { if (m_insert_front) push_front(tid); else push_back(tid); }
-    void wakeup_all();//假定外部有锁，调用此接口唤醒所有等待者
-    spinlock_cpp_t lock;
+// ── wq 句柄系统 ────────────────────────────────────────
+// 全局 wait_queue 表，句柄（wq_id_t）代替指针：防伪、防 UAF、可跨进程传递
+// 用户态可通过 syscall 使用相同句柄
+
+typedef uint64_t wq_id_t;
+constexpr wq_id_t  WQ_ID_INVALID = ~0u;
+constexpr uint32_t WQ_TABLE_SIZE = 256;
+
+// 内部队列（对外不暴露）
+class block_queue{
+    spinlock_cpp_t qlock;
+    task::event_type_t queue_event;
+    Ktemplats::list_doubly<task*> inner_queue;
 };
+
+wq_id_t  wq_alloc();
+void     wq_free(wq_id_t qid);
+void     wq_wake_one(wq_id_t qid, uint64_t wake_val);
+void     wq_wake_all(wq_id_t qid, uint64_t wake_val);
 /**
  * 
  */
@@ -412,9 +417,9 @@ extern "C"{
     [[noreturn]] void kthread_sleep_cppenter(x64_standard_context* context);
     [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context);
     uint64_t wakeup_thread(uint64_t tid, bool front_insert=false);//返回的是KURD但是受限于abi，需要分析
-    void block_queue(tid_wait_queue* block_queue);
+    void block_queue(wq_id_t qid);
     [[noreturn]] void block_queue_cppenter(x64_standard_context* context);
-    void block_if_equal(tid_wait_queue* block_queue,uint64_t*checker,uint64_t block_token);
+    void block_if_equal(wq_id_t qid, uint64_t* checker, uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context* context);
     uint64_t release_kthread(uint64_t tid);
 }
@@ -422,6 +427,6 @@ extern "C"{
  * 内核线程接口里面锁顺序纪律：
  * 1.task锁永远比scheduler的锁先锁
  * 2.wait/exit接口对中waited锁的临界区覆盖waiters锁的临界区
- * 3.block_queue和block_if_equal_cppenter的block_queue锁临界区覆盖放弃执行流的线程的锁的临界区
+ * 3.block_queue / block_if_equal_cppenter 的 wq 锁临界区覆盖放弃执行流的线程锁
  * 4.task锁临界区内可以调用task_pool相关接口，只在其内部有锁
  */

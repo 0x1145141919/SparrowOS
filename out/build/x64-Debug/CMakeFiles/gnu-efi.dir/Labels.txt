@@ -1,0 +1,13 @@
+# Target labels
+ gnu-efi
+# Source files and their labels
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/CMakeFiles/gnu-efi
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/CMakeFiles/gnu-efi.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/CMakeFiles/gnu-efi-complete.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-build.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-configure.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-download.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-install.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-mkdir.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-patch.rule
+/home/PS/PS_git/OS_pj_uefi/kernel/out/build/x64-Debug/gnu-efi-prefix/src/gnu-efi-stamp/gnu-efi-update.rule
