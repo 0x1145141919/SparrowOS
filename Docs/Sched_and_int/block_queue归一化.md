@@ -255,7 +255,46 @@ wq_wake_one / wq_wake_all（弹出解冻）:
 |---|---|---|
 | `wait_io` | NVMe 等待、外设等待、渲染线程空闲 | `accumulates_bank[wait_io]` |
 | `wait_other` | 等另一个 kthread exit、等锁（非 IO） | `accumulates_bank[wait_other]` |
+| `wait_mutex` | 互斥锁等待 | `accumulates_bank[wait_mutex]` |
 | `sleep` | 仅 `kthread_sleep` 内部使用 | `accumulates_bank[sleep]` |
+
+## 八、timeout_us 与 min_wakeup_stamp 的关系
+
+`block_if_equal` 的 `timeout_us` 参数通过 `task::min_wakeup_stamp` 实现：
+
+```
+block_if_equal(wq, checker, expected, timeout_us):
+  if *checker == expected:
+    task_event_shift(wq->wait_type)
+    if timeout_us != 0:
+      self->min_wakeup_stamp = now + timeout_us   // 设超时边界
+    else:
+      self->min_wakeup_stamp = 0                   // 不限时
+    self->set_blocked()
+    wq->push(self)                                  // 冻结入队
+    sched()                                          // 切走
+    // 醒来（被 wq_wake 或超时强制唤醒）:
+    self->min_wakeup_stamp = 0                      // 清超时
+    task_event_shift(run_kthread)                   // 开新帐
+```
+
+**超时唤醒路径（调度器/timer tick）：**
+
+```
+for each blocked task in sleep_queue:
+  if task->min_wakeup_stamp != 0
+     && now > task->min_wakeup_stamp
+     && task->current_event ∈ {sleep, wait_io, wait_other, wait_mutex}:
+
+    task->min_wakeup_stamp = 0
+    task_event_shift(run_kthread)
+    task->set_ready()
+    insert_ready_task(task)
+```
+
+注意：超时唤醒不通过 wq，而是调度器直接设置 `set_ready()`。
+这意味着 `block_if_equal` 醒来后第一件事是**重检 checker**——
+因为超时不等于条件满足。
 
 调用方根据直觉选 `wait_io` 还是 `wait_other`——这直接决定调度器的行为画像准确性。
 
