@@ -291,21 +291,15 @@ public:
 // 全局 wait_queue 表，句柄（wq_id_t）代替指针：防伪、防 UAF、可跨进程传递
 // 用户态可通过 syscall 使用相同句柄
 
-typedef uint64_t wq_id_t;
-constexpr wq_id_t  WQ_ID_INVALID = ~0u;
-constexpr uint32_t WQ_TABLE_SIZE = 256;
-
+typedef uint64_t bq_id_t;
+constexpr bq_id_t  BQ_ID_INVALID = ~0u;
 // 内部队列（对外不暴露）
 class block_queue{
+    enum state_t { ready, running } state;
     spinlock_cpp_t qlock;
     task::event_type_t queue_event;
     Ktemplats::list_doubly<task*> inner_queue;
 };
-
-wq_id_t  wq_alloc();
-void     wq_free(wq_id_t qid);
-void     wq_wake_one(wq_id_t qid, uint64_t wake_val);
-void     wq_wake_all(wq_id_t qid, uint64_t wake_val);
 /**
  * 
  */
@@ -416,12 +410,23 @@ extern "C"{
     void kthread_sleep(miusecond_time_stamp_t offset);
     [[noreturn]] void kthread_sleep_cppenter(x64_standard_context* context);
     [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context);
-    uint64_t wakeup_thread(uint64_t tid, bool front_insert=false);//返回的是KURD但是受限于abi，需要分析
-    void block_queue(wq_id_t qid);
+    ckurd wakeup_thread(uint64_t tid, bool front_insert=false);
+    void block_queue(bq_id_t qid);
     [[noreturn]] void block_queue_cppenter(x64_standard_context* context);
-    void block_if_equal(wq_id_t qid, uint64_t* checker, uint64_t block_token);
+    void block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context* context);
-    uint64_t release_kthread(uint64_t tid);
+    ckurd release_kthread(uint64_t tid);
+    bq_id_t  bq_alloc();                         // 分配一个新 block_queue，返回句柄,处于ready态
+    ckurd bq_free(bq_id_t qid);               // 释放，返回 ckurd（KURD raw）
+    spinlock_cpp_t*get_lock(bq_id_t id);//没找到就返回空指针
+    //下面5个的操作都不加锁，而是在spinlock_cpp_t*get_lock(bq_id_t id)拿到锁后,自行保管，但是肯定得在锁的临界区之下
+    ckurd enable_queue(bq_id_t id,task::event_type_t type);//state为ready并且空才能成功按照指定身份开始初始化
+    ckurd disable_queue(bq_id_t id);//先验证全空，全空状态下才会进行disable(state置ready)
+    
+    uint64_t bq_wake_push(bq_id_t qid);  // 唤醒内部head的阻塞者，
+    uint64_t bq_wake_all(bq_id_t qid); //唤醒全部
+    uint64_t bq_wake_timeouts(bq_id_t qid); //唤醒超时者，很明显是从head开始向后遍历
+    //上面三个的返回值是唤醒个数
 }
 /**
  * 内核线程接口里面锁顺序纪律：
