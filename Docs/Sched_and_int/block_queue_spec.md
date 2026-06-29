@@ -7,12 +7,12 @@
 
 ## 1. wq_id_t 句柄系统
 
-Wait queue 通过句柄表访问，不暴露裸指针。
+Wait queue 通过 `rb_map<wq_id_t, block_queue>` 管理，不暴露裸指针。
+`block_queue` 对象内联存储在红黑树节点中（非堆分配），避免不必要的 new/delete。
 
 ```cpp
 typedef uint64_t wq_id_t;
 constexpr wq_id_t  WQ_ID_INVALID = ~0u;
-constexpr uint32_t WQ_TABLE_SIZE = 256;
 
 wq_id_t  wq_alloc();                         // 分配一个新 wait queue，返回句柄
 void     wq_free(wq_id_t qid);               // 释放
@@ -23,6 +23,7 @@ void     wq_wake_all(wq_id_t qid, uint64_t wake_val);  // 唤醒全部等待者
 **设计理由：**
 - 句柄防伪、防 UAF
 - 用户态可复用相同句柄机制（通过 syscall）
+- 内联存储：`block_queue` 对象嵌入 rb_map 节点，不产生额外的动态分配开销
 
 ---
 
@@ -32,10 +33,14 @@ void     wq_wake_all(wq_id_t qid, uint64_t wake_val);  // 唤醒全部等待者
 
 ```cpp
 class block_queue {
+    enum state_t { ready, running } state;  // ready=可复用, running=已分配
     spinlock_cpp_t                qlock;          // 只保护 inner_queue 头尾原子出入
     event_type_t                  queue_event;    // 该 wq 的等待语义（wait_io / wait_other / wait_mutex）
     Ktemplats::list_doubly<task*> inner_queue;    // FIFO：push_back 尾注入，pop_front 头吐出
 };
+
+**状态机：** `ready ↔ running`。`wq_alloc` 从 `ready` 取出置 `running`，`wq_free` 归还回 `ready`。
+状态切换复用 rb_map 节点内的内联对象，避免节点销毁/重建。
 ```
 
 **FIFO 纪律：** 先等先服务，`push_back` 入队，`pop_front` 出队。
