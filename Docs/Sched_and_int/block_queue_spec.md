@@ -18,6 +18,10 @@ wq_id_t  wq_alloc();                         // 分配一个新 wait queue，返
 void     wq_free(wq_id_t qid);               // 释放
 void     wq_wake_one(wq_id_t qid, uint64_t wake_val);  // 唤醒一个等待者
 void     wq_wake_all(wq_id_t qid, uint64_t wake_val);  // 唤醒全部等待者
+
+// 内核态专用：dump 出锁指针，供调用方在锁下做 checker 修改 + pop
+// 例如 NVMe 中断可直接用 cq.wait_queue 的锁
+spinlock_cpp_t* wq_id_to_lock(wq_id_t qid);
 ```
 
 **设计理由：**
