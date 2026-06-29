@@ -174,11 +174,16 @@ wq_wake_one(&render_wq, 0);
 ```cpp
 class block_queue {
     spinlock_cpp_t                lock;        // 只保护 task_list 头尾的原子出入
-    Ktemplats::list_doubly<task*> task_list;   // 内联组合（非继承）
-    event_type_t                  wait_type;   // 语义：wait_io / wait_other
+    Ktemplats::list_doubly<task*> task_list;   // 内联组合（非继承），FIFO
+                                               // push_back（尾注入）, pop_front（头吐出）
+    event_type_t                  wait_type;   // 语义：wait_io / wait_other / wait_mutex
                                                 // wake_one/wake_all 开新 event 时归档到此桶
 };
 ```
+
+**FIFO 纪律：**
+- `block_if_equal` 入队 → `push_back(self)`（尾注入）
+- `wake_one` → `pop_front()`（头吐出），保证先等先服务
 
 **组合 vs 继承的取舍：**
 - 继承空壳 `class block_queue:list_doubly<task*>{}` 暴露整个 list 接口，锁纪律无法内建
@@ -222,21 +227,41 @@ block_if_equal 内部（入队冻结）:
   1. self->task_lock                // 改自己的状态
   2.   task_event_shift(wait_type)   //   关旧帐
   3.   self->set_blocked()           //   改 task_state
-  4.   self->task_lock.unlock()      // ← 改完再取 wq 锁
-  5.   wq->lock                      // 插入 waiter（task* 已冻结）
-  6.     wq->task_list.push_back(self)
-  7.   wq->lock.unlock()
-  8. sched()                        // 切走
+  4.   if timeout_us != 0:
+         self->min_wakeup_stamp = now + timeout_us
+       else:
+         self->min_wakeup_stamp = 0
+  5.   self->task_lock.unlock()      // ← 改完再取 wq 锁
+  6.   wq->lock                      // 插入 waiter（task* 已冻结）
+  7.     wq->task_list.push_back(self)  // FIFO 尾注入
+  8.   wq->lock.unlock()
+  9. sched()                        // 切走
+  // 醒来（wq_wake 或超时强制唤醒）：
+  //   min_wakeup_stamp = 0; task_event_shift(run_kthread); 重检 checker
 
-wq_wake_one / wq_wake_all（弹出解冻）:
-  1. wq->lock                       // 弹出 waiter
+wq_wake_one（唤醒一个）：
+  1. wq->lock                       // 弹出头部（最老等待者）
   2.   task* t = wq->task_list.pop_front()
-  3. wq->lock.unlock()              // ← 先放锁，再逐 task 处理
-  4. for each popped task* t:
+  3. wq->lock.unlock()
+  4. if t != nullptr:
        t->task_lock
-         t->set_ready()             // 解冻、改状态
+         t->set_ready()
+         t->min_wakeup_stamp = 0    // 清超时
        t->task_lock.unlock()
-       insert_ready_task(t)         // 推入调度器就绪队列（内部 sched_lock）
+       insert_ready_task(t)
+
+wq_wake_all（唤醒全部）：
+  1. wq->lock                       // 批量弹出
+  2.   while !wq->task_list.empty():
+         task* t = wq->task_list.pop_front()
+         batch.push(t)
+  3. wq->lock.unlock()
+  4. for each t in batch:           // 锁外逐 task 处理
+       t->task_lock
+         t->set_ready()
+         t->min_wakeup_stamp = 0
+       t->task_lock.unlock()
+       insert_ready_task(t)
 ```
 
 **关键变化：** `wq→lock` 和 `task→lock` 不再嵌套。
@@ -278,16 +303,19 @@ block_if_equal(wq, checker, expected, timeout_us):
     task_event_shift(run_kthread)                   // 开新帐
 ```
 
-**超时唤醒路径（调度器/timer tick）：**
+**超时唤醒路径（调度器/timer tick — 从头部遍历）：**
 
 ```
-for each blocked task in sleep_queue:
-  if task->min_wakeup_stamp != 0
-     && now > task->min_wakeup_stamp
-     && task->current_event ∈ {sleep, wait_io, wait_other, wait_mutex}:
+// sleep_queue 按 min_wakeup_stamp 升序排列（最早到期在头部）
+// 从头部开始扫描，遇到第一个未到期的即可停止
+for each task in sleep_queue (from head):
+  if task->min_wakeup_stamp == 0 || now <= task->min_wakeup_stamp:
+    break                               // 头部之后更晚，全部未到期
 
+  if task->current_event ∈ {sleep, wait_io, wait_other, wait_mutex}:
+    task = sleep_queue.pop_front()      // 弹出头部
     task->min_wakeup_stamp = 0
-    task_event_shift(run_kthread)
+    task_event_shift(run_kthread)        // 关 wait/sleep 帐
     task->set_ready()
     insert_ready_task(task)
 ```
