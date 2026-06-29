@@ -76,30 +76,42 @@ class block_queue {
 
 ## 4. 锁序纪律
 
-两条路径，方向固定，永不嵌套：
+两条路径，**统一方向**：`wq_lock → task_lock`（顺序拿，不嵌套）。
 
 ```
 入队（block_if_equal 内部）：
-  1. self->task_lock               // 改自己状态
-  2.   task_event_shift(wait_type)  //   关旧帐
-  3.   self->set_blocked()
-  4.   self->min_wakeup_stamp = ... // 设超时（可选）
-  5. self->task_lock.unlock()       // ← 改完再取 qlock
-  6. qlock                          // 插入 waiter（task* 已冻结）
-  7.   inner_queue.push_back(self)  //   FIFO 尾注入
-  8. qlock.unlock()
-  9. sched()                        // 切走
+  1. wq_lock(qid)                         // 锁 checker 判别 + push
+  2.   if checker != NULL && *checker != expected:
+  3.     wq_unlock(qid)                    // 条件已不成立，不入队
+  4.     return
+  5.   task_lock(self)                     // 同锁域内改状态
+  6.     task_event_shift(wait_type)
+  7.     self->set_blocked()
+  8.     self->min_wakeup_stamp = ...
+  9.   task_unlock(self)
+  10.  inner_queue.push_back(self)         // FIFO 尾注入
+  11. wq_unlock(qid)
+  12. sched()
 
-唤醒（wq_wake_one / wq_wake_all）：
-  1. qlock                          // 弹出 task*
-  2.   t = inner_queue.pop_front()
-  3. qlock.unlock()
-  4. t->task_lock                   // 弹出后才能改
-  5.   t->set_ready()
-  6.   t->min_wakeup_stamp = 0
-  7. t->task_lock.unlock()
-  8. insert_ready_task(t)
+唤醒（wq_wake_one / child 置 running_word）：
+  1. wq_lock(qid)                         // token 修改 + pop 绑在一个临界区
+  2.   if checker_present:
+  3.     *running_word = NON_RUNNING       // 原子化 w.r.t. block_if_equal 的判别
+  4.   t = inner_queue.pop_front()         // 或批量 pop_all
+  5. wq_unlock(qid)
+  6.  // 锁外逐 task 处理
+  7. task_lock(t)
+  8.   t->set_ready()
+  9.   t->min_wakeup_stamp = 0
+  10. task_unlock(t)
+  11. insert_ready_task(t)
 ```
+
+**正确性推理：**
+- `*checker == expected` 的判别（parent）和 `*running_word` 的修改（child）
+  都在 `wq_lock` 下 → 互斥，不丢唤醒
+- 两方向锁序一致 `wq_lock → task_lock` → 无死锁
+- wq 锁临界区极窄：只保护 checker 比较 + 链表操作
 
 ---
 
