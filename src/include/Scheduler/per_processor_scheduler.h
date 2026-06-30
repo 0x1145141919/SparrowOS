@@ -295,18 +295,30 @@ public:
 // ── wq 句柄系统 ────────────────────────────────────────
 // 全局 wait_queue 表，句柄（wq_id_t）代替指针：防伪、防 UAF、可跨进程传递
 // 用户态可通过 syscall 使用相同句柄
-
+struct  blocked_tasks_clamps_t{
+    uint8_t batch_count;
+    bool is_queue_empty;
+    task* arr[64];
+};
 typedef uint64_t bq_id_t;
 constexpr bq_id_t  BQ_ID_INVALID = ~0u;
 // 内部队列（对外不暴露）
 class block_queue{
-    public:
     enum state_t { ready, running } state = ready;
-    spinlock_cpp_t qlock;
     task::event_type_t queue_event;
     Ktemplats::list_doubly<task*> inner_queue;
-    block_queue();
+    public:
+    spinlock_cpp_t qlock;
+    block_queue(): state(ready), qlock{}, queue_event{}, inner_queue{} 
+  {};
+    KURD_t enable_queue(task::event_type_t type);
+    KURD_t disable_queue();
+    bool is_queue_ready();
+    task*pop_head();
+    void pop_timeouts(blocked_tasks_clamps_t*batch);
+    void pop_all(blocked_tasks_clamps_t*batch);
 };
+
 /**
  * 
  */
@@ -418,23 +430,15 @@ extern "C"{
     [[noreturn]] void kthread_sleep_cppenter(x64_standard_context* context);
     [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context);
     ckurd wakeup_thread(uint64_t tid, bool front_insert=false);
-    void block_queue(bq_id_t qid);
     [[noreturn]] void block_queue_cppenter(x64_standard_context* context);
     void block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context* context);
     ckurd release_kthread(uint64_t tid);
-    bq_id_t  bq_alloc();                         // 分配一个新 block_queue，返回句柄,处于ready态
+    bq_id_t  bq_alloc(block_queue*q);                         // 分配一个新 block_queue，返回句柄,处于ready态
     ckurd bq_free(bq_id_t qid);               // 释放，返回 ckurd（KURD raw）
-    spinlock_cpp_t*get_lock(bq_id_t id);//没找到就返回空指针
-    //下面5个的操作都不加锁，而是在spinlock_cpp_t*get_lock(bq_id_t id)拿到锁后,自行保管，但是肯定得在锁的临界区之下
-    ckurd enable_queue(bq_id_t id,task::event_type_t type);//state为ready并且空才能成功按照指定身份开始初始化
-    ckurd disable_queue(bq_id_t id);//先验证全空，全空状态下才会进行disable(state置ready)
-    
-    uint64_t bq_wake_push(bq_id_t qid);  // 唤醒内部head的阻塞者，
-    uint64_t bq_wake_all(bq_id_t qid); //唤醒全部
-    uint64_t bq_wake_timeouts(bq_id_t qid); //唤醒超时者，很明显是从head开始向后遍历
+    block_queue*get_lock(bq_id_t id);//没找到就返回空指针
     //上面三个的返回值是唤醒个数
-    void bq_flush_pending(bq_id_t qid); // 处理 pending_wake 中所有弹出的 task（调用方已释放 bq_lock）
+    void bq_flush_pending(blocked_tasks_clamps_t* clamp); // 处理 pending_wake 中所有弹出的 task（调用方已释放 bq_lock）
 }
 /**
  * 内核线程接口里面锁顺序纪律：
