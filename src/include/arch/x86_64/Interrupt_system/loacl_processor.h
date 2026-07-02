@@ -176,8 +176,8 @@ constexpr uint32_t  RSP0_STACKSIZE= 0x8000;
 constexpr uint32_t  DF_STACKSIZE= 0x8000;
 constexpr uint32_t  MC_STACKSIZE= 0x8000;
 constexpr uint32_t  NMI_STACKSIZE= 0x8000;
-constexpr uint32_t  BP_DBG_STACKSIZE= 0x3000;
-constexpr uint32_t  total_stack_size= BP_DBG_STACKSIZE+RSP0_STACKSIZE+DF_STACKSIZE+MC_STACKSIZE+NMI_STACKSIZE;
+constexpr uint32_t  IDLE_TASK_STACKSIZE= 0x8000;
+constexpr uint32_t  total_stack_size= IDLE_TASK_STACKSIZE+RSP0_STACKSIZE+DF_STACKSIZE+MC_STACKSIZE+NMI_STACKSIZE;
 constexpr uint32_t  L_PROCESSOR_GS_IDX= 0;
 extern "C" KURD_t ap_init_one_by_one();
 /* ── x2APIC ID → gs_complex_t 映射表 ─────────────────────────────

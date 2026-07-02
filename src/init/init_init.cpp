@@ -602,7 +602,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
             // 映射 stack_ist4 (跳过 guard5)
             kmmu->map({proc_pphy + IST4_BASE_OFF,
                        proc_pvir + IST4_BASE_OFF,
-                       BP_DBG_STACKSIZE},
+                       IDLE_TASK_STACKSIZE},
                        KSPACE_RW_ACCESS);
 
             // 在 GS 复合体中设置 slot 0 = rsp0 栈顶（syscall 快速入口）和 stacks_ptr
