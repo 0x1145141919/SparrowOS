@@ -147,10 +147,12 @@ class task {
     u_ctx_t*                uctx;          // new u_ctx_t，仅用户线程
     void*                   vcpu_ctx;      // 独立分配，仅 vCPU
 
-    // ── waiters ──
-    Ktemplats::list_doubly<task*> waiters;
-
     // ── 接口 ──
+    // ⚠️  waiters / kthread_wait 已移除。2026-07-02
+    // 原因："N 个线程等一个线程退出" 在内核场景中是伪需求。
+    // 所有「等另一个线程干完活」的场景由 block_queue 覆盖——
+    // 同步是等事件/条件，不是等线程死。
+    // 见 block_queue_spec.md。
     static task* basic_constructor();
     void  launch();       // 纯机械：从 priv_ctx 加载开始执行
     void  resume();       // 根据 choose 无脑加载对应上下文

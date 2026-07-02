@@ -136,8 +136,8 @@ container_lock  >  qlock  >  task_lock  >  sched_lock
 | block_if_equal 入队 | `container_lock` 读锁 → `qlock` → `task_lock` | ✅ 三层嵌套 | `block_if_equal_cppenter` |
 | pop_head / pop_all / pop_timeouts | 调用方已持 `qlock` | ❌ 调用方负责 | 调用者上下文 |
 | bq_flush_pending | 无锁（qlock 已放） | ❌ | 调用者上下文 |
-| kthread_exit | `exit_task_lock > waiter_task_lock > waiter_sched_lock` | ✅ 三层嵌套 | `kthread_exit_cppenter` |
-| kthread_wait | `waited_task_lock > waiter_task_lock` | ✅ 嵌套 | `kthread_wait_cppenter` |
+| kthread_exit | `self_task_lock` → `sched_lock` | ❌ 分离（exit 不再遍历 waiters） | `kthread_exit_cppenter` |
+| kthread_wait | **已移除** — 2026-07-02，waiters 链表一并清除。见 task_v3设计.md。 | — | — |
 | kthread_sleep | `task_lock` → (放出) → `sched_lock` | ❌ 分离 | `kthread_sleep_cppenter` |
 | yield / resched | `task_lock` → (放出) → `sched_lock` | ❌ 分离 | `kthread_yield_true_enter` / `resched` |
 | wakeup_thread | `task_lock > sched_lock` | ✅ 嵌套 | `wakeup_thread` |
