@@ -81,7 +81,10 @@ void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
     while (!inner_queue.empty()) {
         task* t = *inner_queue.front();
         if (t->min_wakeup_stamp == 0 || now <= t->min_wakeup_stamp)
-            break;
+            {
+                batch->is_timeout_mov_early = true;
+                break;
+            }
         batch->arr[batch->batch_count++] = inner_queue.pop_front_value();
         if(batch->batch_count>=64)break;
     }
