@@ -67,3 +67,10 @@ KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE
 global block_if_equal
 block_if_equal:
 KTREAD_CALL_TEMPLATE KTHREAD_CALL_BLOCK_QUEUE_IF_EQUAL
+
+global gs_offsetptr_dumper
+gs_offsetptr_dumper:
+    rdgsbase rax
+    add rax, rdi
+    ret
+
