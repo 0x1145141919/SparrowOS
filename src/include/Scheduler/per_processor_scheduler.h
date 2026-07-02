@@ -211,22 +211,7 @@ struct u_ctx_t{
     uint64_t xsave_size;
 };
 class task{
-    private:
-    task_state_t task_state;
-    uint32_t belonged_processor_id;
-    uint64_t tid;
     public:
-    static  task* basic_constructor();
-    void launch();   // 纯机械：从 priv_ctx 加载上下文开始执行
-    void resume();   // 根据 ctx_choose 无脑加载对应上下文
-    bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
-    bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
-    bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
-    bool set_zombie();//合法前驱仅限running,blocked,ready
-    bool set_running();
-    reentrant_spinlock_cpp_t task_lock;
-    void assign_valid_tid(uint64_t tid);
-    task_blocked_reason_t blocked_reason;
     enum event_type_t{
         init,
         run_kthread,
@@ -239,10 +224,24 @@ class task{
         wait_mutex,
         event_type_COUNT
     };
-    miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
-    void task_event_shift(event_type_t new_event);
+    private:
     event_type_t current_event;
+    task_state_t task_state;
+    uint32_t belonged_processor_id;
+    uint64_t tid;
     miusecond_time_stamp_t current_event_start_stamp;
+    miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
+    public:
+    static  task* basic_constructor();
+    void launch();   // 纯机械：从 priv_ctx 加载上下文开始执行
+    void resume();   // 根据 ctx_choose 无脑加载对应上下文
+    bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
+    bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
+    bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
+    bool set_zombie();//合法前驱仅限running,blocked,ready
+    bool set_running();
+    reentrant_spinlock_cpp_t task_lock;
+    void task_event_shift(event_type_t new_event);
     miusecond_time_stamp_t min_wakeup_stamp;
     uint32_t get_belonged_processor_id();
     void set_belonged_processor_id(uint32_t pid);
@@ -254,7 +253,6 @@ class task{
     //   [priv_stack_base, priv_stack_base + 4K * pages)  — 可用栈空间（向下增长）
     //   priv_stack_base                                    — 栈顶
     //   [priv_stack_base - 4K, priv_stack_base)            — guard page（未映射，#PF not-present）
-    Ktemplats::list_doubly<task*> waiters;//在锁下的，exit的时候都唤醒
     u_ctx_t*uctx;//指向一个页
     //还有vCPU ctx指针
     enum ctx_choose{
@@ -275,7 +273,6 @@ class used_slot_bitmap : public huge_bitmap {
     spinlock_cpp_t m_count_lock;
 public:
     used_slot_bitmap(uint64_t bits) : huge_bitmap(bits) {}
-
     void used_bit_count_add(uint64_t n) {
         m_count_lock.lock();
         m_used_count += n;
@@ -298,6 +295,7 @@ public:
 struct  blocked_tasks_clamps_t{
     uint8_t batch_count;
     bool is_queue_empty;
+    bool is_timeout_mov_early;
     task* arr[64];
 };
 typedef uint64_t bq_id_t;
@@ -422,8 +420,6 @@ extern "C"{
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();
     void kthread_exit(uint64_t will);
-    uint64_t kthread_wait(uint64_t tid);//注意，若对应的tid不存在返回~0ull
-    void kthread_wait_cppenter(x64_standard_context*context);
     [[noreturn]] void kthread_exit_cppenter(x64_standard_context*context);
     void kthread_self_blocked(task_blocked_reason_t reason);
     void kthread_sleep(miusecond_time_stamp_t offset);
