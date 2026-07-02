@@ -493,3 +493,6 @@ void tid_wait_queue::wakeup_all()
         //或者改成手动展开定制唤醒逻辑
     }
 }
+void per_processor_scheduler::placed_init()
+{
+}

@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "Scheduler/per_processor_scheduler.h"
 // ============================================================================
 // GS 复合体 — per-processor 元数据 + 硬件栈 统一区域
 // ============================================================================
@@ -48,7 +49,7 @@ struct  alignas(4096) gs_complex_t {
     x64_gdtentry        gdt[6];
     TSSDescriptorEntry  tss_descriptor;
     TSSentry            tss;
-
+    per_processor_scheduler scheduler;  // 每处理器调度器实例
     // ── FPU/SIMD 暂存区（64B 对齐，满足 XSAVE64/XRSTOR64 要求） ──────────
     alignas(64) uint8_t fpu_area[XSAVE_SIZE_MAX];
     alignas(64) __uint128_t local_ipi_complex;
@@ -57,7 +58,6 @@ struct  alignas(4096) gs_complex_t {
     // ── 硬件栈区指针 ───────────────────────────────────────────────────────
     per_processor_hardware_stack_t* stacks_ptr;
 };
-
 static_assert(sizeof(gs_complex_t)%4096 == 0, "gs_complex_t must be 4096-byte aligned");
 // ── 每处理器硬件栈区 ─────────────────────────────────────────────────────
 // 必须严格布局控制，guard 页内容不映射，仅占用物理/虚拟地址空间。
@@ -85,7 +85,7 @@ struct __attribute__((packed)) per_processor_hardware_stack_t {
     uint8_t guard5[4096];
 
     // IST4 — Breakpoint / Debug 栈
-    uint8_t stack_ist4[BP_DBG_STACKSIZE];
+    uint8_t stack_ist4[IDLE_TASK_STACKSIZE];
 };
 
 // ── 栈偏移常数（基于 offsetof，编译器保证精确） ──────────────────────────
@@ -101,7 +101,7 @@ constexpr uint64_t RSP0_BOTTOM_OFF  = RSP0_BASE_OFF + RSP0_STACKSIZE - RED_ZONE;
 constexpr uint64_t IST1_BOTTOM_OFF  = IST1_BASE_OFF + DF_STACKSIZE   - RED_ZONE;
 constexpr uint64_t IST2_BOTTOM_OFF  = IST2_BASE_OFF + MC_STACKSIZE   - RED_ZONE;
 constexpr uint64_t IST3_BOTTOM_OFF  = IST3_BASE_OFF + NMI_STACKSIZE  - RED_ZONE;
-constexpr uint64_t IST4_BOTTOM_OFF  = IST4_BASE_OFF + BP_DBG_STACKSIZE - RED_ZONE;
+constexpr uint64_t IST4_BOTTOM_OFF  = IST4_BASE_OFF + IDLE_TASK_STACKSIZE - RED_ZONE;
 
 // ── 编译期校验 ───────────────────────────────────────────────────────────
 static_assert(sizeof(gs_complex_t::slots) == 256 * sizeof(uint64_t),
@@ -135,3 +135,4 @@ static inline gs_complex_t* get_gs_base()
 // 调用前需确保 GDT 条目、TSS 描述符和栈指针已就绪。
 // BSP 和 AP 在正式资源加载阶段均调用此接口。
 extern "C" void gs_complex_load_gdt_tss(gs_complex_t* complex);
+extern "C" void* gs_offsetptr_dumper(uint64_t offset);

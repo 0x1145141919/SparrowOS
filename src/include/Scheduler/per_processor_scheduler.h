@@ -4,10 +4,8 @@
 #include "arch/x86_64/abi/base.h"
 #include "abi/os_error_definitions.h"
 #include "util/Ktemplats.h"
-#include "util/huge_bitmap.h"
 #include "util/lock.h"
 #include "ktime.h"
-#include "memory/all_pages_arr.h"
 #include "memory/AddresSpace.h"
 namespace Scheduler{
     constexpr uint8_t self_scheduler=1;
@@ -360,8 +358,8 @@ class alignas(64) per_processor_scheduler {
     void   dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
     friend task;
     friend class task_pool;
-    per_processor_scheduler();
-    ~per_processor_scheduler(); // 析构时确保 gantt 释放
+    void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
+    
 };
 extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 constexpr uint32_t INVALID_NODE_INDEX=~0;
