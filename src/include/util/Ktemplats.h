@@ -789,6 +789,27 @@ public:
         Node* node = find_node(value);
         return node ? &node->data : nullptr;
     }
+    // 按裸键查找（不构造完整 T 值），cmp(T&) → <0 / =0 / >0
+    template<typename KeyCompare>
+    T* find_by(KeyCompare cmp) {
+        Node* cur = root;
+        while (cur) {
+            int c = cmp(cur->data);
+            if (c == 0) return &cur->data;
+            cur = (c < 0) ? cur->left : cur->right;
+        }
+        return nullptr;
+    }
+    template<typename KeyCompare>
+    const T* find_by(KeyCompare cmp) const {
+        const Node* cur = root;
+        while (cur) {
+            int c = cmp(cur->data);
+            if (c == 0) return &cur->data;
+            cur = (c < 0) ? cur->left : cur->right;
+        }
+        return nullptr;
+    }
     // 基本操作
     size_t size() const
     {

@@ -117,18 +117,11 @@ namespace Scheduler{
                 constexpr uint16_t illeage_state=5;
             }
         }
-        constexpr uint8_t kthread_wait=8;
-        namespace kthread_wait_results{
-            namespace fatal_reasons{
-                constexpr uint16_t bad_task_state=1;
-                constexpr uint16_t context_stackptr_out_of_range=4;
-            } 
-        }
+        // kthread_wait=8 removed — 2026-07-02 (waiters 链表一并清除)
         constexpr uint8_t kthread_exit=9;
         namespace kthread_exit_results{
             namespace fatal_reasons{
                 constexpr uint16_t bad_task_state=1;
-                constexpr uint16_t waiter_bad_block_reason=2;
                 constexpr uint16_t context_stackptr_out_of_range=4;
             }
         }
@@ -153,6 +146,7 @@ namespace Scheduler{
             }
         }
         constexpr uint8_t kthread_common_save=12;
+        // kthread_wait/waiters 已移除 — 2026-07-02。见 task_v3设计.md。
         namespace kthread_common_save_results{
             namespace fatal_reasons{
                 constexpr uint16_t bad_task_type=1;
@@ -179,18 +173,18 @@ enum task_type_t:uint8_t{
     userthread,
     vCPU
 };
+// wait_other_kthread 已移除 — 2026-07-02，kthread_wait 及 waiters 链表已清除。
 enum task_blocked_reason_t:uint8_t{
     invalid,
     sleeping,
     mutex,
-    no_job,
-    wait_other_kthread
+    no_job
 };
 namespace kthread_call_num{
     constexpr uint64_t exit=0;
     constexpr uint64_t sleep=1;
     constexpr uint64_t yield=2;
-    constexpr uint64_t wait=3;
+    // 3 was kthread_wait — removed 2026-07-02
     constexpr uint64_t block=4;
     constexpr uint64_t block_to_queue=5;
     constexpr uint64_t block_to_queue_if_equal=6;
@@ -231,9 +225,14 @@ class task{
     uint64_t tid;
     miusecond_time_stamp_t current_event_start_stamp;
     miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
+    
     public:
+    task();
+    bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
+    uint64_t get_tid();
     static  task* basic_constructor();
-    void launch();   // 纯机械：从 priv_ctx 加载上下文开始执行
+    static void placement_constructor(task*task_ptr);
+    bool launch();   // 从 priv_ctx 加载上下文开始执行,由于是开始所以肯定会先在accumulates_bank校验run_kthread为0才可以启动
     void resume();   // 根据 ctx_choose 无脑加载对应上下文
     bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
     bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
@@ -260,34 +259,10 @@ class task{
         u_ctx,
         vCPU
     };
+    task_state_t get_state();
     ctx_choose choose;
 };
-struct task_in_pool{
-    task*task_ptr;
-    uint32_t slot_version;
-};
-// 专用 huge_bitmap 派生：固定 0=空闲, 1=已占用 语义 + 计数跟踪
-// 用于 subtable 的槽位分配跟踪，替代已被移除的 bitmap_t 线性扫描语义
-class used_slot_bitmap : public huge_bitmap {
-    uint64_t m_used_count = 0;
-    spinlock_cpp_t m_count_lock;
-public:
-    used_slot_bitmap(uint64_t bits) : huge_bitmap(bits) {}
-    void used_bit_count_add(uint64_t n) {
-        m_count_lock.lock();
-        m_used_count += n;
-        m_count_lock.unlock();
-    }
 
-    void used_bit_count_sub(uint64_t n) {
-        m_count_lock.lock();
-        if (n >= m_used_count) m_used_count = 0;
-        else m_used_count -= n;
-        m_count_lock.unlock();
-    }
-
-    uint64_t used_count() const { return m_used_count; }
-};
 
 // ── wq 句柄系统 ────────────────────────────────────────
 // 全局 wait_queue 表，句柄（wq_id_t）代替指针：防伪、防 UAF、可跨进程传递
@@ -320,42 +295,18 @@ class block_queue{
 /**
  * 
  */
-uint32_t tid_to_idx(uint64_t tid);
+// task_tid_compare — 按 tid 大小排序 task*
+static int task_tid_compare(task* const& a ,task* const& b) {
+    return a->get_tid()-b->get_tid();
+}
+
 class task_pool{
-    private:
-    static KURD_t default_kurd();
-    static KURD_t default_success();
-    static KURD_t default_fail();
-    static KURD_t default_fatal();
-    static spinrwlock_cpp_t lock;//技术债之写饥饿，后续考虑无锁操作
-    static constexpr uint32_t root_table_entry_count=1<<16;
-    static constexpr uint32_t sub_table_entry_count=1<<16;
-    struct subtable{
-        used_slot_bitmap used_bitmap;
-        task_in_pool task_table[sub_table_entry_count];
-    };
-    struct root_entry
-    {
-        subtable*sub;
-        uint32_t last_max_slot_version;
-    };
-    static root_entry root_table[root_table_entry_count];
-    static KURD_t enable_subtable(uint32_t high_idx);
-    static KURD_t try_disable_subtable(uint32_t high_idx);
-    static uint32_t last_alloc_index;
-    /*
-    alloc_tid逻辑为从last_alloc_index开始扫描位图，若找到空闲槽位则返回index,并且更新last_alloc_index为index+1，途中若遇到空subtable则创建
-    根据index返回(index<<32)|table[index].slot_version(示意写法)为tid
-    需要发明kurd错误语义
-    */
-    static uint64_t alloc_tid(KURD_t&kurd);
-    public:
-    static task* get_by_tid(uint64_t tid,KURD_t &kurd);
-    static uint64_t alloc(
-        task* task_ptr,
-        KURD_t&kurd
-    );//行为为若alloc_tid成功则在对应的tid的槽位填写task_ptr,并返回tid,否则返回～0ll并且传递kurd错误语义
-    static KURD_t release_tid(uint64_t tid);
+    static spinrwlock_cpp_t lock;
+    static Ktemplats::RBTree<task*, task_tid_compare> m_tree;
+public:
+    static task* get_by_tid(uint64_t tid, KURD_t& kurd);
+    static KURD_t insert(task* t);
+    static KURD_t release(uint64_t tid);
     static int Init();
 };
 // ── DTS Gantt 日志条目标准格式 ─────────────────────────────────
@@ -376,7 +327,7 @@ class alignas(64) per_processor_scheduler {
     KURD_t default_success();
     KURD_t default_fail();
     KURD_t default_fatal();
-    task* idle;
+    task idle;
     public:
     static constexpr uint32_t GANTT_CAPACITY = 4096;
     dts_gantt_entry* dts_gantt = nullptr;    // 按需分配，NULL=关闭
@@ -402,12 +353,13 @@ class alignas(64) per_processor_scheduler {
     void sched();//会内部修改ready_queue数据结构用ready_queues_lock保护，然后对应的task也会用锁保护其状态改变
     KURD_t insert_ready_task(task*task_ptr, bool front=false);
     void sleep_tasks_wake();
-
+    
     // ── DTS Gantt 接口 ──
     KURD_t dts_gantt_enable();   // 按需分配 Gantt 缓冲区
     void   dts_gantt_disable();  // 释放缓冲区，置 NULL
     void   dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
-
+    friend task;
+    friend class task_pool;
     per_processor_scheduler();
     ~per_processor_scheduler(); // 析构时确保 gantt 释放
 };
@@ -439,7 +391,7 @@ extern "C"{
 /**
  * 内核线程接口里面锁顺序纪律：
  * 1.task锁永远比scheduler的锁先锁
- * 2.wait/exit接口对中waited锁的临界区覆盖waiters锁的临界区
- * 3.block_queue / block_if_equal_cppenter 的 wq 锁临界区覆盖放弃执行流的线程锁
- * 4.task锁临界区内可以调用task_pool相关接口，只在其内部有锁
+ * 2.block_queue / block_if_equal_cppenter 的 wq 锁临界区覆盖放弃执行流的线程锁
+ * 3.task锁临界区内可以调用task_pool相关接口，只在其内部有锁
+ * 4.wait/exit 及 waiters 已移除 — 2026-07-02
  */

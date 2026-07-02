@@ -9,154 +9,73 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
-#include "ktime.h"
-task_pool::root_entry task_pool::root_table[root_table_entry_count];
-spinrwlock_cpp_t task_pool::lock;
-uint32_t task_pool::last_alloc_index = 0;
-// 添加适配函数来解决类型不匹配问题
+static u64ka g_next_tid{0};  // 0 保留作无效
+
 extern "C" void secure_hlt();
 static void* secure_hlt_wrapper(void* unused) {
-    (void)unused;  // 忽略未使用的参数
-    secure_hlt();  // 返回值不会被使用，但满足函数签名要求
+    (void)unused;
+    secure_hlt();
+    return nullptr;
 }
-KURD_t task_pool::default_kurd()
-{
-    return KURD_t(0,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,0,0,err_domain::CORE_MODULE);
-}
-KURD_t task_pool::default_success()
-{
-    KURD_t kurd=default_kurd();
-    kurd.result = result_code::SUCCESS;
-    kurd.level = level_code::INFO;
-    return kurd;
-}
-KURD_t task_pool::default_fail(){
-    return set_result_fail_and_error_level(default_kurd());
-}
-KURD_t task_pool::default_fatal()
-{
-    return set_fatal_result_level(default_kurd());
-}
-KURD_t task_pool::enable_subtable(uint32_t high_idx)
-{
-    KURD_t kurd;
-    root_entry& entry = root_table[high_idx];
-    entry.sub=(subtable*)__wrapped_pgs_valloc(&kurd,(sizeof(task_pool::subtable)+4095)>>12,page_state_t::kernel_pinned,12);
-    if(entry.sub==nullptr||error_kurd(kurd)){
-        return kurd;
-    }
-    new(&entry.sub->used_bitmap) used_slot_bitmap(sub_table_entry_count);
-    kurd=entry.sub->used_bitmap.second_stage_init();
-    if(error_kurd(kurd)){
-        return kurd;
-    }
-    ksetmem_8(entry.sub->task_table,0,sub_table_entry_count*sizeof(task_in_pool));
-    for(uint32_t i=0;i<sub_table_entry_count;i++){
-        entry.sub->task_table[i].slot_version=entry.last_max_slot_version;
-    }
-    return kurd;
-}
-KURD_t task_pool::try_disable_subtable(uint32_t high_idx)
-{
-    KURD_t kurd;
-    root_entry& entry = root_table[high_idx];
-    if(entry.sub==nullptr){
 
-    }
-    if(!entry.sub->used_bitmap.all_false()){
-        //没有全空，报错
-    }
-    uint32_t max=0;
-    for(uint32_t i=0;i<sub_table_entry_count;i++){
-        if(entry.sub->task_table[i].slot_version>max){
-            max=entry.sub->task_table[i].slot_version;
-        }
-    }
-    entry.last_max_slot_version=max;
-    entry.sub->used_bitmap.~used_slot_bitmap();
-    kurd=__wrapped_pgs_vfree(entry.sub,(sizeof(task_pool::subtable)+4095)>>12);
-    entry.sub=nullptr;
-    return kurd;
-}
+// ── task_pool 静态成员 ──
+spinrwlock_cpp_t task_pool::lock;
+Ktemplats::RBTree<task*, task_tid_compare> task_pool::m_tree;
+
 int task_pool::Init()
 {
     return OS_SUCCESS;
 }
 
-uint64_t task_pool::alloc_tid(KURD_t& kurd)
+task* task_pool::get_by_tid(uint64_t tid, KURD_t& kurd)
 {
-    KURD_t success = default_success();
-    KURD_t fail = default_fail();
-    success.event_code = Scheduler::task_pool_events::slot_alloc;
-    fail.event_code = Scheduler::task_pool_events::slot_alloc;
-
-    const uint32_t start_index = last_alloc_index;
-    const uint64_t total_slots = (uint64_t)root_table_entry_count * sub_table_entry_count;
-
-    for (uint64_t offset = 0; offset < total_slots; ++offset) {
-        uint32_t idx = start_index + static_cast<uint32_t>(offset);
-        uint32_t high_idx = idx >> 16;
-        uint32_t low_idx = idx & 0xFFFF;
-
-        if (root_table[high_idx].sub == nullptr) {
-            KURD_t sub_kurd = enable_subtable(high_idx);
-            if (error_kurd(sub_kurd)) {
-                kurd = sub_kurd;
-                return ~0ull;
-            }
-        }
-
-        subtable* sub = root_table[high_idx].sub;
-        if (!sub->used_bitmap.bit_get(low_idx)) {
-            sub->used_bitmap.bit_set(low_idx, true);
-            sub->used_bitmap.used_bit_count_add(1);
-            last_alloc_index = idx + 1;
-            uint64_t tid = (static_cast<uint64_t>(idx) << 32) | sub->task_table[low_idx].slot_version;
-            kurd = success;
-            return tid;
-        }
+    task tmp;
+    tmp.usage_of_search_set_tid(tid);
+    task** found;
+    {
+        spinrwlock_interrupt_about_read_guard l(lock);
+        found = m_tree.find(&tmp);
     }
-
-    fail.reason = Scheduler::task_pool_events::alloc_results::fail_reasons::not_found;
-    kurd = fail;
-    return ~0ull;
+    if (found) return *found;
+    kurd = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+                  Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
+    return nullptr;
 }
 
-task* task_pool::get_by_tid(uint64_t tid, KURD_t &kurd)
+KURD_t task_pool::insert(task* t)
 {
-    spinrwlock_interrupt_about_read_guard guard(lock);
-    KURD_t success = default_success();
-    KURD_t fail = default_fail();
-
-    uint32_t idx = tid_to_idx(tid);
-    uint32_t high_idx = idx >> 16;
-    uint32_t low_idx = idx & 0xFFFF;
-    uint32_t version = static_cast<uint32_t>(tid);
-
-    if (high_idx >= root_table_entry_count) {
-        kurd = fail;
-        return nullptr;
+    if (!t) {
+        return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+                      Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
     }
-
-    subtable* sub = root_table[high_idx].sub;
-    if (sub == nullptr) {
-        kurd = fail;
-        return nullptr;
+    {
+        spinrwlock_interrupt_about_write_guard l(lock);
+        bool ok = m_tree.insert(t);
+        if (!ok) {
+            return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+                          Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
+        }
     }
-
-    if (!sub->used_bitmap.bit_get(low_idx)) {
-        kurd = fail;
-        return nullptr;
-    }
-
-    if (sub->task_table[low_idx].slot_version != version) {
-        kurd = fail;
-        return nullptr;
-    }
-
-    kurd = success;
-    return sub->task_table[low_idx].task_ptr;
+    return KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
+                  Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
 }
+
+KURD_t task_pool::release(uint64_t tid)
+{
+    spinrwlock_interrupt_about_write_guard l(lock);
+    task tmp;
+    tmp.usage_of_search_set_tid(tid);
+    task** found = m_tree.find(&tmp);
+    if (!found) {
+        return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+                      Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
+    }
+    m_tree.erase(*found);
+    return KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
+                  Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
+}
+
+// ── sleep_queue_t::insert（未改动，仅移至此位置）──
 KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
 {
     KURD_t success = KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
@@ -211,66 +130,11 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
     ++m_size;
     return success;
 }
-uint64_t task_pool::alloc(task* task_ptr, KURD_t& kurd)
+task::task()
 {
-    spinrwlock_interrupt_about_write_guard guard(lock);
-    if (!task_ptr) {
-        kurd = default_fail();
-        return ~0ull;
-    }
-    uint64_t tid = alloc_tid(kurd);
-    if (tid == ~0ull || error_kurd(kurd)) {
-        return ~0ull;
-    }
-
-    uint32_t idx = tid_to_idx(tid);
-    uint32_t high_idx = idx >> 16;
-    uint32_t low_idx = idx & 0xFFFF;
-    root_table[high_idx].sub->task_table[low_idx].task_ptr = task_ptr;
-    return tid;
+    ksetmem_8(this, 0, sizeof(task));
 }
-
-KURD_t task_pool::release_tid(uint64_t tid)
-{
-    spinrwlock_interrupt_about_write_guard guard(lock);
-    KURD_t success = default_success();
-    KURD_t fail = default_fail();
-    success.event_code = Scheduler::task_pool_events::slot_free;
-    fail.event_code = Scheduler::task_pool_events::slot_free;
-
-    uint32_t idx = tid_to_idx(tid);
-    uint32_t high_idx = idx >> 16;
-    uint32_t low_idx = idx & 0xFFFF;
-    uint32_t version = static_cast<uint32_t>(tid);
-
-    if (high_idx >= root_table_entry_count) {
-        fail.reason = Scheduler::task_pool_events::free_results::fail_reasons::index_out_of_range;
-        return fail;
-    }
-
-    subtable* sub = root_table[high_idx].sub;
-    if (sub == nullptr) {
-        fail.reason = Scheduler::task_pool_events::free_results::fail_reasons::sub_table_not_exist;
-        return fail;
-    }
-
-    if (!sub->used_bitmap.bit_get(low_idx)) {
-        fail.reason = Scheduler::task_pool_events::free_results::fail_reasons::not_allocated;
-        return fail;
-    }
-
-    if (sub->task_table[low_idx].slot_version != version) {
-        fail.reason = Scheduler::task_pool_events::free_results::fail_reasons::bad_tid;
-        return fail;
-    }
-
-    sub->task_table[low_idx].task_ptr = nullptr;
-    sub->task_table[low_idx].slot_version++;
-    sub->used_bitmap.bit_set(low_idx, false);
-    sub->used_bitmap.used_bit_count_sub(1);
-    last_alloc_index = idx;
-    return success;
-}
+// ── per_processor_scheduler 构造函数 ──
 per_processor_scheduler::per_processor_scheduler()
 {
     KURD_t kurd;
@@ -499,18 +363,16 @@ KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
     return success;
 }
 
-task::task(task_type_t task_type, void *context)
-{
-    this->task_type=task_type;
-    tid=INVALID_TID;
-    this->task_state=init;
-    this->blocked_reason=invalid;
-    this->context.kthread=(kthread_context*)context;
-}
-
 uint64_t task::get_tid()
 {
     return tid;
+}
+bool task::usage_of_search_set_tid(uint64_t new_tid)
+{
+    if(this->current_event_start_stamp)//标准初始化时序必然会初始化这个字段
+    return false;
+    this->tid=new_tid;
+    return true;
 }
 
 task_type_t task::get_task_type()
@@ -530,7 +392,6 @@ bool task::set_ready()
        task_state==task_state_t::blocked ||
        task_state==task_state_t::running){
         task_state=task_state_t::ready;
-        blocked_reason=task_blocked_reason_t::invalid;
         return true;
     }
     return false;
@@ -567,9 +428,6 @@ bool task::set_running()
     }
     return false;
 }
-task::~task()
-{
-}
 void task::task_event_shift(event_type_t new_event)
 {
     if(new_event==this->current_event){
@@ -582,11 +440,20 @@ void task::task_event_shift(event_type_t new_event)
         this->current_event=new_event;
     }
 }
-void task::assign_valid_tid(uint64_t tid)
+task *task::basic_constructor()
 {
-    if(this->tid==INVALID_TID){
-        this->tid=tid;
-    }
+    task* t=new task();
+    placement_constructor(t);
+    task_pool::insert(t);
+    return t;
+}
+void task::placement_constructor(task *task_ptr)
+{
+    task_ptr->task_state=task_state_t::init;
+    task_ptr->current_event=event_type_t::init;
+    task_ptr->current_event_start_stamp=ktime::get_microsecond_stamp();
+    task_ptr->tid=g_next_tid.load();
+    g_next_tid.add_ka(1);
 }
 task_state_t task::get_state()
 {
