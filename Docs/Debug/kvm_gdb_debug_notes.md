@@ -305,7 +305,83 @@ ioport_outb(IO_DEBUG_PORT, DBUG_BREAK);  // 停到 kernel 入口
 outb(DBUG_BREAK, IO_DEBUG_PORT);  // 停到页表重建后
 ```
 
-**优势：** 不依赖页表、不依赖 GDB 连接时机、不依赖任何符号地址。代码走到哪里就停在哪里。
+## 端口魔法断点的设计定位
+
+端口魔法断点**不是替代 int3 的**。它是标准调试链路（Z0 → KVM_GUESTDBG → KVM_EXIT_DEBUG → gdbstub → GDB）的**先行者**，负责完成两件事：
+
+1. **确认阶段就绪** — 此时的 CR3（页表基址）、内存映射、GDT/IDT、栈等资源是否已初始化到可以部署标准断点的程度
+2. **为 int3 批发出证** — 确认世界正确后，GDB 在这时下正式 `Z0`/`hbreak` 断点，继续执行后才由 KVM 的 guest debug 机制接管
+
+### 两层断点体系
+
+```
+层 1: 端口硬断点 (outb(0xDB, 0x80))
+      ── 无条件硬停，走 KVM_EXIT_IO → vm_stop(RUN_STATE_DEBUG)
+      ── 不依赖 guest 页表、GDB 连接时机、任何符号地址
+      ── 作为"着陆"手段，确认当前世界状态
+
+       ↓ 停住之后用户：
+         1. 检查 RIP、CR3、页表根地址确认世界
+         2. 资源就绪 → 下 int3 正式断点
+         3. continue 放行
+
+层 2: 标准 int3 断点 (Z0 / hbreak)
+      ── 此时 GDB 已在正确的世界，页表/符号/地址全部对上
+      ── 放行后由 KVM_GUESTDBG_USE_SW_BP 拦截 #BP
+      ── 从这开始走标准调试全链路
+```
+
+### 全流程
+
+```
+QEMU: -s -S -accel kvm
+GDB:  target remote :1234
+      不下任何断点
+      continue
+
+Guest 跑
+  │
+  ├── 碰到 outb(0xDB, 0x80)  # 停在 UefiMain
+  │     │  检查 CR3 = OVMF 页表 ✓
+  │     │  PlayOSLoader 已加载 ✓
+  │     │  资源就绪 → 下 break FilesystemLoad.c:200
+  │     │  continue
+  │     ▼
+  │  标准 Z0 断点触发
+  │
+  ├── 碰到 outb(0xDB, 0x80)  # 停在 kernel_start
+  │     │  检查 CR3 = identity map ✓
+  │     │  kernel.elf 已加载到内存 ✓
+  │     │  符号地址与物理地址一致 ✓
+  │     │  资源就绪 → 下 break init_init.cpp:101
+  │     │  continue
+  │     ▼
+  │  标准 Z0 断点触发
+  │
+  ├── 碰到 outb(0xDB, 0x80)  # 停在 mem_init 完成
+  │     │  检查 CR3 = 新页表 ✓
+  │     │  高位映射生效 ✓
+  │     │  从此跟普通 ELF 调试没有区别
+  │     │  资源就绪 → 随便下 int3
+  │     │  continue
+  │     ▼
+  │  标准调试全链路工作
+```
+
+### 三层对比
+
+| 特征 | int3 (Z0) | hbreak (DR) | port magic (outb 0x80) |
+|---|---|---|---|
+| 执行路径 | CPU 执行 0xCC → #BP → KVM_EXIT_DEBUG | DR 匹配线性地址 → KVM_EXIT_DEBUG | outb → KVM_EXIT_IO → vm_stop |
+| 依赖页表 | ✅ 走 guest 当前页表写/读 | ✅ 线性地址匹配当前页表 | ❌ 不依赖 |
+| 需 GDB 事先配置 | ✅ Z0 包设 kvm_sw_breakpoints | ✅ 设 DR0-DR3 | ❌ 无状态，触发即停 |
+| 影响 KVM 性能 | ✅ KVM_GUESTDBG_ENABLE 降速 | ✅ KVM_GUESTDBG_ENABLE 降速 | ❌ 不设 KVM_SET_GUEST_DEBUG，不影响 |
+| 能在 OVMF 世界生效 | ❌ 地址不对 | ❌ DR 匹配 VA 不对 | ✅ 任意世界 |
+| 能在 identity 世界生效 | ❌ 0xCC 写的时机不对 | ✅ 知道物理地址可以 | ✅ 任意世界 |
+| 能在高位映射世界生效 | ✅ 正常使用 | ✅ 正常使用 | ✅ 任意世界 |
+| 用途 | 正式调试 | 轻量断点（只读/写 watch） | **世界就绪确认 + 批发出证** |
+
+端口魔法的核心哲学：**先确认世界，再部署 int3。** 它不做正式调试的事，只做"我到了，资源就绪，可以上 int3 了"这个确认工作。
 
 ### 与 QEMU gdbstub 状态的交互确认
 
