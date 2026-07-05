@@ -201,3 +201,132 @@ SparrowOS 的调试困境源于：
 3. **GDB 符号过早解析** — `-break-insert -f` 时符号表已加载 → GDB 认为地址已确定 → 直接发 Z0 到 target → 写入错误物理页
 
 这不是任何单个工具（GDB/QEMU/KVM/VS Code）的 bug，而是它们共享的隐含假设与 SparrowOS 架构的不兼容。解决方案是用硬件断点 (`hbreak`) 配合物理地址，或在代码中嵌入 `int3` 陷阱作为分阶段门控。
+
+## 方案 6: 端口强制断点 (IO Port Magic Break)
+
+### 原理
+
+修改 QEMU 的 `ioport80_write` handler，使其在匹配到特定 magic 值时调用 `vm_stop(RUN_STATE_DEBUG)`，触发 GDB stub 发送 T05 停止包。
+
+```
+Guest: outb(0xDB, 0x80)    ← 任意内存布局下均可执行
+  │  KVM_EXIT_IO → QEMU 端口分发
+  ▼
+ioport80_write(0x80, 0xDB, 1)
+  │  data == DBUG_BREAK 匹配
+  │  bql_lock(); vm_stop(RUN_STATE_DEBUG); bql_unlock();
+  ▼
+gdb_vm_state_change(): 检测 state→STOPPED
+  │  allow_stop_reply == true  (由 GDB 的 'c' 命令设)
+  ▼
+发 T05 给 GDB → 弹提示符
+```
+
+### 不需要维护任何额外 GDB stub 状态
+
+GDBState 的唯一关键监护人 `allow_stop_reply` 在 guest 运行期间（GDB 发了 `c`/`vCont` 之后）为 `true`。端口 handler 只需要 `bql_lock()` 后再调 `vm_stop()`。KVM 的 IO handler 运行在 vCPU 线程、**不在 BQL 内**（`accel/kvm/kvm-all.c:3545` 标注 `/* Called outside BQL */`），所以必须手动加锁，模式完全参照 `kvm_arch_handle_exit` 中 `KVM_EXIT_DEBUG` 的处理。
+
+### x86 IO 端口宽度语义
+
+**真实 x86 硬件上每个 IO 端口是 8 位宽的。** 这是 Intel SDM Vol.1 §17 的定义。`OUT` 指令的 operand size 决定访问的端口数：
+
+| 指令 | 访问的端口 | 写入的字节 |
+|---|---|---|
+| `outb(al, 0x80)` | 0x80 | byte 0 (al[7:0]) |
+| `outw(ax, 0x80)` | 0x80-0x81 | 0x80←byte0, 0x81←byte1 |
+| `outl(eax, 0x80)` | 0x80-0x83 | 0x80←byte0, 0x81←byte1, 0x82←byte2, 0x83←byte3 |
+
+所以 `outl` **不是**一个 32 位事务写到一个端口，而是写到 **4 个连续字节端口**。
+
+### QEMU 的 dispatch 行为
+
+QEMU 当前 `ioport80` 的配置（`system/memory.c:516` `access_with_adjusted_size`）：
+
+```c
+// ioport80_io_ops 当前配置
+.impl = { .min_access_size = 1, .max_access_size = 1 }
+
+// outl(0xDB000001, 0x80) 拆包结果:
+i=0: → ioport80_write(0x80, (0xDB000001>> 0)&0xFF = 0x01, 1)
+i=1: → ioport80_write(0x81, (0xDB000001>> 8)&0xFF = 0x00, 1)
+i=2: → ioport80_write(0x82, (0xDB000001>>16)&0xFF = 0x00, 1)
+i=3: → ioport80_write(0x83, (0xDB000001>>24)&0xFF = 0xDB, 1)
+```
+
+这个拆分**不是 QEMU 的仿真局限，而是正确的 x86 硬件行为**。
+
+### Magic 端口协议设计
+
+使用 `outb` 单字节写入：
+
+```c
+#define DBUG_BREAK   0xDB   // 无条件断点
+#define DBUG_NOP     0xDF   // 空操作（测试用）
+
+// 在代码中使用:
+#define IO_DEBUG_PORT 0x80
+outb(DBUG_BREAK, IO_DEBUG_PORT);
+```
+
+Magic 值选择 0xDB：
+- OVMF 不写 port 0x80（UEFI 调试口走串口）
+- SeaBIOS 的 POST code 范围 0x00-0xFF，但 SparrowOS 用 OVMF
+- 若将来检测到误触，可改用 0xDB + size=2 匹配（`outw` 写两个连续端口）
+
+### QEMU 修改范围
+
+只改 `hw/i386/pc.c` 中的两处（不动 KVM/gdbstub/MIEngine 一行）：
+
+```c
+// 1. ioport80_write 加匹配逻辑
+static void ioport80_write(void *opaque, hwaddr addr, uint64_t data, unsigned size)
+{
+    if (data == DBUG_BREAK) {
+        bql_lock();
+        vm_stop(RUN_STATE_DEBUG);
+        bql_unlock();
+    }
+    // 其他值：静默忽略（保持原有空操作行为）
+}
+```
+
+`ioport80` region 配置（`impl.max_access_size = 1` 和 region 大小 `1` 均**保留不变**——`outb` 单字节访问正好匹配）。
+
+### 使用示例
+
+```c
+// 在 UefiMain 入口
+outb(DBUG_BREAK, IO_DEBUG_PORT);  // 停到 PlayOSLoader 入口
+
+// 在 kernel_start 入口
+ioport_outb(IO_DEBUG_PORT, DBUG_BREAK);  // 停到 kernel 入口
+
+// 在 init_init.cpp Phase 3a 完成后
+outb(DBUG_BREAK, IO_DEBUG_PORT);  // 停到页表重建后
+```
+
+**优势：** 不依赖页表、不依赖 GDB 连接时机、不依赖任何符号地址。代码走到哪里就停在哪里。
+
+### 与 QEMU gdbstub 状态的交互确认
+
+| 状态变量 | 值 | 为什么安全 |
+|---|---|---|
+| `allow_stop_reply` | `true` | GDB 发 `c` 时 `run_cmd_parser` 设的 |
+| `state` | `RS_IDLE` | guest 运行时恒为 IDLE |
+| `last_packet→len` | `0` | `c` 的 ACK 已清空 |
+| `line_buf_index` | `0` | 无正在收的包 |
+
+无需维护任何额外状态。
+
+### 相关源码
+
+- `hw/i386/pc.c:207-209` — 当前 `ioport80_write`（空函数）
+- `hw/i386/pc.c:964-968` — `ioport80_io_ops` 定义
+- `hw/i386/pc.c:1050-1055` — `ioport80` region 注册
+- `system/memory.c:516-567` — `access_with_adjusted_size` 拆包逻辑
+- `system/memory.c:1520-1555` — `memory_region_dispatch_write` 写路径
+- `system/memory.c:475-495` — `memory_region_write_accessor` shift 取字节
+- `system/runstate.h` — `vm_stop()` 声明
+- `gdbstub/system.c:122-175` — `gdb_vm_state_change()` 停止事件上报
+- `gdbstub/internals.h:69-93` — `GDBState` 定义（`allow_stop_reply` 注释）
+- `gdbstub/gdbstub.c:987-997` — `run_cmd_parser` 设 `allow_stop_reply`
