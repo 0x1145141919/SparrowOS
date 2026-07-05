@@ -290,7 +290,7 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
     }
     asm volatile("sti");   
     //中断接管工作
-    new(global_schedulers) per_processor_scheduler;
+    //new(global_schedulers) per_processor_scheduler;
     dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
@@ -308,7 +308,7 @@ extern "C" void ap_init()
     if(fred_support_catch_bit){
         fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
     }
-    new(global_schedulers+fast_get_processor_id()) per_processor_scheduler;
+    //new(global_schedulers+fast_get_processor_id()) per_processor_scheduler;
     init_finish_checkpoint.success_word=~query_x2apicid();
     asm volatile("sfence");
     ap_final_work();

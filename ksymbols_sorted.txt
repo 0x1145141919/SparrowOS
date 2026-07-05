@@ -4121,7 +4121,7 @@ ffff80000000d70e W _ZN9Ktemplats11list_doublyImE10alloc_nodeERKm
 ffff80000000d7a3 T _Z9probe_envv
 ffff80000000d822 W _ZN9cpuid_tmpC1Ejj
 ffff80000000d822 W _ZN9cpuid_tmpC2Ejj
-ffff80000000d880 T atoimc_kthread_load
+ffff80000000d880 T idt_style_load
 ffff80000000d89c T kthread_yield
 ffff80000000d8a5 T kthread_exit
 ffff80000000d8ae T kthread_self_blocked

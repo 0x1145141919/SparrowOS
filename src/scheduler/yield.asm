@@ -1,5 +1,5 @@
 SECTION .text
-global atoimc_kthread_load
+global idt_style_load
 bits 64
 %define kthread_call_ivec 226
 %define KTHREAD_CALL_EXIT   0
@@ -9,7 +9,8 @@ bits 64
 %define KTHREAD_CALL_BLOCK  4
 %define KTHREAD_CALL_BLOCK_QUEUE  5
 %define KTHREAD_CALL_BLOCK_QUEUE_IF_EQUAL  6
-atoimc_kthread_load:
+idt_style_load:
+    ;这里还要根据特权级是不是ring 3进行swapgs
     mov rsp, rdi
     pop rax
     pop rbx
@@ -26,7 +27,46 @@ atoimc_kthread_load:
     pop r14
     pop r15
     pop rbp  
+    add rsp, 8
     iretq
+global fred_uctx_load
+fred_uctx_load:
+    mov rsp, rdi
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    pop rbp  
+    eretu
+global fred_pctx_load
+fred_pctx_load:
+    mov rsp, rdi
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    pop rbp  
+    erets
 %macro KTREAD_CALL_TEMPLATE 1
 mov rax, %1
 int kthread_call_ivec

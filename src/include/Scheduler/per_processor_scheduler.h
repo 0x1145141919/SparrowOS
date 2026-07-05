@@ -166,11 +166,6 @@ enum task_state_t:uint8_t{
     zombie,
     dead
 };
-enum task_type_t:uint8_t{
-    kthreadm=0,
-    userthread,
-    vCPU
-};
 // wait_other_kthread 已移除 — 2026-07-02，kthread_wait 及 waiters 链表已清除。
 enum task_blocked_reason_t:uint8_t{
     invalid,
@@ -326,6 +321,8 @@ class alignas(64) per_processor_scheduler {
     KURD_t default_fail();
     KURD_t default_fatal();
     task idle;
+    void sleep_tasks_wake();
+    void sched();//会内部修改ready_queue数据结构用ready_queues_lock保护，然后对应的task也会用锁保护其状态改变
     public:
     static constexpr uint32_t GANTT_CAPACITY = 4096;
     dts_gantt_entry* dts_gantt = nullptr;    // 按需分配，NULL=关闭
@@ -348,9 +345,9 @@ class alignas(64) per_processor_scheduler {
     sleep_queue_t sleep_queue;
     reentrant_spinlock_cpp_t sched_lock;//调度器数据结构锁，保护running tid,sleep_queue_t
     bool is_idle;
-    void sched();//会内部修改ready_queue数据结构用ready_queues_lock保护，然后对应的task也会用锁保护其状态改变
+    void next_task_with_routine();//会交出执行流的一个函数，会先bq_id_t翻牌子，唤醒一批超时的，再sleep_tasks_wake唤醒所有睡眠超时的，最后再sched()调度
     KURD_t insert_ready_task(task*task_ptr, bool front=false);
-    void sleep_tasks_wake();
+    
     
     // ── DTS Gantt 接口 ──
     KURD_t dts_gantt_enable();   // 按需分配 Gantt 缓冲区
@@ -359,12 +356,11 @@ class alignas(64) per_processor_scheduler {
     friend task;
     friend class task_pool;
     void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
-    
 };
-extern per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
+per_processor_scheduler* get_self_scheduler();
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 extern "C"{
-    task* task_spawn(task_type_t type);
+    task* task_spawn();
     KURD_t task_start(uint64_t insert_pid);
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();

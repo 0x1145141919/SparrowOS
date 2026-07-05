@@ -26,7 +26,6 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "util/kout.h"
 #include "memory/FreePagesAllocator.h"
-alignas(64) per_processor_scheduler global_schedulers[MAX_PROCESSORS_COUNT];
 namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
 spinlock_cpp_t global_tid_lock;

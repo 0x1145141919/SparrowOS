@@ -109,7 +109,7 @@ section .text
 ; ── init_jump_to_kernel ───────────────────────────────────────────────
 ; void init_jump_to_kernel(x64_standard_context* ctx);
 ;
-; 从 Phase 4.5 跳入 kernel.elf，等同于 atoimc_kthread_load 的语义。
+; 从 Phase 4.5 跳入 kernel.elf，等同于 idt_style_load 的语义。
 ; RDI 指向 x64_standard_context（含 15 个 GPR + iret_complex）。
 ; 该函数 pop 所有 GPR 后 iretq，永不返回。
 global init_jump_to_kernel

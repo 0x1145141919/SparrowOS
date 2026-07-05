@@ -1,4 +1,3 @@
-#include "Scheduler/per_processor_scheduler.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "memory/kpoolmemmgr.h"
 #include "memory/all_pages_arr.h"
@@ -7,8 +6,10 @@
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
+#include "arch/x86_64/abi/GS_complex.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
+#include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 static u64ka g_next_tid{0};  // 0 保留作无效
 
 extern "C" void secure_hlt();
@@ -167,9 +168,6 @@ per_processor_scheduler::per_processor_scheduler()
     idle_task->set_belonged_processor_id(fast_get_processor_id());
     idle_task->task_lock.unlock();
     idle = idle_task;
-}
-per_processor_scheduler::~per_processor_scheduler()
-{
 }
 namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
@@ -385,7 +383,9 @@ uint32_t task::get_belonged_processor_id()
     return belonged_processor_id;
 }
 
-extern "C" void atoimc_kthread_load(x64_standard_context* context);
+extern "C" void idt_style_load(x64_standard_context_v2* context);
+extern "C" void fred_uctx_load(x64_standard_context_v2* context);
+extern "C" void fred_pctx_load(x64_standard_context_v2* context);
 bool task::set_ready()
 {
     if(task_state==task_state_t::init ||
@@ -467,7 +467,7 @@ void task::atomic_load()
 {
     switch(task_type){
         case task_type_t::kthreadm:{
-            atoimc_kthread_load(&context.kthread->regs);
+            idt_style_load(&context.kthread->regs);
         }
         case task_type_t::userthread:{
 
@@ -495,4 +495,41 @@ void tid_wait_queue::wakeup_all()
 }
 void per_processor_scheduler::placed_init()
 {
+}
+per_processor_scheduler *get_self_scheduler()
+{
+    return (per_processor_scheduler*)(gs_offsetptr_dumper()+offsetof(gs_complex_t, scheduler));
+}
+bool task::launch()
+{
+    if(this->current_event!=event_type_t::init){
+        return false;
+    }
+    this->task_event_shift(event_type_t::run_kthread);
+    if(fred_support_catch_bit){
+        fred_pctx_load(&this->priv_ctx);
+    }else{
+        idt_style_load(&this->priv_ctx);
+    }
+}
+void task::resume()
+{
+
+    switch(this->choose){
+        case ctx_choose::priv:{
+            this->task_event_shift(event_type_t::run_kthread);
+            if(fred_support_catch_bit){
+                fred_pctx_load(&this->priv_ctx);
+            }else{
+                idt_style_load(&this->priv_ctx);
+            }
+        }
+        case ctx_choose::u_ctx:{
+            this->task_event_shift(event_type_t::run_kthread);
+            //别想着那么快实现，uctx要加载的多得多
+        }
+        case ctx_choose::vCPU:{
+            this->task_event_shift(event_type_t::run_vCPU);
+        }
+    }
 }
