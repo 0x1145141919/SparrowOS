@@ -270,14 +270,41 @@ static void ioport80_write(void *opaque, hwaddr addr, uint64_t data, unsigned si
 }
 ```
 
-### 使用示例
+### SparrowOS 启动链上的锚点位置
 
-```c
-// 在 kernel_start 入口——此时 identity map 已激活
-outb(DBUG_BREAK, IO_DEBUG_PORT);  // 停住 → 用户下 Z0 断点 → continue
+port magic 的插入点覆盖整个启动链。每个锚点停住后可以下 Z0/hbreak 断点用于下一阶段调试。
+
+| # | 锚点位置 | 源文件 | 插入点 | 当时页表 | 停住后可做什么 |
+|---|---------|--------|--------|---------|---------------|
+| ① | init.elf 入口 | `init_entry.asm` `_init_entry:` | `outb(0xDB, 0x80)` 放在 `mov cr3, rax` 之后 | 恒等映射 (VA=PA 0~4TB) | 调试 init 自身启动流程(GDT/IDT/Phase 1-3a/3b/4) |
+| ② | CR3→KMMU 后, 跳 kernel 前 | `init_init.cpp` `phase_45_finalize()` | 放在 `4.5-3: mov cr3, root` 之后, `4.5-6: init_jump_to_kernel` 之前 | KMMU (恒等+高半) **← 关键窗口** | **下 Z0 断点于 kernel.elf 任意符号** (此际 kernel VA 首次可翻译) |
+| ③ | kernel_start 入口 | `kinit.cpp` `kernel_start()` | `outb(0xDB, 0x80)` 作为函数第一行 | KMMU | 调试 kernel 早期初始化(中断/调度器/...) |
+| ④ | AP 启动入口 | 各 AP 唤醒点 | 各 AP 入口处 | KMMU | 调试多核启动 |
+
+#### ⭐ 锚点② 详解（唯一关键窗口）
+
+此锚点的角色是抓住 Z0 断点从"不可用"变为"可用"的那个精确时刻。在此之前(锚点①)，恒等映射仅覆盖 VA=PA 空间，kernel.elf 的符号地址 `0xFFFFFF80XXXXXXXX` 不在其中 → `x86_cpu_translate_for_debug` 翻译失败 → Z0 无法插入。在此之后，KMMU 页表同时映射了恒等区和高半区 → Z0 翻译成功。
+
+```
+恒等映射活跃          KMMU 活跃
+│                    │
+▼ 锚点①             ▼ 锚点②              ▼ kernel_start
+───────────────────────────────┬─────────────────
+  Z0(高半地址)→失败    │  Z0(高半地址)→成功  Z0(高半地址)→成功
+                       │
+                 CR3 切换
 ```
 
-### 全流程
+停住后的标准操作：
+
+```gdb
+# 此刻 CR3 已切到 KMMU，kernel.elf 的 VA 映射就绪
+(gdb) break init_init.cpp:101          # 成功！
+(gdb) break kinit.cpp:kernel_start     # 成功！
+(gdb) continue                         # 继续执行，断点命中
+```
+
+### 全流程：一次典型的调试会话
 
 ```
 QEMU: -s -S -accel kvm
@@ -287,15 +314,43 @@ GDB:  target remote :1234
 
 Guest 跑
   │
-  ├── outb(0xDB, 0x80)  # 停在 kernel_start
-  │     │  CR3 = identity map ✓
-  │     │  kernel.elf 已在物理内存 ✓
-  │     │  符号地址 == 物理地址 ✓
-  │     │  此时下 Z0 断点：x86_cpu_translate_for_debug 可走通
-  │     │  下 break init_init.cpp:101
-  │     │  continue
+  ├── [_init_entry 入口]
+  │     outb(0xDB, 0x80)    ← 可选锚点①
+  │     CR3 ← root_table (恒等映射)
+  │     init() → Phase 1-4...
+  │
+  ├── [phase_45_finalize 4.5-3]
+  │     mov cr3, root (KMMU)
+  │     outb(0xDB, 0x80)    ← ⭐ 锚点② — 关键窗口
+  │     │  此时下 Z0 断点于 kernel 符号全部成功
+  │     │  init_jump_to_kernel → kernel.elf
   │     ▼
+  │
+  ├── [kernel_start 入口]
+  │     outb(0xDB, 0x80)    ← 可选锚点③
+  │     中断接管, 调度器初始化...
+  │
   │  标准 Z0 断点触发 → 调试全链路工作
+```
+
+#### 使用示例
+
+```c
+// src/init/init_init.cpp, phase_45_finalize(), 4.5-3 之后, 4.5-6 之前:
+    asm volatile("mov %0, %%cr3" :: "r"(root) : "memory");
+    outb(0xDB, IO_DEBUG_PORT);  // ← 锚点②: 关键窗口，停住后部署 Z0 断点
+
+// 或直接插在 4.5-6 最后:
+    init_jump_to_kernel(&ctx);
+    // (never reached)
+```
+
+```asm
+; src/init/init_entry.asm, _init_entry:
+_init_entry:
+    mov rax, root_table
+    mov cr3, rax
+    outb 0xDB, 0x80              ; ← 锚点①: init.elf 入口
 ```
 
 ### 三层对比
