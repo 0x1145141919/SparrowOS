@@ -149,10 +149,10 @@ namespace kthread_call_num{
     constexpr uint64_t block_to_queue=5;
     constexpr uint64_t block_to_queue_if_equal=6;
 };
+constexpr uint8_t DEFAULT_PRIVSTACK_PGS_COUNT=4;
 constexpr uint64_t INVALID_TID=~0ull;
 constexpr miusecond_time_stamp_t DEFALUT_TIMER_SPAN_MIUS=20000;
 constexpr uint64_t INIT_DEFAULT_RFLAGS=0x202;
-extern "C" void secure_hlt();
 struct u_ctx_t{
     x64_standard_context_v2 xtd_ctx;
     AddressSpace*as;
@@ -189,9 +189,9 @@ class task{
     uint32_t belonged_processor_id;
     task();
     bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
-    uint64_t get_tid();
+    const uint64_t get_tid();
     static  task* basic_constructor();
-    static void placement_constructor(task*task_ptr);
+    static void idle_specified_constructor(task*task_ptr);
     void atomic_load();   // 根据 ctx_choose 无脑加载对应上下文
     bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
     bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
@@ -219,6 +219,7 @@ class task{
     };
     task_state_t get_state();
     ctx_choose choose;
+    friend class task_pool;
 };
 
 // ── wq 句柄系统 ────────────────────────────────────────
@@ -252,17 +253,17 @@ class block_queue{
 /**
  * 
  */
-// task_tid_compare — 按 tid 大小排序 task*
-static int task_tid_compare(task* const& a ,task* const& b) {
-    return a->get_tid()-b->get_tid();
+// task_tid_compare — 按 tid 大小排序 task
+static int task_tid_compare(const task &a ,const task&b) {
+    return a.get_tid()-b.get_tid();
 }
 
 class task_pool{
     static spinrwlock_cpp_t lock;
-    static Ktemplats::RBTree<task*, task_tid_compare> m_tree;
+    static Ktemplats::RBTree<task, task_tid_compare> m_tree;
 public:
     static task* get_by_tid(uint64_t tid, KURD_t& kurd);
-    static KURD_t insert(task* t);
+    static task* spawn();//新建一个task但是tid由g_next_tid.add_ka(1)安排
     static KURD_t release(uint64_t tid);
     static int Init();
 };
@@ -324,10 +325,15 @@ class alignas(64) per_processor_scheduler {
 per_processor_scheduler* get_self_scheduler();
 per_processor_scheduler* get_other_scheduler(uint32_t pid);
 constexpr uint32_t INVALID_NODE_INDEX=~0;
-
+struct kthread_creating_package{
+    uint64_t func_raw;
+    uint64_t args[5];
+    uint32_t launch_pid;
+};
 extern "C"{
-    ckurd kthread_init(task*t,void*entry,void*arg1,void*arg2,uint8_t priv_pages);
+    ckurd kthread_init(task*t,kthread_creating_package*p);
     KURD_t task_launch(task*t,uint32_t pid);//指定处理器上把对应的没有运行过（run_kthread积累为0的任务）从init转入ready后放入ready_queue
+    uint64_t creat_kthread(kthread_creating_package*p,KURD_t*kurd);
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();

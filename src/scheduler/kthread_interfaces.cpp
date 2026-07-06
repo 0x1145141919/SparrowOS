@@ -241,7 +241,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
         return kurd_get_raw(kurd);
     }
     reentrant_spinlock_guard l(task_ptr->task_lock);
-    per_processor_scheduler*target_scheduler=get_other_scheduler(task_ptr->get_belonged_processor_id());
+    per_processor_scheduler*target_scheduler=get_other_scheduler(task_ptr->belonged_processor_id);
     if(task_ptr->get_state()==task_state_t::ready||
     task_ptr->get_state()==task_state_t::running){
         success.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
@@ -340,4 +340,14 @@ void kthread_call_cpp_enter(x64_standard_context_v2 *frame)
             //panic
         }
     }
+}
+uint64_t creat_kthread(kthread_creating_package *p,KURD_t*kurd)
+{
+    task* t=task::basic_constructor();
+    uint64_t tid=t->get_tid();
+    ckurd kp=kthread_init(t,p);
+    *kurd=raw_analyze(kp);
+    if(error_kurd(*kurd))return INVALID_TID;
+    *kurd=task_launch(t,p->launch_pid);
+    return tid;
 }

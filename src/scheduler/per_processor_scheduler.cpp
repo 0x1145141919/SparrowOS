@@ -27,7 +27,7 @@ static void* secure_hlt_wrapper(void* unused) {
 
 // ── task_pool 静态成员 ──
 spinrwlock_cpp_t task_pool::lock;
-Ktemplats::RBTree<task*, task_tid_compare> task_pool::m_tree;
+Ktemplats::RBTree<task, task_tid_compare> task_pool::m_tree;
 
 int task_pool::Init()
 {
@@ -37,47 +37,37 @@ int task_pool::Init()
 task* task_pool::get_by_tid(uint64_t tid, KURD_t& kurd)
 {
     task tmp;
-    tmp.usage_of_search_set_tid(tid);
-    task** found;
+    tmp.tid=tid;
+    task* found;
     {
         spinrwlock_interrupt_about_read_guard l(lock);
-        found = m_tree.find(&tmp);
+        found = m_tree.find(tmp);
     }
-    if (found) return *found;
+    if (found) return found;
     kurd = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
                   Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
     return nullptr;
 }
 
-KURD_t task_pool::insert(task* t)
+task* task_pool::spawn()
 {
-    if (!t) {
-        return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
-                      Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
-    }
-    {
-        spinrwlock_interrupt_about_write_guard l(lock);
-        bool ok = m_tree.insert(t);
-        if (!ok) {
-            return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
-                          Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
-        }
-    }
-    return KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
-                  Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
+    task tmp;
+    tmp.tid=g_next_tid.add_ka(1);
+    m_tree.insert(tmp);
+    return m_tree.find( tmp);
 }
 
 KURD_t task_pool::release(uint64_t tid)
 {
     spinrwlock_interrupt_about_write_guard l(lock);
     task tmp;
-    tmp.usage_of_search_set_tid(tid);
-    task** found = m_tree.find(&tmp);
+    tmp.tid=tid;
+    task* found = m_tree.find(tmp);
     if (!found) {
         return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
                       Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
     }
-    m_tree.erase(*found);
+    m_tree.erase(tmp);
     return KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
                   Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
 }
@@ -344,11 +334,6 @@ KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
     }
     return success;
 }
-
-uint64_t task::get_tid()
-{
-    return tid;
-}
 bool task::usage_of_search_set_tid(uint64_t new_tid)
 {
     if(this->current_event_start_stamp)//标准初始化时序必然会初始化这个字段
@@ -415,14 +400,17 @@ void task::task_event_shift(event_type_t new_event)
         this->current_event=new_event;
     }
 }
+
 task *task::basic_constructor()
 {
-    task* t=new task();
-    placement_constructor(t);
-    task_pool::insert(t);
+    task* t=task_pool::spawn();
+    ksetmem_8(t,0,sizeof(task));
+    t->task_state=task_state_t::init;
+    t->current_event=event_type_t::init;
+    t->current_event_start_stamp=ktime::get_microsecond_stamp();
     return t;
 }
-void task::placement_constructor(task *task_ptr)
+void task::idle_specified_constructor(task *task_ptr)
 {
     task_ptr->task_state=task_state_t::init;
     task_ptr->current_event=event_type_t::init;
@@ -438,7 +426,7 @@ void per_processor_scheduler::placed_init()
     gs_complex_t* gs_complex=(gs_complex_t*)gs_offsetptr_dumper(0);
     per_processor_scheduler& scheduler=gs_complex->scheduler;
     task& t=scheduler.idle;
-    task::placement_constructor(&t);
+    task::idle_specified_constructor(&t);
     per_processor_hardware_stack_t* stacks_ptr=gs_complex->stacks_ptr;
     t.priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&common_idle;
     t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
@@ -474,19 +462,22 @@ void task::atomic_load()//只是忠实地根据翻到的牌子运行,不对任�
         }
     }
 }
-ckurd kthread_init(task *t, void *entry, void *arg1, void *arg2, uint8_t priv_pages)
+ckurd kthread_init(task *t,kthread_creating_package*p)
 {
 
     t->priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
     t->priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;
     t->priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
-    t->priv_ctx.rdi=(uint64_t)entry;
-    t->priv_ctx.rsi=(uint64_t)arg1;
-    t->priv_ctx.rdx=(uint64_t)arg2;
+    t->priv_ctx.rdi=(uint64_t)p->func_raw;
+    t->priv_ctx.rsi=p->args[0];
+    t->priv_ctx.rdx=p->args[1];
+    t->priv_ctx.rcx=p->args[2];
+    t->priv_ctx.r8=p->args[3];
+    t->priv_ctx.r9=p->args[4];
     KURD_t kurd;
-    t->priv_stack_base=stack_alloc(&kurd,priv_pages);
+    t->priv_stack_base=stack_alloc(&kurd,DEFAULT_PRIVSTACK_PGS_COUNT);
     if(error_kurd(kurd))return kurd_get_raw(kurd);
-    t->priv_stack_pages=priv_pages;
+    t->priv_stack_pages=DEFAULT_PRIVSTACK_PGS_COUNT;
     t->priv_ctx.core_ctx.idtctx.iret.rsp=t->priv_stack_base+(t->priv_stack_pages<<12)-64;
     t->priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&allkthread_true_enter;
     t->choose=task::ctx_choose::priv;
