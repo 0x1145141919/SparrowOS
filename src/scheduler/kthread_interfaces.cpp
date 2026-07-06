@@ -99,18 +99,32 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: not running");
     }
     task_ptr->task_event_shift(task::event_type_t::offline);
-    vaddr_t stack_bottom = task_ptr->priv_stack_base+(task_ptr->priv_stack_pages<<12)-64;
-    vaddr_t stack_top   = task_ptr->priv_stack_base;
-
-    if (frame->iret_complex.rsp > stack_bottom || frame->iret_complex.rsp < stack_top) {
-        KURD_t fatal = make_self_scheduler_fatal(
-            Scheduler::self_scheduler_events::kthread_common_save, 0);
-        fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::context_stackptr_out_of_range;
-        panic_with_kurd(frame, fatal, (char*)"kthread_common_save: stack ptr OOR");
+    
+    bool is_from_vm=!!(frame->core_ctx.fred.errcode&0x8000000000000000ull);
+    if(is_from_vm){
+        // panic，以其完全不支持的原因
+    }else{
+        if(IDT_CS(frame->core_ctx.fred.cs) & 0x3==3){
+            // panic,暂时不支持
+        }else{
+            vaddr_t stack_bottom = task_ptr->priv_stack_base+(task_ptr->priv_stack_pages<<12)-64;
+            vaddr_t stack_top   = task_ptr->priv_stack_base;
+            vaddr_t rsp=frame->core_ctx.fred.rsp;
+            if (rsp > stack_bottom || rsp < stack_top) {
+                KURD_t fatal = make_self_scheduler_fatal(
+                Scheduler::self_scheduler_events::kthread_common_save, 0);
+                fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::context_stackptr_out_of_range;
+             panic_with_kurd(frame, fatal, (char*)"kthread_common_save: stack ptr OOR");
+            }
+            task_ptr->priv_ctx = *frame;
+            task_ptr->priv_ctx.core_ctx.idtctx.iret.cs&=0xffff;
+            task_ptr->priv_ctx.core_ctx.idtctx.iret.ss&=0xffff;
+        }
     }
-    task_ptr->context.kthread->regs = *frame;
-    uint64_t latest_run_span = ktime::get_microsecond_stamp() - task_ptr->lastest_run_stamp;
-    task_ptr->accumulated_time += latest_run_span;
+        
+    
+    
+    
     return task_ptr;
 }
 [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2*context)
@@ -165,7 +179,6 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     {
         reentrant_spinlock_guard g(blocked_task->task_lock);
         kthread_common_save(context,true);
-        blocked_task->blocked_reason=(task_blocked_reason_t)context->rdi;
         blocked_task->set_blocked();
     }
     scheduler.next_task_with_routine();

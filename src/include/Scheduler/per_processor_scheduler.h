@@ -35,37 +35,10 @@ namespace Scheduler{
         }
     }
     namespace self_scheduler_events{
-        constexpr uint8_t timer_cpp_enter=0;
-        namespace timer_cpp_enter_results{
-            namespace fatal_reasons{
-                constexpr uint16_t null_scheduler=1;
-                constexpr uint16_t invalid_running_task_id=2;
-                constexpr uint16_t null_task_ptr=3;
-                constexpr uint16_t invalid_cs=4;
-                constexpr uint16_t null_kthread_context=5;
-                constexpr uint16_t invalid_stack_size=6;
-                constexpr uint16_t rsp_out_of_range=7;
-                constexpr uint16_t null_userthread_context=8;
-                constexpr uint16_t invalid_task_type=9;
-            }
-        }
         constexpr uint8_t kthread_yield_enter=1;
         namespace kthread_yield_enter_results{
             namespace fatal_reasons{
-                constexpr uint16_t null_scheduler=1;
-                constexpr uint16_t invalid_running_task_id=2;
-                constexpr uint16_t null_task_ptr=3;
-                constexpr uint16_t null_kthread_context=4;
-                constexpr uint16_t invalid_stack_size=5;
-                constexpr uint16_t rsp_out_of_range=6;
-                constexpr uint16_t invalid_task_type=7;
-            }
-        }
-        constexpr uint8_t schedule_and_switch=2;
-        namespace schedule_and_switch_results{
-            namespace fatal_reasons{
-                constexpr uint16_t empty_no_idle=1;
-                constexpr uint16_t null_task_ptr=2;
+
             }
         }
         constexpr uint8_t insert_ready_task=3;
@@ -90,18 +63,12 @@ namespace Scheduler{
         constexpr uint8_t kthread_block=5;
         namespace kthread_block_results{
             namespace fatal_reasons{
-                constexpr uint16_t bad_task_type=1;
-                constexpr uint16_t context_nullptr=2;
-                constexpr uint16_t context_null_stack_size=3;
-                constexpr uint16_t context_stackptr_out_of_range=4;
                 constexpr uint16_t illeage_state=5;
             }
         }
         constexpr uint8_t sleep_task_insert=7;
         namespace sleep_task_insert_results{
             namespace fail_reasons{
-                constexpr uint16_t null_task_ptr=1;
-                constexpr uint16_t bad_task_type=2;
                 constexpr uint16_t insert_fail=3;
             }
         }
@@ -109,9 +76,9 @@ namespace Scheduler{
         namespace kthread_sleep_results{ 
             namespace fatal_reasons{
                 constexpr uint16_t bad_task_state=1;
-                constexpr uint16_t context_nullptr=2;
-                constexpr uint16_t context_null_stack_size=3;
-                constexpr uint16_t context_stackptr_out_of_range=4;
+                 
+                 
+                 
                 constexpr uint16_t illeage_state=5;
             }
         }
@@ -120,26 +87,26 @@ namespace Scheduler{
         namespace kthread_exit_results{
             namespace fatal_reasons{
                 constexpr uint16_t bad_task_state=1;
-                constexpr uint16_t context_stackptr_out_of_range=4;
+                 
             }
         }
         constexpr uint8_t kthread_block_queue=10;
         namespace kthread_block_queue_results{
             namespace fatal_reasons{
-                constexpr uint16_t bad_task_type=1;
-                constexpr uint16_t context_nullptr=2;
-                constexpr uint16_t context_null_stack_size=3;
-                constexpr uint16_t context_stackptr_out_of_range=4;
+                 
+                 
+                 
+                 
                 constexpr uint16_t illeage_state=5;
             }
         }
         constexpr uint8_t kthread_block_queue_if_equal=11;
         namespace kthread_block_queue_if_equal_results{
             namespace fatal_reasons{
-                constexpr uint16_t bad_task_type=1;
-                constexpr uint16_t context_nullptr=2;
-                constexpr uint16_t context_null_stack_size=3;
-                constexpr uint16_t context_stackptr_out_of_range=4;
+                 
+                 
+                 
+                 
                 constexpr uint16_t illeage_state=5;
             }
         }
@@ -147,10 +114,10 @@ namespace Scheduler{
         // kthread_wait/waiters 已移除 — 2026-07-02。见 task_v3设计.md。
         namespace kthread_common_save_results{
             namespace fatal_reasons{
-                constexpr uint16_t bad_task_type=1;
-                constexpr uint16_t context_nullptr=2;
+                 
+                 
                 constexpr uint16_t bad_task_state=3;
-                constexpr uint16_t context_stackptr_out_of_range=4;
+                 
             }
             namespace fail_reasons{
                 constexpr uint16_t nullptr_param=1;
