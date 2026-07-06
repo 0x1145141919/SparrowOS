@@ -84,7 +84,7 @@ static inline void panic_with_kurd(KURD_t kurd,char*message=nullptr)
     );
 }
 } // namespace
-task* kthread_common_save(x64_standard_context*frame,bool expect_running)
+task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 {
     task* task_ptr = (task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     if (!task_ptr) {
@@ -123,51 +123,7 @@ task* kthread_common_save(x64_standard_context*frame,bool expect_running)
     task_ptr->accumulated_time += latest_run_span;
     return task_ptr;
 }
-extern "C" void allthread_true_enter(void *(*entry)(void *), void *arg){
-    uint64_t return_value=(uint64_t)entry(arg);
-    kthread_exit(return_value);
-};
-uint64_t create_kthread(void *(*entry)(void *), void *arg, KURD_t *out_kurd)
-{
-    interrupt_guard g;
-    kthread_context* context = new kthread_context();
-    context->regs.iret_complex.rip = (uint64_t)allthread_true_enter;
-    context->regs.rsi = (uint64_t)arg;
-    context->regs.rdi = (uint64_t)entry;
-    context->regs.iret_complex.cs = K_cs_idx<<3;
-    context->regs.iret_complex.ss = K_ds_ss_idx<<3;
-    context->stacksize = DEFAULT_STACK_SIZE;
-    context->stack_bottom = (uint64_t)stack_alloc(out_kurd,DEFAULT_STACK_PG_COUNT);
-    if(error_kurd(*out_kurd)){
-        delete context;
-        return INVALID_TID;
-    }
-    context->regs.iret_complex.rsp = context->stack_bottom;
-    context->regs.iret_complex.rflags = INIT_DEFAULT_RFLAGS;
-    task* new_task = new task(task_type_t::kthreadm, context);
-    new_task->task_lock.lock();
-    uint64_t assigned_tid = task_pool::alloc(new_task, *out_kurd);
-    if(error_kurd(*out_kurd)){
-        new_task->task_lock.unlock();
-        return INVALID_TID;
-    }
-    new_task->assign_valid_tid(assigned_tid);
-    new_task->set_ready();
-    per_processor_scheduler&self_scheduler = global_schedulers[fast_get_processor_id()];
-    new_task->task_lock.unlock();
-    self_scheduler.sched_lock.lock();
-    *out_kurd=self_scheduler.insert_ready_task(new_task);
-    if(error_kurd(*out_kurd)){
-         delete context;
-        delete new_task;
-        self_scheduler.ready_queue.pop_back();
-        self_scheduler.sched_lock.unlock();
-        return INVALID_TID;
-    }
-    self_scheduler.sched_lock.unlock();
-    return assigned_tid;
-}
-[[noreturn]] void kthread_yield_true_enter(x64_standard_context*context)
+[[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2*context)
 {
 
     per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];

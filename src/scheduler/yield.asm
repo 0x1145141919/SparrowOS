@@ -48,6 +48,7 @@ fred_uctx_load:
     pop r15
     pop rbp  
     eretu
+    ud2
 global fred_pctx_load
 fred_pctx_load:
     mov rsp, rdi
@@ -67,6 +68,21 @@ fred_pctx_load:
     pop r15
     pop rbp  
     erets
+    ud2
+global allkthread_true_enter
+allkthread_true_enter:
+    mov rax, rdi
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rdx, rcx
+    mov rcx, r8
+    mov r8, r9
+    call rax
+    mov rdi, rax
+    mov rax, KTHREAD_CALL_EXIT
+    int kthread_call_ivec
+    ud2
+
 %macro KTREAD_CALL_TEMPLATE 1
 mov rax, %1
 int kthread_call_ivec
@@ -113,4 +129,13 @@ gs_offsetptr_dumper:
     rdgsbase rax
     add rax, rdi
     ret
+global common_idle
+common_idle:
+.loop_idle:
+    sti
+    hlt
+    mov rax, KTHREAD_CALL_YIELD
+    int kthread_call_ivec
+    jmp .loop_idle
+
 

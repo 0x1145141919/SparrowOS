@@ -225,8 +225,7 @@ class task{
     uint64_t get_tid();
     static  task* basic_constructor();
     static void placement_constructor(task*task_ptr);
-    bool launch();   // 从 priv_ctx 加载上下文开始执行,由于是开始所以肯定会先在accumulates_bank校验run_kthread为0才可以启动
-    void resume();   // 根据 ctx_choose 无脑加载对应上下文
+    void atomic_load();   // 根据 ctx_choose 无脑加载对应上下文
     bool set_ready();//成功返回true,但是必须从init/blocked切换到才合法/成功，非法不会改状态字段
     bool set_blocked();//成功返回true,但是必须从running切换到才合法/成功，非法不会改状态字段
     bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
@@ -355,13 +354,15 @@ class alignas(64) per_processor_scheduler {
     void   dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
     friend task;
     friend class task_pool;
-    void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
+    static void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
 };
 per_processor_scheduler* get_self_scheduler();
+per_processor_scheduler* get_other_scheduler(uint32_t pid);
 constexpr uint32_t INVALID_NODE_INDEX=~0;
+
 extern "C"{
-    task* task_spawn();
-    KURD_t task_start(uint64_t insert_pid);
+    ckurd kthread_init(task*t,void*entry,void*arg1,void*arg2,uint8_t priv_pages);
+    KURD_t task_start(task*t,uint32_t pid);//指定处理器上把对应的没有运行过（run_kthread积累为0的任务）从init转入ready后放入ready_queue
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();
@@ -378,9 +379,10 @@ extern "C"{
     ckurd release_kthread(uint64_t tid);
     bq_id_t  bq_alloc(block_queue*q);                         // 分配一个新 block_queue，返回句柄,处于ready态
     ckurd bq_free(bq_id_t qid);               // 释放，返回 ckurd（KURD raw）
-    block_queue*get_lock(bq_id_t id);//没找到就返回空指针
     //上面三个的返回值是唤醒个数
     void bq_flush_pending(blocked_tasks_clamps_t* clamp); // 处理 pending_wake 中所有弹出的 task（调用方已释放 bq_lock）
+    void common_idle();
+    char allkthread_true_enter;
 }
 /**
  * 内核线程接口里面锁顺序纪律：

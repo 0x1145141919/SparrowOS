@@ -10,6 +10,7 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
+#include "arch/x86_64/mem_init.h"
 static u64ka g_next_tid{0};  // 0 保留作无效
 
 extern "C" void secure_hlt();
@@ -98,11 +99,11 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
         return success;
     }
 
-    const miusecond_time_stamp_t new_stamp = task_ptr->sleep_wakeup_stamp;
+    const miusecond_time_stamp_t new_stamp = task_ptr->min_wakeup_stamp;
     node* cur = m_head;
     while (cur) {
         task* cur_task = cur->value;
-        if (cur_task && cur_task->sleep_wakeup_stamp > new_stamp) {
+        if (cur_task && cur_task->min_wakeup_stamp > new_stamp) {
             break;
         }
         cur = cur->next;
@@ -134,40 +135,6 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
 task::task()
 {
     ksetmem_8(this, 0, sizeof(task));
-}
-// ── per_processor_scheduler 构造函数 ──
-per_processor_scheduler::per_processor_scheduler()
-{
-    KURD_t kurd;
-    if(error_kurd(kurd)){
-        Panic::panic(default_panic_behaviors_flags,"stack alloc failed when alloc per_processor_scheduler private stack",nullptr,nullptr,kurd);
-    }
-    // Idle task must not be enqueued into ready_queue.
-    kthread_context* idle_ctx = new kthread_context();
-    idle_ctx->regs.iret_complex.cs = K_cs_idx<<3;
-    idle_ctx->regs.iret_complex.ss = K_ds_ss_idx<<3;
-    idle_ctx->regs.iret_complex.rip = (uint64_t)secure_hlt_wrapper;
-    idle_ctx->regs.rsi = 0;
-    idle_ctx->regs.rdi = 0;
-    idle_ctx->stacksize = 0x2000;
-    idle_ctx->stack_bottom = (uint64_t)stack_alloc(&kurd,1);
-    idle_ctx->regs.iret_complex.rsp = idle_ctx->stack_bottom;
-    idle_ctx->regs.iret_complex.rflags = INIT_DEFAULT_RFLAGS;
-    if(error_kurd(kurd) || idle_ctx->stack_bottom == 0){
-        Panic::panic(default_panic_behaviors_flags,"idle task stack alloc failed",nullptr,nullptr,kurd);
-    }
-    task* idle_task = new task(task_type_t::kthreadm, idle_ctx);
-    idle_task->task_lock.lock();
-    uint64_t idle_tid = task_pool::alloc(idle_task, kurd);
-    if(error_kurd(kurd) || idle_tid==INVALID_TID){
-        idle_task->task_lock.unlock();
-        Panic::panic(default_panic_behaviors_flags,"alloc idle task failed",nullptr,nullptr,kurd);
-    }
-    idle_task->assign_valid_tid(idle_tid);
-    idle_task->set_ready();
-    idle_task->set_belonged_processor_id(fast_get_processor_id());
-    idle_task->task_lock.unlock();
-    idle = idle_task;
 }
 namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
@@ -265,7 +232,7 @@ void per_processor_scheduler::sleep_tasks_wake()
             break;
         }
         task*candidate_task=*candidate;
-        if(candidate_task->sleep_wakeup_stamp<=current_stamp){
+        if(candidate_task->min_wakeup_stamp<=current_stamp){
             this->sleep_queue.pop_front();
             to_run_list.push_back(candidate_task);
         }else{
@@ -319,14 +286,15 @@ void per_processor_scheduler::sched()
                 } 
             }
         }
-        return this->idle;
+        return &this->idle;
     }();
-    to_run->task_lock.lock();
+    {
+    reentrant_spinlock_guard(to_run->task_lock);
     to_run->set_running();
     to_run->set_belonged_processor_id(fast_get_processor_id());
-    to_run->lastest_run_stamp=ktime::get_microsecond_stamp();
     gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
-    to_run->task_lock.unlock();
+    
+    }
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
     to_run->atomic_load();
 }
@@ -336,7 +304,7 @@ KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
     KURD_t success=default_success();
     fail.event_code=Scheduler::self_scheduler_events::insert_ready_task;
     success.event_code=Scheduler::self_scheduler_events::insert_ready_task;
-    if(task_ptr==idle){
+    if(task_ptr==&idle){
         return success;
     }
     if(task_ptr==nullptr){
@@ -372,12 +340,6 @@ bool task::usage_of_search_set_tid(uint64_t new_tid)
     this->tid=new_tid;
     return true;
 }
-
-task_type_t task::get_task_type()
-{
-    return task_type;
-}
-
 uint32_t task::get_belonged_processor_id()
 {
     return belonged_processor_id;
@@ -463,61 +425,32 @@ void task::set_belonged_processor_id(uint32_t pid)
 {
     belonged_processor_id=pid;
 }
-void task::atomic_load()
-{
-    switch(task_type){
-        case task_type_t::kthreadm:{
-            idt_style_load(&context.kthread->regs);
-        }
-        case task_type_t::userthread:{
-
-        }
-        case task_type_t::vCPU:{
-
-        }
-        default:{
-            //特殊kurd
-            //return KURD_t(0,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,0,0,err_domain::CORE_MODULE);
-        }
-    }
-}
-void tid_wait_queue::wakeup_all()
-{
-    for(uint64_t i=0;i<this->size();i++){
-        uint64_t tid=this->pop_front_value();
-        wakeup_thread(tid,this->m_insert_front);
-        //这里要把返回的uint64_t转成KURD并且对于
-        //Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
-        //和Scheduler::self_scheduler_events::wake_up_kthread_results::fail_reasons::bad_task_state;
-        //要发起panic
-        //或者改成手动展开定制唤醒逻辑
-    }
-}
 void per_processor_scheduler::placed_init()
 {
+    gs_complex_t* gs_complex=(gs_complex_t*)gs_offsetptr_dumper(0);
+    per_processor_scheduler& scheduler=gs_complex->scheduler;
+    task& t=scheduler.idle;
+    task::placement_constructor(&t);
+    per_processor_hardware_stack_t* stacks_ptr=gs_complex->stacks_ptr;
+    t.priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&common_idle;
+    t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
+    t.priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;
+    t.priv_stack_base=(vaddr_t)stacks_ptr->stack_ist4;
+    t.priv_stack_pages=sizeof(per_processor_hardware_stack_t.stack_ist4)>>12;
+    t.priv_ctx.core_ctx.idtctx.iret.rsp=t.priv_stack_base+(t.priv_stack_pages<<12)-64;
+    t.priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
+    t.choose=task::ctx_choose::priv;
+
 }
 per_processor_scheduler *get_self_scheduler()
 {
-    return (per_processor_scheduler*)(gs_offsetptr_dumper()+offsetof(gs_complex_t, scheduler));
+    return (per_processor_scheduler*)gs_offsetptr_dumper(offsetof(gs_complex_t, scheduler));
 }
-bool task::launch()
-{
-    if(this->current_event!=event_type_t::init){
-        return false;
-    }
-    this->task_event_shift(event_type_t::run_kthread);
-    if(fred_support_catch_bit){
-        fred_pctx_load(&this->priv_ctx);
-    }else{
-        idt_style_load(&this->priv_ctx);
-    }
-}
-void task::resume()
+void task::atomic_load()//只是忠实地根据翻到的牌子运行，不对任何状态机进行改变（因为需要task锁）
 {
 
     switch(this->choose){
         case ctx_choose::priv:{
-            this->task_event_shift(event_type_t::run_kthread);
             if(fred_support_catch_bit){
                 fred_pctx_load(&this->priv_ctx);
             }else{
@@ -525,11 +458,37 @@ void task::resume()
             }
         }
         case ctx_choose::u_ctx:{
-            this->task_event_shift(event_type_t::run_kthread);
+
             //别想着那么快实现，uctx要加载的多得多
-        }
+        };
         case ctx_choose::vCPU:{
-            this->task_event_shift(event_type_t::run_vCPU);
+
         }
     }
+}
+ckurd kthread_init(task *t, void *entry, void *arg1, void *arg2, uint8_t priv_pages)
+{
+
+    t->priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
+    t->priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;
+    t->priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
+    t->priv_ctx.rdi=(uint64_t)entry;
+    t->priv_ctx.rsi=(uint64_t)arg1;
+    t->priv_ctx.rdx=(uint64_t)arg2;
+    KURD_t kurd;
+    t->priv_stack_base=stack_alloc(&kurd,priv_pages);
+    if(error_kurd(kurd))return kurd_get_raw(kurd);
+    t->priv_stack_pages=priv_pages;
+    t->priv_ctx.core_ctx.idtctx.iret.rsp=t->priv_stack_base+(t->priv_stack_pages<<12)-64;
+    t->priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&allkthread_true_enter;
+    t->choose=task::ctx_choose::priv;
+}
+void per_processor_scheduler::next_task_with_routine()
+{
+
+}
+per_processor_scheduler *get_other_scheduler(uint32_t pid)
+{
+    gs_complex_t*base=(gs_complex_t*)conjucnt_GSs.vbase();
+    return &base[pid].scheduler;
 }
