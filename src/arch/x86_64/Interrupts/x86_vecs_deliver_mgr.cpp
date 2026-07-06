@@ -4,6 +4,7 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/kptrace.h"
 #include "util/kout.h"
+#include "Scheduler/per_processor_scheduler.h"
 #include "memory/all_pages_arr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
@@ -461,14 +462,6 @@ extern "C" interrupt_token_t *out_interrupt_vec_get(uint8_t vec,
  * raw_frame 包含 GPR + vec + iretq，vec 在 GPR 与 iret 之间。
  * 调用 handler 前需转换为 x64_standard_context（修正 vec 导致的偏移）。
  */
-extern "C" [[noreturn]] void resched(x64_standard_context *frame);
-
-// 从 vec_demux 帧构造标准上下文（修正 vec 偏移）
-static inline void frame_to_standard(x64_standard_context* out, const x64_vec_demux_frame* raw)
-{
-    __builtin_memcpy(out, raw, 15 * sizeof(uint64_t));  // GPR: rax..rbp
-    out->iret_complex = raw->iret;
-}
 extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
 {
     uint8_t vec = raw_frame->core_ctx.idtctx.num.vec;
@@ -529,7 +522,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
         }
         case ipi_vecs::IPI_RESCHED:{ 
             x2apic::x2apic_driver::write_eoi();
-            resched(&ctx);
+            resched(raw_frame);
         }
         default:{
             interrupt_token_t local_tok;
@@ -541,7 +534,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
                 uint64_t res = local_tok.func(&local_tok);
                 x2apic::x2apic_driver::write_eoi();
                 if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE)
-                    resched(&ctx);
+                    resched(raw_frame);
             }
             return;
         }

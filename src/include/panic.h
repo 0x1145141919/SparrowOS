@@ -81,3 +81,4 @@ public:
     static KURD_t will_check();
     static void dumpregisters(panic_context::x64_context* regs);
 };
+void panic_frame(x64_standard_context_v2* frame, panic_context::x64_context* panic_frame);

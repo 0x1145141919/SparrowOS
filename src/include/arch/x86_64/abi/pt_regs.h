@@ -1,5 +1,10 @@
 #pragma once
 #include<cstdint>
+#define IDT_CS(frame)   ((frame)->core_ctx.idtctx.iret.cs)
+#define IDT_RIP(frame)  ((frame)->core_ctx.idtctx.iret.rip)
+#define IDT_RFLAGS(frame) ((frame)->core_ctx.idtctx.iret.rflags)
+#define IDT_RSP(frame)  ((frame)->core_ctx.idtctx.iret.rsp)
+#define IDT_SS(frame)   ((frame)->core_ctx.idtctx.iret.ss)
 /**
  * 几个关于magic的abi规范：
  * 1. self_specify_magic的高32位为0时标记无错误码的中断上下文，低32位标记向量号
@@ -104,24 +109,6 @@ struct x64_context {
     uint16_t cs;
 };
 }
-struct x64_standard_context{
-    uint64_t rax;
-    uint64_t rbx;
-    uint64_t rcx;
-    uint64_t rdx;
-    uint64_t rsi;
-    uint64_t rdi;
-    uint64_t r8;
-    uint64_t r9;
-    uint64_t r10;
-    uint64_t r11;
-    uint64_t r12;
-    uint64_t r13;
-    uint64_t r14;
-    uint64_t r15;
-    uint64_t rbp;
-    iret_complex_context iret_complex;
-};
 struct x64_standard_context_v2{
     uint64_t rax;
     uint64_t rbx;
@@ -182,4 +169,3 @@ struct x64_fred_context{
 };
 void filt_frame(x64_standard_context*frame,x64_errcode_exception_frame*raw);
 void filt_frame(x64_standard_context*frame,x64_fred_context*raw);
-void panic_frame(x64_standard_context*frame,panic_context::x64_context*panic_frame);

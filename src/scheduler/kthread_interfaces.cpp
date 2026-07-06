@@ -48,7 +48,7 @@ static inline KURD_t make_self_scheduler_fatal(
     return set_fatal_result_level(kurd);
 }
 
-static inline void panic_with_kurd(x64_standard_context *frame, KURD_t kurd,char*message=nullptr)
+static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd,char*message=nullptr)
 {
     panic_info_inshort inshort{
         .is_bug = true,
@@ -92,26 +92,16 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
             Scheduler::self_scheduler_events::kthread_common_save, 0);
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: null running task");
     }
-    if (!task_ptr->context.kthread) {
-        KURD_t fatal = make_self_scheduler_fatal(
-            Scheduler::self_scheduler_events::kthread_common_save, 0);
-        fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::context_nullptr;
-        panic_with_kurd(frame, fatal, (char*)"kthread_common_save: kthread context null");
-    }
     if (expect_running && task_ptr->get_state() != task_state_t::running) {
         KURD_t fatal = make_self_scheduler_fatal(
             Scheduler::self_scheduler_events::kthread_common_save, 0);
         fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::bad_task_state;
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: not running");
     }
-    if (task_ptr->get_task_type() != task_type_t::kthreadm) {
-        KURD_t fatal = make_self_scheduler_fatal(
-            Scheduler::self_scheduler_events::kthread_common_save, 0);
-        fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::bad_task_type;
-        panic_with_kurd(frame, fatal, (char*)"kthread_common_save: not kthread");
-    }
-    vaddr_t stack_bottom = task_ptr->context.kthread->stack_bottom;
-    vaddr_t stack_top   = stack_bottom - task_ptr->context.kthread->stacksize;
+    task_ptr->task_event_shift(task::event_type_t::offline);
+    vaddr_t stack_bottom = task_ptr->priv_stack_base+(task_ptr->priv_stack_pages<<12)-64;
+    vaddr_t stack_top   = task_ptr->priv_stack_base;
+
     if (frame->iret_complex.rsp > stack_bottom || frame->iret_complex.rsp < stack_top) {
         KURD_t fatal = make_self_scheduler_fatal(
             Scheduler::self_scheduler_events::kthread_common_save, 0);
@@ -126,7 +116,7 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2*context)
 {
 
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
+    per_processor_scheduler&scheduler=*get_self_scheduler();
     task* yield_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(yield_task->task_lock);
@@ -137,12 +127,11 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
         reentrant_spinlock_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(yield_task);
     }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
+    scheduler.next_task_with_routine();
 }
 extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 {
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
+    per_processor_scheduler&scheduler=*get_self_scheduler();
     task* interrupted_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     bool is_user_context=((frame->core_ctx.idtctx.iret.cs&3)==3);
     {
@@ -156,100 +145,22 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
         reentrant_spinlock_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(interrupted_task);
     }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
+    scheduler.next_task_with_routine();
 }
-[[noreturn]] void kthread_exit_cppenter(x64_standard_context*context) 
+[[noreturn]] void kthread_exit_cppenter(x64_standard_context_v2*context) 
 {
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
+    per_processor_scheduler&scheduler=*get_self_scheduler();
     task*exit_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(exit_task->task_lock);
         kthread_common_save(context,true);
-        Ktemplats::list_doubly<uint64_t>&waiters_queue=exit_task->waiters;
-        while(waiters_queue.size()>0){
-            uint64_t waiter_tid=waiters_queue.pop_front_value();
-            KURD_t wkurd;
-            task*waiter_task=task_pool::get_by_tid(waiter_tid,wkurd);
-            if(!waiter_task||error_kurd(wkurd)){
-                KURD_t fatal=make_self_scheduler_fatal(
-                    Scheduler::self_scheduler_events::kthread_exit,0);
-                fatal.reason=Scheduler::self_scheduler_events::kthread_exit_results::fatal_reasons::bad_task_state;
-                panic_with_kurd(context,fatal);
-            }
-            if(waiter_task->get_state()!=task_state_t::blocked||
-               waiter_task->blocked_reason!=wait_other_kthread){
-                KURD_t fatal=make_self_scheduler_fatal(
-                    Scheduler::self_scheduler_events::kthread_exit,0);
-                fatal.reason=Scheduler::self_scheduler_events::kthread_exit_results::fatal_reasons::waiter_bad_block_reason;
-                panic_with_kurd(context,fatal);
-            }
-            {
-                reentrant_spinlock_guard a(waiter_task->task_lock);
-                waiter_task->set_ready();
-                waiter_task->context.kthread->regs.rax=context->rdi;
-                uint32_t waiter_belonged_processor_id=waiter_task->get_belonged_processor_id();
-                per_processor_scheduler&target_scheduler=get_other_scheduler(waiter_belonged_processor_id);
-                {
-                    reentrant_spinlock_guard b(target_scheduler.sched_lock);
-                    target_scheduler.insert_ready_task(waiter_task);
-                }
-            }
-        }
         exit_task->set_zombie();
     }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
+    scheduler.next_task_with_routine();
 }
-extern "C" uint64_t kthread_wait_truly_wait(uint64_t tid);
-uint64_t kthread_wait(uint64_t tid)
+[[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context_v2* context)
 {
-    interrupt_guard g;
-    KURD_t running_task_kurd=KURD_t();
-    task*waited_task=task_pool::get_by_tid(tid,running_task_kurd);
-    if(error_kurd(running_task_kurd)||!waited_task){
-        return ~0ull;
-    }
-    waited_task->task_lock.lock();
-    if(waited_task->get_state()==task_state_t::zombie){
-        uint64_t ret=waited_task->context.kthread->regs.rdi;
-        waited_task->task_lock.unlock();
-        return ret;
-    }else{
-        waited_task->task_lock.unlock();
-        return kthread_wait_truly_wait(tid);
-    }
-}
-void kthread_wait_cppenter(x64_standard_context *context)
-{
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
-    uint64_t waitede_tid=context->rdi;
-    KURD_t wkurd;
-    task*waited_task=task_pool::get_by_tid(waitede_tid,wkurd);
-    if(error_kurd(wkurd)||!waited_task){
-        panic_with_kurd(wkurd);
-    }
-    task* waiter_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
-    {
-        reentrant_spinlock_guard g(waited_task->task_lock);
-        if(waited_task->get_state()==task_state_t::zombie){
-            context->rax=waited_task->context.kthread->regs.rdi;
-            return;
-        }
-        {
-            reentrant_spinlock_guard h(waiter_task->task_lock);
-            kthread_common_save(context,true);
-            waiter_task->set_blocked();
-            waiter_task->blocked_reason=task_blocked_reason_t::wait_other_kthread;
-        }
-        waited_task->waiters.push_back(waiter_task->get_tid());
-    }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
-}
-[[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context)
-{
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
+    per_processor_scheduler&scheduler=*get_self_scheduler();
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(blocked_task->task_lock);
@@ -257,8 +168,7 @@ void kthread_wait_cppenter(x64_standard_context *context)
         blocked_task->blocked_reason=(task_blocked_reason_t)context->rdi;
         blocked_task->set_blocked();
     }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
+    scheduler.next_task_with_routine();
 }
 uint64_t wakeup_thread(uint64_t tid, bool front_insert){
     interrupt_guard g;
@@ -294,42 +204,23 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
         return kurd_get_raw(fail);
     }
 }
-[[noreturn]] void kthread_sleep_cppenter(x64_standard_context*context)
+[[noreturn]] void kthread_sleep_cppenter(x64_standard_context_v2*context)
 {
     per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* sleeper_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(sleeper_task->task_lock);
         kthread_common_save(context,true);
-        sleeper_task->blocked_reason=sleeping;
-        sleeper_task->sleep_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
+        sleeper_task->min_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
         sleeper_task->set_blocked();
     }
     {
         reentrant_spinlock_guard h(scheduler.sched_lock);
         scheduler.sleep_queue.insert(sleeper_task);
     }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
+    scheduler.next_task_with_routine();
 }
-[[noreturn]] void block_queue_cppenter(x64_standard_context *context)
-{
-    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
-    task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
-    tid_wait_queue*waite_queue=(tid_wait_queue*)context->rdi;
-    {
-        spinlock_interrupt_about_guard g(waite_queue->lock);
-        {
-            reentrant_spinlock_guard h(blocked_task->task_lock);
-            kthread_common_save(context,true);
-            blocked_task->set_blocked();
-            waite_queue->push(blocked_task->get_tid());
-        }
-    }
-    scheduler.sleep_tasks_wake();
-    scheduler.sched();
-}
-void block_if_equal_cppenter(x64_standard_context *context)
+void block_if_equal_cppenter(x64_standard_context_v2 *context)
 {
     per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
@@ -349,24 +240,10 @@ void block_if_equal_cppenter(x64_standard_context *context)
         }
     }
     if(should_block){
-        scheduler.sleep_tasks_wake();
-        scheduler.sched();
+        scheduler.next_task_with_routine();
     }
 }
-uint64_t release_kthread(uint64_t tid)
-{
-    KURD_t kurd=KURD_t();
-    task*task_ptr=task_pool::get_by_tid(tid,kurd);
-    kurd=__wrapped_pgs_vfree((void*)(task_ptr->context.kthread->stack_bottom-task_ptr->context.kthread->stacksize)
-    ,1+task_ptr->context.kthread->stacksize/4096);
-    if(error_kurd(kurd)){
-        return kurd_get_raw(kurd);
-    }
-    delete task_ptr->context.kthread;
-    delete task_ptr;
-    return kurd_get_raw(task_pool::release_tid(tid));
-}
-void kthread_call_cpp_enter(x64_standard_context *frame)
+void kthread_call_cpp_enter(x64_standard_context_v2 *frame)
 {
     switch(frame->rax){
         case kthread_call_num::exit:
@@ -382,11 +259,6 @@ void kthread_call_cpp_enter(x64_standard_context *frame)
         case kthread_call_num::yield:
         {
             kthread_yield_true_enter(frame);
-            break;
-        }
-        case kthread_call_num::wait:
-        {
-            kthread_wait_cppenter(frame);
             break;
         }
         case kthread_call_num::block:
