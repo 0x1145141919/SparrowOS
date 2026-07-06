@@ -126,7 +126,7 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2*context)
 {
 
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* yield_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(yield_task->task_lock);
@@ -142,7 +142,7 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 }
 extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* interrupted_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     bool is_user_context=((frame->core_ctx.idtctx.iret.cs&3)==3);
     {
@@ -161,7 +161,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 }
 [[noreturn]] void kthread_exit_cppenter(x64_standard_context*context) 
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task*exit_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(exit_task->task_lock);
@@ -189,7 +189,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
                 waiter_task->set_ready();
                 waiter_task->context.kthread->regs.rax=context->rdi;
                 uint32_t waiter_belonged_processor_id=waiter_task->get_belonged_processor_id();
-                per_processor_scheduler&target_scheduler=global_schedulers[waiter_belonged_processor_id];
+                per_processor_scheduler&target_scheduler=get_other_scheduler(waiter_belonged_processor_id);
                 {
                     reentrant_spinlock_guard b(target_scheduler.sched_lock);
                     target_scheduler.insert_ready_task(waiter_task);
@@ -222,7 +222,7 @@ uint64_t kthread_wait(uint64_t tid)
 }
 void kthread_wait_cppenter(x64_standard_context *context)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     uint64_t waitede_tid=context->rdi;
     KURD_t wkurd;
     task*waited_task=task_pool::get_by_tid(waitede_tid,wkurd);
@@ -249,7 +249,7 @@ void kthread_wait_cppenter(x64_standard_context *context)
 }
 [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context* context)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(blocked_task->task_lock);
@@ -272,7 +272,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
         return kurd_get_raw(kurd);
     }
     reentrant_spinlock_guard l(task_ptr->task_lock);
-    per_processor_scheduler&target_scheduler=global_schedulers[task_ptr->get_belonged_processor_id()];
+    per_processor_scheduler&target_scheduler=get_other_scheduler(task_ptr->get_belonged_processor_id());
     if(task_ptr->get_state()==task_state_t::ready||
     task_ptr->get_state()==task_state_t::running){
         success.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
@@ -296,7 +296,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
 }
 [[noreturn]] void kthread_sleep_cppenter(x64_standard_context*context)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* sleeper_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(sleeper_task->task_lock);
@@ -314,7 +314,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
 }
 [[noreturn]] void block_queue_cppenter(x64_standard_context *context)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     tid_wait_queue*waite_queue=(tid_wait_queue*)context->rdi;
     {
@@ -331,7 +331,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
 }
 void block_if_equal_cppenter(x64_standard_context *context)
 {
-    per_processor_scheduler&scheduler=global_schedulers[fast_get_processor_id()];
+    per_processor_scheduler&scheduler=get_other_scheduler(fast_get_processor_id());
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     tid_wait_queue*waite_queue=(tid_wait_queue*)context->rdi;
     uint64_t*check_address=(uint64_t*)context->rsi;

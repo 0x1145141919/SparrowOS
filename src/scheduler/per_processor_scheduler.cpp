@@ -11,6 +11,11 @@
 #include "panic.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/mem_init.h"
+#include "util/rb_map.h"
+
+extern rb_map<bq_id_t, block_queue*>* container;
+extern uint64_t next_will_alloc_qid;
+#include "arch/x86_64/mem_init.h"
 static u64ka g_next_tid{0};  // 0 保留作无效
 
 extern "C" void secure_hlt();
@@ -77,7 +82,7 @@ KURD_t task_pool::release(uint64_t tid)
                   Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
 }
 
-// ── sleep_queue_t::insert（未改动，仅移至此位置）──
+// ── sleep_queue_t::insert(未改动,仅移至此位置)──
 KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
 {
     KURD_t success = KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
@@ -216,7 +221,7 @@ KURD_t per_processor_scheduler::default_fatal()
 }
 void per_processor_scheduler::sleep_tasks_wake()
 {
-    constexpr  uint8_t arr_len_max = 16; 
+    constexpr  uint8_t arr_len_max = 16;
     int arr_len = 0;
     task* arr[arr_len_max];
     ksetmem_8(arr,0,arr_len_max);
@@ -273,8 +278,8 @@ void per_processor_scheduler::sched()
             }
         }
         for(uint64_t i=0;i<logical_processor_count;i++){
-            if(global_schedulers+i==this)continue;
-            per_processor_scheduler&other=*(global_schedulers+i);
+            per_processor_scheduler&other=get_other_scheduler(i);
+            if(&other==this)continue;
             {
             reentrant_spinlock_guard g(other.sched_lock);
                 if(other.ready_queue.size()){
@@ -283,7 +288,7 @@ void per_processor_scheduler::sched()
                     other.ready_queue.pop_front();
                     return *candidate;
                     }
-                } 
+                }
             }
         }
         return &this->idle;
@@ -293,7 +298,7 @@ void per_processor_scheduler::sched()
     to_run->set_running();
     to_run->set_belonged_processor_id(fast_get_processor_id());
     gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
-    
+
     }
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
     to_run->atomic_load();
@@ -393,7 +398,7 @@ bool task::set_running()
 void task::task_event_shift(event_type_t new_event)
 {
     if(new_event==this->current_event){
-        
+
     }else{
         miusecond_time_stamp_t now_stamp=ktime::get_microsecond_stamp();
         uint64_t elapse=now_stamp-this->current_event_start_stamp;
@@ -446,7 +451,13 @@ per_processor_scheduler *get_self_scheduler()
 {
     return (per_processor_scheduler*)gs_offsetptr_dumper(offsetof(gs_complex_t, scheduler));
 }
-void task::atomic_load()//只是忠实地根据翻到的牌子运行，不对任何状态机进行改变（因为需要task锁）
+per_processor_scheduler& get_other_scheduler(uint32_t pid)
+{
+    vaddr_t base = conjucnt_GSs.vbase();
+    gs_complex_t* gs = (gs_complex_t*)(base + pid * GS_COMPLEX_STRIDE);
+    return gs->scheduler;
+}
+void task::atomic_load()//只是忠实地根据翻到的牌子运行,不对任何状态机进行改变(因为需要task锁)
 {
 
     switch(this->choose){
@@ -459,7 +470,7 @@ void task::atomic_load()//只是忠实地根据翻到的牌子运行，不对任
         }
         case ctx_choose::u_ctx:{
 
-            //别想着那么快实现，uctx要加载的多得多
+            //别想着那么快实现,uctx要加载的多得多
         };
         case ctx_choose::vCPU:{
 
@@ -485,7 +496,44 @@ ckurd kthread_init(task *t, void *entry, void *arg1, void *arg2, uint8_t priv_pa
 }
 void per_processor_scheduler::next_task_with_routine()
 {
+    // Phase 1: 随机翻一张 BQ 牌，弹一波超时任务
+    blocked_tasks_clamps_t clamps;
+    ksetmem_8(&clamps, 0, sizeof(clamps));
 
+    if (next_will_alloc_qid > 0) {
+        bq_id_t pick = rdtsc() % next_will_alloc_qid;
+        block_queue* q = nullptr;
+        {
+            interrupt_guard gi;
+            spinrwlock_interrupt_about_read_guard lc(container_lock);
+            q = container->find(pick);
+        }
+        if (q) {
+            {
+                spinlock_interrupt_about_guard gq(q->qlock);
+                q->pop_timeouts(&clamps);
+            }
+            for (uint32_t i = 0; i < clamps.batch_count; ++i) {
+                task* t = clamps.arr[i];
+                reentrant_spinlock_guard gt(t->task_lock);
+                t->set_ready();
+            }
+            {
+                reentrant_spinlock_guard gs(this->sched_lock);
+                for (uint32_t i = 0; i < clamps.batch_count; ++i) {
+                    KURD_t kurd = this->insert_ready_task(clamps.arr[i], false);
+                    if (error_kurd(kurd))
+                        panic_with_kurd(kurd);
+                }
+            }
+        }
+    }
+
+    // Phase 2: 睡眠队列超时唤醒
+    sleep_tasks_wake();
+
+    // Phase 3: 调度
+    sched();
 }
 per_processor_scheduler *get_other_scheduler(uint32_t pid)
 {
