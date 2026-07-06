@@ -278,7 +278,7 @@ void per_processor_scheduler::sched()
             }
         }
         for(uint64_t i=0;i<logical_processor_count;i++){
-            per_processor_scheduler&other=get_other_scheduler(i);
+            per_processor_scheduler*other=get_other_scheduler(i);
             if(&other==this)continue;
             {
             reentrant_spinlock_guard g(other.sched_lock);
@@ -296,9 +296,20 @@ void per_processor_scheduler::sched()
     {
     reentrant_spinlock_guard(to_run->task_lock);
     to_run->set_running();
-    to_run->set_belonged_processor_id(fast_get_processor_id());
+    to_run->belonged_processor_id=fast_get_processor_id();
     gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
-
+    switch(to_run->choose){
+        case task::ctx_choose::priv :
+        to_run->task_event_shift(task::event_type_t::run_kthread);
+        break;
+        case task::ctx_choose::u_ctx :
+        to_run->task_event_shift(task::event_type_t::run_uthread   );
+        break;
+        case task::ctx_choose::vCPU :
+        to_run->task_event_shift(task::event_type_t::run_vCPU);
+        break;
+        default://非法类型panic
+    }
     }
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
     to_run->atomic_load();
@@ -344,10 +355,6 @@ bool task::usage_of_search_set_tid(uint64_t new_tid)
     return false;
     this->tid=new_tid;
     return true;
-}
-uint32_t task::get_belonged_processor_id()
-{
-    return belonged_processor_id;
 }
 
 extern "C" void idt_style_load(x64_standard_context_v2* context);
@@ -402,7 +409,8 @@ void task::task_event_shift(event_type_t new_event)
     }else{
         miusecond_time_stamp_t now_stamp=ktime::get_microsecond_stamp();
         uint64_t elapse=now_stamp-this->current_event_start_stamp;
-        this->accumulates_bank[this->current_event]+=elapse;
+        this->accumulates_time_bank[this->current_event]+=elapse;
+        this->accumulates_counters_bank[this->current_event]++;
         this->current_event_start_stamp=now_stamp;
         this->current_event=new_event;
     }
@@ -419,16 +427,11 @@ void task::placement_constructor(task *task_ptr)
     task_ptr->task_state=task_state_t::init;
     task_ptr->current_event=event_type_t::init;
     task_ptr->current_event_start_stamp=ktime::get_microsecond_stamp();
-    task_ptr->tid=g_next_tid.load();
-    g_next_tid.add_ka(1);
+    task_ptr->tid=g_next_tid.add_ka(1);
 }
 task_state_t task::get_state()
 {
     return task_state;
-}
-void task::set_belonged_processor_id(uint32_t pid)
-{
-    belonged_processor_id=pid;
 }
 void per_processor_scheduler::placed_init()
 {
@@ -450,12 +453,6 @@ void per_processor_scheduler::placed_init()
 per_processor_scheduler *get_self_scheduler()
 {
     return (per_processor_scheduler*)gs_offsetptr_dumper(offsetof(gs_complex_t, scheduler));
-}
-per_processor_scheduler& get_other_scheduler(uint32_t pid)
-{
-    vaddr_t base = conjucnt_GSs.vbase();
-    gs_complex_t* gs = (gs_complex_t*)(base + pid * GS_COMPLEX_STRIDE);
-    return gs->scheduler;
 }
 void task::atomic_load()//只是忠实地根据翻到的牌子运行,不对任何状态机进行改变(因为需要task锁)
 {
@@ -539,4 +536,20 @@ per_processor_scheduler *get_other_scheduler(uint32_t pid)
 {
     gs_complex_t*base=(gs_complex_t*)conjucnt_GSs.vbase();
     return &base[pid].scheduler;
+}
+bool task::resurrect()
+{
+    if(this->task_state!=zombie)return false;
+
+    // 关旧帐（offline/等）→ 开 init 新帐
+    task_event_shift(event_type_t::init);
+
+    // 清除非 init 的所有历史记录
+    for(uint32_t i=1;i<event_type_COUNT;++i){
+        accumulates_time_bank[i]=0;
+        accumulates_counters_bank[i]=0;
+    }
+
+    task_state=task_state_t::init;
+    return true;
 }

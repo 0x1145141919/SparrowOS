@@ -181,12 +181,12 @@ class task{
     private:
     event_type_t current_event;
     task_state_t task_state;
-    uint32_t belonged_processor_id;
     uint64_t tid;
     miusecond_time_stamp_t current_event_start_stamp;
-    miusecond_time_stamp_t accumulates_bank[event_type_COUNT];
-    
+    miusecond_time_stamp_t accumulates_time_bank[event_type_COUNT];
+    uint64_t accumulates_counters_bank[event_type_COUNT];
     public:
+    uint32_t belonged_processor_id;
     task();
     bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
     uint64_t get_tid();
@@ -198,11 +198,10 @@ class task{
     bool set_dead();//成功返回true,只能由zombie切换到才合法/成功，非法不会改状态字段
     bool set_zombie();//合法前驱仅限running,blocked,ready
     bool set_running();
+    bool resurrect();//专用的从zombie复活的方法
     reentrant_spinlock_cpp_t task_lock;
     void task_event_shift(event_type_t new_event);
     miusecond_time_stamp_t min_wakeup_stamp;
-    uint32_t get_belonged_processor_id();
-    void set_belonged_processor_id(uint32_t pid);
     x64_standard_context_v2 priv_ctx;
     vaddr_t priv_stack_base;        // 栈顶（4K对齐），guard page 在 [base-4K, base)
     uint32_t priv_stack_pages;      // 可用页数（不含 guard page）
@@ -221,7 +220,6 @@ class task{
     task_state_t get_state();
     ctx_choose choose;
 };
-
 
 // ── wq 句柄系统 ────────────────────────────────────────
 // 全局 wait_queue 表，句柄（wq_id_t）代替指针：防伪、防 UAF、可跨进程传递
@@ -324,13 +322,12 @@ class alignas(64) per_processor_scheduler {
     static void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
 };
 per_processor_scheduler* get_self_scheduler();
-per_processor_scheduler& get_other_scheduler(uint32_t pid);
 per_processor_scheduler* get_other_scheduler(uint32_t pid);
 constexpr uint32_t INVALID_NODE_INDEX=~0;
 
 extern "C"{
     ckurd kthread_init(task*t,void*entry,void*arg1,void*arg2,uint8_t priv_pages);
-    KURD_t task_start(task*t,uint32_t pid);//指定处理器上把对应的没有运行过（run_kthread积累为0的任务）从init转入ready后放入ready_queue
+    KURD_t task_launch(task*t,uint32_t pid);//指定处理器上把对应的没有运行过（run_kthread积累为0的任务）从init转入ready后放入ready_queue
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2* context);
     void kthread_yield();
     uint64_t* get_scheduler_private_stack_top();

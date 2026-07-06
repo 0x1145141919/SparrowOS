@@ -127,6 +127,52 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
     
     return task_ptr;
 }
+KURD_t task_launch(task *t, uint32_t pid)
+{//还是要符合从内核上下文线程开始，以及基础iret_complex校验的
+    auto mkfail=[]()->KURD_t{
+        KURD_t k=KURD_t(0,0,module_code::SCHEDULER,
+            Scheduler::self_scheduler,0,0,err_domain::CORE_MODULE);
+        k.result=result_code::FAIL;
+        k.level=level_code::ERROR;
+        return k;
+    };
+
+    // ① TID 有效性
+    if(t->get_tid()==INVALID_TID){
+        return mkfail();
+    }
+
+    // ② rip、rsp 必须在内核地址空间
+    if(!is_addr_kernel_address((void*)t->priv_ctx.core_ctx.idtctx.iret.rip)||
+       !is_addr_kernel_address((void*)t->priv_ctx.core_ctx.idtctx.iret.rsp)){
+        return mkfail();
+    }
+
+    // ③ 初始上下文必须是从内核态开始的 priv 上下文
+    if(t->choose!=task::ctx_choose::priv){
+        return mkfail();
+    }
+
+    // ④ 目标处理器调度器
+    per_processor_scheduler*target=get_other_scheduler(pid);
+
+    // ⑤ 状态机：init → ready
+    {
+        reentrant_spinlock_guard g(t->task_lock);
+        if(!t->set_ready()){
+            return mkfail();
+        }
+    }
+
+    // ⑥ 插入目标 ready_queue
+    KURD_t kurd;
+    {
+        reentrant_spinlock_guard g(target->sched_lock);
+        kurd=target->insert_ready_task(t,false);
+    }
+
+    return kurd;
+}
 [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2*context)
 {
 
@@ -195,7 +241,7 @@ uint64_t wakeup_thread(uint64_t tid, bool front_insert){
         return kurd_get_raw(kurd);
     }
     reentrant_spinlock_guard l(task_ptr->task_lock);
-    per_processor_scheduler&target_scheduler=get_other_scheduler(task_ptr->get_belonged_processor_id());
+    per_processor_scheduler*target_scheduler=get_other_scheduler(task_ptr->get_belonged_processor_id());
     if(task_ptr->get_state()==task_state_t::ready||
     task_ptr->get_state()==task_state_t::running){
         success.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
