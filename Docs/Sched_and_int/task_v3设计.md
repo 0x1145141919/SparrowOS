@@ -38,15 +38,32 @@
 task::basic_constructor() → task 诞生
   uctx = nullptr
   vcpu_ctx = nullptr
-  priv_ctx = 全零（basic allocator zero-on-alloc 保证）
+  priv_ctx = 全零（placement_constructor 保证）
   priv_stack_base = nullptr
   priv_stack_pages = 0
+  current_event = init
 
-task::launch() — 纯机械：加载 priv_ctx 开始执行。
-  调用方必须在 launch 前填好 priv_ctx、分配好 priv_stack。
-  launch 本身不做任何分配/填充决策。
+task::kthread_init() — 填充 priv_ctx + 分配 priv_stack。
+  调用方传入 entry、arg1-arg5、priv_pages。
+  kthread_init 负责：
+    ① 设置 priv_ctx.cs/ss/rflags/rsp
+    ② 设置 rdi=entry, rsi=arg1, rdx=arg2（参数映射）
+    ③ stack_alloc 分配 priv_stack
+    ④ 设置 rip = allkthread_true_enter（通用入口）
+    ⑤ choose = priv
 
-  launch 后运行的是 priv_ctx 里的入口代码。该代码：
+  kthread_init 完成后 task 处于 init 态，未放入调度器。
+
+task_start() — 将 task 从 init 态转入 ready 态，
+  插入指定处理器的 ready_queue。之后调度器选中该 task 时
+  通过 atomic_load() 纯机械加载 priv_ctx 开始执行。
+
+  atomic_load() — 无状态机变更，只根据 choose 选择对应负载函数：
+    ① choose=priv → fred_pctx_load / idt_style_load
+    ② choose=u_ctx → 需加载页表、FS/GS base、DR、FPU（未实现）
+    ③ choose=vCPU → 需 VM-entry（未实现）
+
+  atomic_load 后运行的是 priv_ctx 里的入口代码（allkthread_true_enter）：
   ├─ 可以 new u_ctx_t → 填充 → iretq → 成为用户线程
   ├─ 可以分配 VMCS + vcpu_ctx → VMRESUME → 成为 vCPU
   └─ 也可以只做一次性内核业务 → 做完 exit / yield
@@ -88,7 +105,9 @@ v2 认为:  内核线程 → iretq → 用户态 → 中断 → 回来继续
 | **syscall 入口** | 不明确 | 立即保存用户上下文到 uctx |
 | **vCPU 上下文** | 未入设计文档 | VMCS 自动 + VMM 手动混合管理 |
 | **调度器视角** | 知道三种任务类型 | 完全透明，只看 priv_ctx 和 choose |
-| **启动路径** | launch → 内核线程 → 选择去用户/guest | launch 是纯机械加载（不决策），决策在 priv_ctx 的入口代码中 |
+| **启动路径** | create_kthread 耦合创建+调度 | kthread_init 只初始化（task+priv_stack+priv_ctx），
+  task_start 入调度器，atomic_load 纯机械加载，
+  决策在 allkthread_true_enter 入口代码中 |
 
 ---
 
@@ -139,7 +158,7 @@ class task {
     //   [priv_stack_base , priv_stack_base + 4K * priv_stack_pages-64B) — 可用栈空间
     //   初始RSP = priv_stack_base + 4K * priv_stack_pages-64B（留64B作RBP回溯缓冲区，FRED兼容）
 
-    // ── 交出执行流时的上下文类型（由 task_save 写入，resume 只读） ──
+    // ── 交出执行流时的上下文类型（由 task_save 写入，atomic_load 只读） ──
     enum ctx_choose { priv, u_ctx, vCPU };
     ctx_choose              choose;
 
@@ -154,8 +173,8 @@ class task {
     // 同步是等事件/条件，不是等线程死。
     // 见 block_queue_spec.md。
     static task* basic_constructor();
-    void  launch();       // 纯机械：从 priv_ctx 加载开始执行
-    void  resume();       // 根据 choose 无脑加载对应上下文
+    static void placement_constructor(task* task_ptr);
+    void  atomic_load();  // 纯机械：根据 choose 加载对应上下文，不做任何状态机改变
     void  task_event_shift(event_type_t new_event);  // 关旧帐、开新帐，见 §三.1
     // 状态转换...
 };
@@ -315,66 +334,54 @@ task_save(frame):
   6. return self
 ```
 
-### launch — 纯机械启动
+### atomic_load — 纯机械上下文加载
 
 ```
-launch():
-  // priv_ctx 已由调用方填好（RIP、RSP），此函数只负责加载执行
-  // 调用方在 launch 前必须保证 priv_stack 已分配、priv_ctx 已就绪
-  switch_to_context(priv_ctx)
-```
-
-调用方范例 —— 创建一个用户线程：
-
-```
-task* t = task::basic_constructor();
-
-t->priv_stack_base  = stack_alloc(&kurd, 3);   // 3页 = 1 guard + 2 可用
-t->priv_stack_pages = 3;
-
-t->priv_ctx.rip = (vaddr_t)user_thread_entry;  // 内核入口函数
-t->priv_ctx.rsp = t->priv_stack_base - 64;     // 初始栈顶
-t->priv_ctx.cs  = KERNEL_CS;                    // CPL0
-// ... 其他必要字段
-
-t->launch();  // 开始执行内核入口
-
-// 内核入口内部：
-//   new u_ctx_t → 填用户上下文 → iretq → 用户态
-```
-
-调用方范例 —— 内核一次性业务：
-
-```
-task* t = task::basic_constructor();
-t->priv_stack_base  = stack_alloc(&kurd, 2);   // 2页 = 1 guard + 1 可用
-t->priv_stack_pages = 2;
-t->priv_ctx.rip = (vaddr_t)some_kernel_job;
-t->priv_ctx.rsp = t->priv_stack_base - 64;
-t->launch();
-// 执行 some_kernel_job → 完成 → exit/yield
-```
-
-### resume — 只看 choose，无脑加载
-
-```
-resume():
+atomic_load():
+  // 只是忠实地根据翻到的牌子运行，不对任何状态机进行改变
+  // 因为 task 锁已被调用方持有
   switch self->choose:
     case priv:
-      iretq(self->priv_ctx)
-
+      fred_pctx_load(&self->priv_ctx)  // 或 idt_style_load
     case u_ctx:
-      load_regs(self->uctx)   // AS、FS/GS base、DR、FPU 等
-      iretq(self->uctx->xtd_ctx)
-
+      // TBD — 还需加载 AS、FS/GS base、DR、FPU 等
     case vCPU:
-      load_vmcs_host()
-      load_guest_specific(self->vcpu_ctx)  // FPU、KERNEL_GS_BASE 等
-      VMRESUME
+      // TBD — VM-entry 相关
 ```
 
-resume 的 load_regs / load_vmcs_host / load_guest_specific 是底层实现细节，
-不属于 resume 的语义：resume 只负责"选一个上下文，让它跑"。
+**与 v2 launch/resume 的关键区别：**
+
+| 方面 | v2 launch/resume | v3 atomic_load |
+|---|---|---|
+| **状态管理** | launch 校验 init 状态，resume 不做校验 | 完全不做状态机改变 |
+| **event_shift** | launch/resume 内部调 task_event_shift | 不调——调用方（sched()）负责 |
+| **语义** | 启动/恢复两个概念 | 只有"加载上下文并跳转"一个操作 |
+| **谁来调** | 调度器外部直接调 | 只有 sched() 内部调，经调度器选中后 |
+
+调用方流程（创建一个用户线程）：
+
+```
+task* t = task::basic_constructor();
+                            // task 诞生，init 态
+
+kthread_init(t, user_thread_entry, arg1, arg2, priv_pages);
+                            // 填充 priv_ctx + 分配 priv_stack
+                            // entry → rdi, arg1 → rsi, arg2 → rdx
+                            // rip = allkthread_true_enter
+
+task_start(t, target_pid); // init → ready，入目标处理器 ready_queue
+
+// 调度器在 sched() 中选中 t 后自动调 atomic_load()
+// 开始执行 allkthread_true_enter
+//    allkthread_true_enter 内部：
+//      mov rax, rdi          // entry
+//      mov rdi, rsi          // arg1 → rdi
+//      mov rsi, rdx          // arg2 → rsi
+//      call rax
+//      kthread_exit(return_val)
+```
+
+**调用方不需要直接碰 atomic_load——它由 sched() / next_task_with_routine() 统一调用。**
 
 ---
 
@@ -491,7 +498,7 @@ struct {
 │  gs->fpu_state.owner_type = NONE            │
 └───────────────────────────────────────────┘
          │
-         ▼ resume（调度回来）
+         ▼ atomic_load（调度回来）
 ┌─ 加载 FPU（如果需要）───────────────────────┐
 │  if (gs->fpu_state.owner_tid != new->tid) { │
 │      XRSTOR(new->FPU area based on choose)  │
@@ -552,18 +559,21 @@ VM-exit 后:
 ## 八、三种执行流对比
 
 ```
-               创建              主体身份          被中断时 task_save
-               ────             ────────          ────────────────
-内核一次性业务: basic_constructor  priv_ctx（临时的）  choose=priv
-               launch()          → exit/yield      只保存 GPRs，FPU 不存
+                   创建                      主体身份            被中断时 task_save
+                   ────                     ────────          ────────────────
+内核一次性业务:    basic_constructor         priv_ctx（临时的）  choose=priv
+                   kthread_init(entry,args)  → exit/yield      只保存 GPRs，FPU 不存
+                   task_start(target_pid)
 
-用户线程:      basic_constructor  u_ctx_t            choose=u_ctx
-               launch()          → iretq → 用户态   搬 GPRs + 惰性 FPU
-                                → 中断回来          恢复时加载 AS/FS/GS/DR/FPU
+用户线程:          basic_constructor         u_ctx_t            choose=u_ctx
+                   kthread_init(entry,args)  → iretq → 用户态   搬 GPRs + 惰性 FPU
+                   task_start(target_pid)   → 中断回来          恢复时加载 AS/FS/GS/DR/FPU
 
-vCPU:          basic_constructor  vcpu_ctx            choose=vCPU
-               launch()          → VMRESUME→Guest    VMCS 自动+惰性 FPU
-                                → VM-exit           恢复时只管 VMCS 不管的
+vCPU:              basic_constructor         vcpu_ctx            choose=vCPU
+                   kthread_init(entry,args)  → VMRESUME→Guest    VMCS 自动+惰性 FPU
+                   task_start(target_pid)   → VM-exit           恢复时只管 VMCS 不管的
+
+              （三种场景最终都由调度器 sched() 选中后调用 atomic_load() 加载上下文）
 ```
 
 ---
