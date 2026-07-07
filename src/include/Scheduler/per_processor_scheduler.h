@@ -378,7 +378,7 @@ extern "C"{
     void bq_flush_pending(blocked_tasks_clamps_t* clamp,bool is_timeout); // 处理 从block_queue里面弹出来的task的唤醒工作
     void common_idle();
     char allkthread_true_enter;
-    void resched(x64_standard_context_v2 *frame);
+    [[noreturn]] void resched(x64_standard_context_v2 *frame);
 }
 /**
  * 内核线程接口里面锁顺序纪律：

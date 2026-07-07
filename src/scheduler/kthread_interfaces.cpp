@@ -35,17 +35,17 @@ spinlock_cpp_t global_tid_lock;
 uint64_t global_tid_counter = 0;
 
 
-static inline KURD_t self_scheduler_default_kurd()
+static inline KURD_t kthreads_default_kurd()
 {
-    return KURD_t(0, 0, module_code::SCHEDULER, Scheduler::self_scheduler, 0, 0, err_domain::CORE_MODULE);
+    return KURD_t(0, 0, module_code::SCHEDULER, Scheduler::KTHREADS, 0, 0, err_domain::CORE_MODULE);
 }
 
-static inline KURD_t make_self_scheduler_fatal(
+static inline KURD_t make_kthreads_fatal(
     uint8_t event_code, 
     uint16_t reason
 )
 {
-    KURD_t kurd = self_scheduler_default_kurd();
+    KURD_t kurd = kthreads_default_kurd();
     kurd.event_code = event_code;
     kurd.reason = reason;
     return set_fatal_result_level(kurd);
@@ -91,14 +91,15 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 {
     task* task_ptr = (task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     if (!task_ptr) {
-        KURD_t fatal = make_self_scheduler_fatal(
-            Scheduler::self_scheduler_events::kthread_common_save, 0);
+        KURD_t fatal = make_kthreads_fatal(
+            Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
+            Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::NULL_RUNNING_TASK);
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: null running task");
     }
     if (expect_running && task_ptr->get_state() != task_state_t::running) {
-        KURD_t fatal = make_self_scheduler_fatal(
-            Scheduler::self_scheduler_events::kthread_common_save, 0);
-        fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::bad_task_state;
+        KURD_t fatal = make_kthreads_fatal(
+            Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
+            Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::BAD_TASK_STATE);
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: not running");
     }
     task_ptr->task_event_shift(task::event_type_t::offline);
@@ -114,9 +115,9 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
             vaddr_t stack_top   = task_ptr->priv_stack_base;
             vaddr_t rsp=frame->core_ctx.fred.rsp;
             if (rsp > stack_bottom || rsp < stack_top) {
-                KURD_t fatal = make_self_scheduler_fatal(
-                Scheduler::self_scheduler_events::kthread_common_save, 0);
-                fatal.reason = Scheduler::self_scheduler_events::kthread_common_save_results::fatal_reasons::privctx_stackptr_out_of_range;
+                KURD_t fatal = make_kthreads_fatal(
+                    Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
+                    Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::PRIVCTX_STACKPTR_OOR);
              panic_with_kurd(frame, fatal, (char*)"kthread_common_save: stack ptr OOR");
             }
             task_ptr->priv_ctx = *frame;
@@ -132,28 +133,36 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
 }
 KURD_t task_launch(task *t, uint32_t pid)
 {//还是要符合从内核上下文线程开始，以及基础iret_complex校验的
-    auto mkfail=[]()->KURD_t{
-        KURD_t k=KURD_t(0,0,module_code::SCHEDULER,
-            Scheduler::self_scheduler,0,0,err_domain::CORE_MODULE);
-        k.result=result_code::FAIL;
-        k.level=level_code::ERROR;
+    namespace ev = Scheduler::KTHREADS_EVENTS;
+    namespace fr = ev::task_launch_results::FAIL_REASONS;
+
+    auto mkfail = [&]() -> KURD_t {
+        KURD_t k = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+            Scheduler::KTHREADS, ev::EVENT_CODE_TASK_LAUNCH,
+            level_code::ERROR, err_domain::CORE_MODULE);
         return k;
     };
 
     // ① TID 有效性
     if(t->get_tid()==INVALID_TID){
-        return mkfail();
+        KURD_t k = mkfail();
+        k.reason = fr::INVALID_TID;
+        return k;
     }
 
     // ② rip、rsp 必须在内核地址空间
     if(!is_addr_kernel_address((void*)t->priv_ctx.core_ctx.idtctx.iret.rip)||
        !is_addr_kernel_address((void*)t->priv_ctx.core_ctx.idtctx.iret.rsp)){
-        return mkfail();
+        KURD_t k = mkfail();
+        k.reason = fr::TARGET_NOT_KERNEL_ADDR;
+        return k;
     }
 
     // ③ 初始上下文必须是从内核态开始的 priv 上下文
     if(t->choose!=task::ctx_choose::priv){
-        return mkfail();
+        KURD_t k = mkfail();
+        k.reason = fr::NOT_PRIV_CTX;
+        return k;
     }
 
     // ④ 目标处理器调度器
@@ -163,7 +172,9 @@ KURD_t task_launch(task *t, uint32_t pid)
     {
         reentrant_spinlock_guard g(t->task_lock);
         if(!t->set_ready()){
-            return mkfail();
+            KURD_t k = mkfail();
+            k.reason = fr::STATE_TRANSITION_FAIL;
+            return k;
         }
     }
 
@@ -234,11 +245,15 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 }
 ckurd wakeup_thread(uint64_t tid, bool front_insert){
     interrupt_guard g;
-    KURD_t kurd=KURD_t();
-    KURD_t success,fail,fatal;
-    success=KURD_t(result_code::SUCCESS,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,Scheduler::self_scheduler_events::wake_up_kthread,level_code::INFO,err_domain::CORE_MODULE);
-    fail=KURD_t(result_code::FAIL,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,Scheduler::self_scheduler_events::wake_up_kthread,level_code::ERROR,err_domain::CORE_MODULE);
-    fatal=KURD_t(result_code::FATAL,0,module_code::SCHEDULER,Scheduler::scheduler_task_pool,Scheduler::self_scheduler_events::wake_up_kthread,level_code::FATAL,err_domain::CORE_MODULE);
+    namespace ev = Scheduler::KTHREADS_EVENTS;
+    KURD_t success = KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
+        Scheduler::KTHREADS, ev::EVENT_CODE_WAKEUP_THREAD,
+        level_code::INFO, err_domain::CORE_MODULE);
+    KURD_t fail = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+        Scheduler::KTHREADS, ev::EVENT_CODE_WAKEUP_THREAD,
+        level_code::ERROR, err_domain::CORE_MODULE);
+
+    KURD_t kurd;
     task*task_ptr=task_pool::get_by_tid(tid,kurd);
     if(!success_all_kurd(kurd)){
         return kurd_get_raw(kurd);
@@ -247,12 +262,11 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
     per_processor_scheduler*target_scheduler=get_other_scheduler(task_ptr->belonged_processor_id);
     if(task_ptr->get_state()==task_state_t::ready||
     task_ptr->get_state()==task_state_t::running){
-        success.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::success_reasons::already_wakeup_or_running;
+        success.reason=ev::wakeup_thread_results::SUCCESS_REASONS::ALREADY_RUNNING_OR_WAKEUP;
         return kurd_get_raw(success);
-        //成功但是已经运行
     }else if(task_ptr->get_state()==task_state_t::blocked){
         if(task_ptr->out_of_task_lock_is_task_on_block_queue_bit){
-            fail.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::fail_reasons::task_on_block_queue;
+            fail.reason=ev::wakeup_thread_results::FAIL_REASONS::TASK_ON_BLOCK_QUEUE;
             return kurd_get_raw(fail);
         }
         task_ptr->set_ready();
@@ -262,7 +276,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
             return kurd_get_raw(kurd);
         }
     }else{
-        fail.reason=Scheduler::self_scheduler_events::wake_up_kthread_results::fail_reasons::bad_task_state;
+        fail.reason=ev::wakeup_thread_results::FAIL_REASONS::BAD_TASK_STATE;
         return kurd_get_raw(fail);
     }
 }
@@ -367,18 +381,27 @@ uint64_t creat_kthread(kthread_creating_package *p,KURD_t*kurd)
 }
 ckurd release_kthread(uint64_t tid)
 {
+    namespace ev = Scheduler::KTHREADS_EVENTS;
+    KURD_t success = KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
+        Scheduler::KTHREADS, ev::EVENT_CODE_RELEASE_KTHREAD,
+        level_code::INFO, err_domain::CORE_MODULE);
+    KURD_t fail = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+        Scheduler::KTHREADS, ev::EVENT_CODE_RELEASE_KTHREAD,
+        level_code::ERROR, err_domain::CORE_MODULE);
+
     KURD_t k;
     task*t=task_pool::get_by_tid(tid,k);
     if(t==nullptr){
         return kurd_get_raw(k);
     }
     if(t->get_state()!=task_state_t::zombie){
-        return ckurd();
+        fail.reason = ev::release_kthread_results::FAIL_REASONS::TASK_NOT_ZOMBIE;
+        return kurd_get_raw(fail);
     }
     k=__wrapped_pgs_vfree((void*)t->priv_stack_base,t->priv_stack_pages);
     if(error_kurd(k))return kurd_get_raw(k);
     task_pool::release(tid);
-    return ckurd();
+    return kurd_get_raw(success);
 }
 void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
 {

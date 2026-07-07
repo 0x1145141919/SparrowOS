@@ -46,7 +46,10 @@ task* task_pool::get_by_tid(uint64_t tid, KURD_t& kurd)
     }
     if (found) return found;
     kurd = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
-                  Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
+                  Scheduler::TASK_POOL,
+                  Scheduler::TASK_POOL_EVENTS::EVENT_CODE_GET_BY_TID,
+                  level_code::ERROR, err_domain::CORE_MODULE);
+    kurd.reason = Scheduler::TASK_POOL_EVENTS::COMMON_FAIL_REASONS::NOT_FOUND;
     return nullptr;
 }
 
@@ -65,34 +68,32 @@ KURD_t task_pool::release(uint64_t tid)
     tmp.tid=tid;
     task* found = m_tree.find(tmp);
     if (!found) {
-        return KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
-                      Scheduler::scheduler_task_pool, 0, level_code::ERROR, err_domain::CORE_MODULE);
+        KURD_t k = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
+                          Scheduler::TASK_POOL,
+                          Scheduler::TASK_POOL_EVENTS::EVENT_CODE_RELEASE,
+                          level_code::ERROR, err_domain::CORE_MODULE);
+        k.reason = Scheduler::TASK_POOL_EVENTS::COMMON_FAIL_REASONS::NOT_FOUND;
+        return k;
     }
     m_tree.erase(tmp);
     return KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
-                  Scheduler::scheduler_task_pool, 0, level_code::INFO, err_domain::CORE_MODULE);
+                  Scheduler::TASK_POOL,
+                  Scheduler::TASK_POOL_EVENTS::EVENT_CODE_RELEASE,
+                  level_code::INFO, err_domain::CORE_MODULE);
 }
 
-// ── sleep_queue_t::insert(未改动,仅移至此位置)──
+// ── sleep_queue_t::insert ──
+// 不产生 KURD 语义，仅返回空 KURD_t。
 KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
 {
-    KURD_t success = KURD_t(result_code::SUCCESS, 0, module_code::SCHEDULER,
-                             Scheduler::self_scheduler, Scheduler::self_scheduler_events::insert_ready_task, level_code::INFO,
-                             err_domain::CORE_MODULE);
-    KURD_t fail = KURD_t(result_code::FAIL, 0, module_code::SCHEDULER,
-                          Scheduler::self_scheduler, Scheduler::self_scheduler_events::insert_ready_task, level_code::ERROR,
-                          err_domain::CORE_MODULE);
-    if (task_ptr == nullptr) {
-        fail.reason = Scheduler::self_scheduler_events::sleep_task_insert_results::fail_reasons::null_task_ptr;
-        return fail;
-    }
+    if (task_ptr == nullptr) return KURD_t();
 
     node* n = alloc_node(task_ptr);
 
     if (!m_head) {
         m_head = m_tail = n;
         ++m_size;
-        return success;
+        return KURD_t();
     }
 
     const miusecond_time_stamp_t new_stamp = task_ptr->min_wakeup_stamp;
@@ -110,7 +111,7 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
         m_tail->next = n;
         m_tail = n;
         ++m_size;
-        return success;
+        return KURD_t();
     }
 
     if (cur == m_head) {
@@ -118,7 +119,7 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
         m_head->prev = n;
         m_head = n;
         ++m_size;
-        return success;
+        return KURD_t();
     }
 
     n->next = cur;
@@ -126,7 +127,7 @@ KURD_t per_processor_scheduler::sleep_queue_t::insert(task* task_ptr)
     cur->prev->next = n;
     cur->prev = n;
     ++m_size;
-    return success;
+    return KURD_t();
 }
 task::task()
 {
@@ -136,17 +137,9 @@ namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
 constexpr uint32_t invalid_task_id = ~0u;
 
-static inline KURD_t self_scheduler_default_kurd()
+static inline KURD_t scheduler_default_kurd()
 {
-    return KURD_t(0, 0, module_code::SCHEDULER, Scheduler::self_scheduler, 0, 0, err_domain::CORE_MODULE);
-}
-
-static inline KURD_t make_self_scheduler_fatal(uint8_t event_code, uint16_t reason)
-{
-    KURD_t kurd = self_scheduler_default_kurd();
-    kurd.event_code = event_code;
-    kurd.reason = reason;
-    return set_fatal_result_level(kurd);
+    return KURD_t(0, 0, module_code::SCHEDULER, Scheduler::SCHEDULER, 0, 0, err_domain::CORE_MODULE);
 }
 
 static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd)
@@ -190,7 +183,7 @@ static inline void panic_with_kurd(KURD_t kurd)
 
 KURD_t per_processor_scheduler::default_kurd()
 {
-    return KURD_t(0,0,module_code::SCHEDULER,Scheduler::self_scheduler,0,0,err_domain::CORE_MODULE);
+    return KURD_t(0,0,module_code::SCHEDULER,Scheduler::SCHEDULER,0,0,err_domain::CORE_MODULE);
 }
 
 KURD_t per_processor_scheduler::default_success()
@@ -307,29 +300,30 @@ void per_processor_scheduler::sched()
 }
 KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
 {
+    namespace ev = Scheduler::SCHEDULER_EVENTS;
     KURD_t fail=default_fail();
     KURD_t success=default_success();
-    fail.event_code=Scheduler::self_scheduler_events::insert_ready_task;
-    success.event_code=Scheduler::self_scheduler_events::insert_ready_task;
+    fail.event_code=ev::EVENT_CODE_INSERT_READY_TASK;
+    success.event_code=ev::EVENT_CODE_INSERT_READY_TASK;
     if(task_ptr==&idle){
         return success;
     }
     if(task_ptr==nullptr){
-        fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::null_task_ptr;
+        fail.reason=ev::COMMON_FAIL_REASONS::NULL_TASK_PTR;
         return fail;
     }
     if(task_ptr->get_state()!=ready){
-        fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::bad_task_type;
+        fail.reason=ev::COMMON_FAIL_REASONS::BAD_TASK_TYPE;
         return fail;
     }
     if(front){
         if(!ready_queue.push_front(task_ptr)){
-            fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::insert_fail;
+            fail.reason=ev::COMMON_FAIL_REASONS::INSERT_FAIL;
             return fail;
         }
     }else{
         if(!ready_queue.push_back(task_ptr)){
-            fail.reason=Scheduler::self_scheduler_events::insert_ready_task_results::fail_reasons::insert_fail;
+            fail.reason=ev::COMMON_FAIL_REASONS::INSERT_FAIL;
             return fail;
         }
     }
@@ -433,7 +427,7 @@ void per_processor_scheduler::placed_init()
     t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
     t.priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;
     t.priv_stack_base=(vaddr_t)stacks_ptr->stack_ist4;
-    t.priv_stack_pages=sizeof(per_processor_hardware_stack_t.stack_ist4)>>12;
+    t.priv_stack_pages=sizeof(((per_processor_hardware_stack_t*)0)->stack_ist4)>>12;
     t.priv_ctx.core_ctx.idtctx.iret.rsp=t.priv_stack_base+(t.priv_stack_pages<<12)-64;
     t.priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
     t.choose=task::ctx_choose::priv;
