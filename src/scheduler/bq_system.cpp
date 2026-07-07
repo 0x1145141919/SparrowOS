@@ -5,7 +5,7 @@
  *
  * 锁纪律：bq_lock > task_lock > sched_lock
  *
- * 当前阶段：空 KURD 占位。所有 ckurd 返回值为临时构造，未编排模块错误树。
+ * location: block_queue_system (Scheduler::block_queue_system)
  * ═══════════════════════════════════════════════════════════════════════ */
 
 #include "Scheduler/per_processor_scheduler.h"
@@ -14,17 +14,54 @@
 rb_map<bq_id_t,block_queue*>*container;
 spinrwlock_cpp_t container_lock;
 uint64_t next_will_alloc_qid;
+
+// ── block_queue_system location 模板 helpers ──
+namespace {
+static inline KURD_t bq_default_kurd()
+{
+    return KURD_t(0, 0, module_code::SCHEDULER,
+                  Scheduler::block_queue_system, 0, 0,
+                  err_domain::CORE_MODULE);
+}
+static inline KURD_t bq_success(uint8_t event)
+{
+    KURD_t k = bq_default_kurd();
+    k.result = result_code::SUCCESS;
+    k.level  = level_code::INFO;
+    k.event_code = event;
+    return k;
+}
+static inline KURD_t bq_fail(uint8_t event)
+{
+    KURD_t k = bq_default_kurd();
+    k.result = result_code::FAIL;
+    k.level  = level_code::ERROR;
+    k.event_code = event;
+    return k;
+}
+} // namespace
+
 KURD_t block_queue::push_tail(task *t)
 {
-    if(t==nullptr)return KURD_t();
-    if(t->get_state()!=blocked)return KURD_t();
+    using namespace Scheduler::block_queue_system_events;
+    KURD_t success = bq_success(push_tail);
+    KURD_t fail    = bq_fail(push_tail);
+
+    if (t == nullptr) {
+        fail.reason = common_fail_reasons::null_param;
+        return fail;
+    }
+    if (t->get_state() != blocked) {
+        fail.reason = common_fail_reasons::invalid_state;
+        return fail;
+    }
     {
-        reentrant_spinlock_guard(t->task_lock);
+        reentrant_spinlock_guard g(t->task_lock);
         t->task_event_shift(this->queue_event);
     }
     t->out_of_task_lock_is_task_on_block_queue_bit = true;
     inner_queue.push_back(t);
-    return KURD_t();
+    return success;
 }
 bq_id_t bq_alloc(block_queue*q)
 {
@@ -43,17 +80,23 @@ bq_id_t bq_alloc(block_queue*q)
 }
 ckurd bq_free(bq_id_t qid)
 {
+    using namespace Scheduler::block_queue_system_events;
+    KURD_t success = bq_success(bq_free);
+    KURD_t fail    = bq_fail(bq_free);
+
     interrupt_guard g;
     spinrwlock_interrupt_about_write_guard l(container_lock);
-    class block_queue**queue=container->find(qid);
-    if(queue==nullptr)
-    {return ckurd();}else{
-        bool res=container->remove(qid);
-        if(res)
-        {return ckurd();}//成功kurd
-        else{
-            return ckurd();//失败kurd
-        }
+    class block_queue**queue = container->find(qid);
+    if (queue == nullptr) {
+        fail.reason = bq_free_results::fail_reasons::queue_not_found;
+        return kurd_get_raw(fail);
+    }
+    bool res = container->remove(qid);
+    if (res) {
+        return kurd_get_raw(success);
+    } else {
+        fail.reason = bq_free_results::fail_reasons::remove_fail;
+        return kurd_get_raw(fail);
     }
 }
 
@@ -61,19 +104,39 @@ ckurd bq_free(bq_id_t qid)
 
 KURD_t block_queue::enable_queue(task::event_type_t type)
 {
-    if (state != ready) return KURD_t{};
-    if (inner_queue.size() != 0) return KURD_t{};
+    using namespace Scheduler::block_queue_system_events;
+    KURD_t success = bq_success(enable_queue);
+    KURD_t fail    = bq_fail(enable_queue);
+
+    if (state != ready) {
+        fail.reason = common_fail_reasons::invalid_state;
+        return fail;
+    }
+    if (inner_queue.size() != 0) {
+        fail.reason = common_fail_reasons::queue_not_empty;
+        return fail;
+    }
     state = running;
     queue_event = type;
-    return KURD_t{};
+    return success;
 }
 
 KURD_t block_queue::disable_queue()
 {
-    if (state != running) return KURD_t{};
-    if (inner_queue.size() != 0) return KURD_t{};
+    using namespace Scheduler::block_queue_system_events;
+    KURD_t success = bq_success(disable_queue);
+    KURD_t fail    = bq_fail(disable_queue);
+
+    if (state != running) {
+        fail.reason = common_fail_reasons::invalid_state;
+        return fail;
+    }
+    if (inner_queue.size() != 0) {
+        fail.reason = common_fail_reasons::queue_not_empty;
+        return fail;
+    }
     state = ready;
-    return KURD_t{};
+    return success;
 }
 
 bool block_queue::is_queue_ready()
