@@ -216,7 +216,7 @@ class task{
     uint32_t belonged_processor_id;
     task();
     bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
-    const uint64_t get_tid();
+    uint64_t get_tid() const;
     static  task* basic_constructor();
     static void idle_specified_constructor(task*task_ptr);
     void atomic_load();   // 根据 ctx_choose 无脑加载对应上下文
@@ -370,7 +370,6 @@ extern "C"{
     void kthread_self_blocked(task_blocked_reason_t reason);
     void kthread_sleep(miusecond_time_stamp_t offset);
     [[noreturn]] void kthread_sleep_cppenter(x64_standard_context_v2* context);
-    void kthread_self_blocked();
     [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context_v2* context);
     ckurd wakeup_thread(uint64_t tid, bool front_insert=false);
     uint64_t block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
