@@ -52,7 +52,7 @@
     swapgs
 %%skip_gs:
 
-    mov rdi, rsp               ; rdi = x64_standard_context*
+    mov rdi, rsp               ; rdi = x64_standard_context_v2*
     mov rax, rsp
     and rsp, -16
     sub rsp, 8
@@ -147,7 +147,7 @@ extern "C" void all_vec_delivery(x64_standard_context *frame, uint8_t vec)
 **`src/include/arch/x86_64/Interrupt_system/Interrupt.h`**
 
 ```cpp
-typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
+typedef void (*soft_interrupt_func_t)(x64_standard_context_v2* context);
 
 struct interrupt_token_t {
     uint64_t flags;           // bit 0: TOKEN_FLAG_NEED_RESCHED

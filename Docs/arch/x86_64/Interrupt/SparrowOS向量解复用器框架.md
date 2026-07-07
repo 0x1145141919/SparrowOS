@@ -63,7 +63,7 @@ FRED 虽然用 SS.type 分离了软中断(type=4)和硬件中断(type=0/2)，但
 `src/include/arch/x86_64/Interrupt_system/Interrupt.h`
 
 ```cpp
-typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
+typedef void (*soft_interrupt_func_t)(x64_standard_context_v2* context);
 
 struct ipi_descrioptor_t {
     soft_interrupt_func_t func;       // null = 未注册

@@ -42,7 +42,7 @@ FRED 机制提供了向量号递送能力——每个中断入口自动携带向
 
 **软中断（soft_interrupt_functions）**：
 - 全局、同步、由 `int` 指令触发
-- handler 接收 `x64_standard_context* frame`，可访问/修改 CPU 寄存器状态
+- handler 接收 `x64_standard_context_v2* frame`，可访问/修改 CPU 寄存器状态
 - 允许执行流跑飞（即不返回），例如 kthread_call 内部的 sched()
 - 256 项函数指针表，空指针视为未注册
 
