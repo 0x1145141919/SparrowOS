@@ -60,18 +60,11 @@ extern "C" void delay(unsigned int milliseconds) {
 }
 EFI_TIME global_time;
 uint32_t efi_map_ver;
-void ipi_test(){
-    uint32_t self_processor_id=fast_get_processor_id();
-    bsp_kout<<"processor id "<< self_processor_id<<kendl;
-    x2apic::x2apic_driver::write_eoi();
-    global_schedulers[self_processor_id].sched();
-    asm volatile("hlt");
-}
-void ipi_start_sched(x64_standard_context* ctx){
+void ipi_start_sched(x64_standard_context_v2* ctx){
     ctx=nullptr;
     uint32_t self_processor_id=fast_get_processor_id();
     bsp_kout<<"processor id "<< self_processor_id<<" start scheduling"<<kendl;
-    global_schedulers[self_processor_id].sched();
+    get_self_scheduler()->next_task_with_routine();
 }
 
 void* Collatz_kthread(void* init_value){
@@ -156,8 +149,7 @@ void create_first_kthread(){
 
     KURD_t kurd=KURD_t();
     uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
-    per_processor_scheduler&sc=global_schedulers[0];
-    sc.sched();
+    get_self_scheduler()->next_task_with_routine();
 }
 
 // ─── 核心关机 IPI handler（跑飞型，三指令收工） ────────────

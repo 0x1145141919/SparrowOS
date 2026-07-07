@@ -53,7 +53,7 @@ static KURD_t demux_default_fatal()
     k.level  = level_code::FATAL;
     return k;
 }
-void cpu_froze(x64_standard_context* ctx){
+void cpu_froze(x64_standard_context_v2* ctx){
     ctx=nullptr;
     asm volatile("cli");
     asm volatile("hlt");
@@ -484,7 +484,9 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
     /* ── 1. 软中断表 (全局, 同步, int N) ── */
     if (soft_interrupt_functions[vec]) {
         soft_interrupt_functions[vec](raw_frame);
-        asm volatile("ud2");   // 软中断必须不返回
+        //asm volatile("ud2");   // 软中断必须不返回
+        //事实上软中断必须允许返回，不然到时候哪些int 227的直接返回用户空间的系统调用，以及226的block_if_equal直接返回分支
+        return;
     }
     gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
     __uint128_t*local_ipi_complex = (__uint128_t*)&self->local_ipi_complex;
@@ -553,7 +555,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
  * FRED 下硬件中断可能携带 IPI，统一走 v3 消息槽 + tokens 表。
  * 注意：FRED 自动管理 EOIf，此处不应再调用 write_eoi()。
  */
-void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec)
+void fred_vec_demux_hw_dispatch(x64_standard_context_v2* frame, uint8_t vec)
 {
     gs_complex_t* self = (gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE);
     __uint128_t* slot = &self->local_ipi_complex;
@@ -609,7 +611,7 @@ void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec)
 /* ===================================================================
  * vec_demux_soft_dispatch — FRED type 4 (软中断) 分发器
  * =================================================================== */
-void fred_vec_demux_soft_dispatch(x64_standard_context* frame, uint8_t vec)
+void fred_vec_demux_soft_dispatch(x64_standard_context_v2* frame, uint8_t vec)
 {
     /* FRED 下软中断不经过 IDT，直接查 soft_interrupt_functions */
     if (soft_interrupt_functions[vec]) {

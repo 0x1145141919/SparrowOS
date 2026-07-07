@@ -14,6 +14,7 @@
 #include "util/rb_map.h"
 
 extern rb_map<bq_id_t, block_queue*>* container;
+extern spinrwlock_cpp_t container_lock;
 extern uint64_t next_will_alloc_qid;
 #include "arch/x86_64/mem_init.h"
 static u64ka g_next_tid{0};  // 0 保留作无效
@@ -148,7 +149,7 @@ static inline KURD_t make_self_scheduler_fatal(uint8_t event_code, uint16_t reas
     return set_fatal_result_level(kurd);
 }
 
-static inline void panic_with_kurd(x64_standard_context *frame, KURD_t kurd)
+static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd)
 {
     panic_info_inshort inshort{
         .is_bug = true,
@@ -269,13 +270,13 @@ void per_processor_scheduler::sched()
         }
         for(uint64_t i=0;i<logical_processor_count;i++){
             per_processor_scheduler*other=get_other_scheduler(i);
-            if(&other==this)continue;
+            if(other==this)continue;
             {
-            reentrant_spinlock_guard g(other.sched_lock);
-                if(other.ready_queue.size()){
-                    task**candidate=other.ready_queue.front();
+            reentrant_spinlock_guard g(other->sched_lock);
+                if(other->ready_queue.size()){
+                    task**candidate=other->ready_queue.front();
                     if(*candidate){
-                    other.ready_queue.pop_front();
+                    other->ready_queue.pop_front();
                     return *candidate;
                     }
                 }
@@ -475,12 +476,14 @@ ckurd kthread_init(task *t,kthread_creating_package*p)
     t->priv_ctx.r8=p->args[3];
     t->priv_ctx.r9=p->args[4];
     KURD_t kurd;
-    t->priv_stack_base=stack_alloc(&kurd,DEFAULT_PRIVSTACK_PGS_COUNT);
+    if(!t->priv_stack_base)
+    {t->priv_stack_base=stack_alloc(&kurd,DEFAULT_PRIVSTACK_PGS_COUNT);
     if(error_kurd(kurd))return kurd_get_raw(kurd);
-    t->priv_stack_pages=DEFAULT_PRIVSTACK_PGS_COUNT;
+    t->priv_stack_pages=DEFAULT_PRIVSTACK_PGS_COUNT;}
     t->priv_ctx.core_ctx.idtctx.iret.rsp=t->priv_stack_base+(t->priv_stack_pages<<12)-64;
     t->priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&allkthread_true_enter;
     t->choose=task::ctx_choose::priv;
+    return ckurd();
 }
 void per_processor_scheduler::next_task_with_routine()
 {
@@ -494,26 +497,14 @@ void per_processor_scheduler::next_task_with_routine()
         {
             interrupt_guard gi;
             spinrwlock_interrupt_about_read_guard lc(container_lock);
-            q = container->find(pick);
+            q = *container->find(pick);
         }
         if (q) {
             {
                 spinlock_interrupt_about_guard gq(q->qlock);
                 q->pop_timeouts(&clamps);
             }
-            for (uint32_t i = 0; i < clamps.batch_count; ++i) {
-                task* t = clamps.arr[i];
-                reentrant_spinlock_guard gt(t->task_lock);
-                t->set_ready();
-            }
-            {
-                reentrant_spinlock_guard gs(this->sched_lock);
-                for (uint32_t i = 0; i < clamps.batch_count; ++i) {
-                    KURD_t kurd = this->insert_ready_task(clamps.arr[i], false);
-                    if (error_kurd(kurd))
-                        panic_with_kurd(kurd);
-                }
-            }
+            bq_flush_pending(&clamps, true);
         }
     }
 

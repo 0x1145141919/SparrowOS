@@ -58,6 +58,7 @@ namespace Scheduler{
             namespace fail_reasons{
                 constexpr uint16_t bad_task_state=1;
                 constexpr uint16_t kthread_cant_wake_for_bad_block_reason=2;
+                constexpr uint16_t task_on_block_queue=3;
             }
         }
         constexpr uint8_t kthread_block=5;
@@ -69,6 +70,7 @@ namespace Scheduler{
         constexpr uint8_t sleep_task_insert=7;
         namespace sleep_task_insert_results{
             namespace fail_reasons{
+                constexpr uint16_t null_task_ptr=1;
                 constexpr uint16_t insert_fail=3;
             }
         }
@@ -115,9 +117,9 @@ namespace Scheduler{
         namespace kthread_common_save_results{
             namespace fatal_reasons{
                  
-                 
+                constexpr uint16_t privctx_stackptr_out_of_range=1;
                 constexpr uint16_t bad_task_state=3;
-                 
+                constexpr uint16_t not_supported_ctx=4;
             }
             namespace fail_reasons{
                 constexpr uint16_t nullptr_param=1;
@@ -186,6 +188,7 @@ class task{
     miusecond_time_stamp_t accumulates_time_bank[event_type_COUNT];
     uint64_t accumulates_counters_bank[event_type_COUNT];
     public:
+    bool out_of_task_lock_is_task_on_block_queue_bit = false;
     uint32_t belonged_processor_id;
     task();
     bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
@@ -242,6 +245,7 @@ class block_queue{
     spinlock_cpp_t qlock;
     block_queue(): state(ready), qlock{}, queue_event{}, inner_queue{} 
   {};
+    KURD_t push_tail(task*t);
     KURD_t enable_queue(task::event_type_t type);
     KURD_t disable_queue();
     bool is_queue_ready();
@@ -342,16 +346,16 @@ extern "C"{
     void kthread_self_blocked(task_blocked_reason_t reason);
     void kthread_sleep(miusecond_time_stamp_t offset);
     [[noreturn]] void kthread_sleep_cppenter(x64_standard_context_v2* context);
+    void kthread_self_blocked();
     [[noreturn]] void kthread_self_blocked_cppenter(x64_standard_context_v2* context);
     ckurd wakeup_thread(uint64_t tid, bool front_insert=false);
-    [[noreturn]] void block_queue_cppenter(x64_standard_context_v2* context);
-    void block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
+    uint64_t block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context_v2* context);
     ckurd release_kthread(uint64_t tid);
     bq_id_t  bq_alloc(block_queue*q);                         // 分配一个新 block_queue，返回句柄,处于ready态
     ckurd bq_free(bq_id_t qid);               // 释放，返回 ckurd（KURD raw）
     //上面三个的返回值是唤醒个数
-    void bq_flush_pending(blocked_tasks_clamps_t* clamp); // 处理 pending_wake 中所有弹出的 task（调用方已释放 bq_lock）
+    void bq_flush_pending(blocked_tasks_clamps_t* clamp,bool is_timeout); // 处理 从block_queue里面弹出来的task的唤醒工作
     void common_idle();
     char allkthread_true_enter;
     void resched(x64_standard_context_v2 *frame);

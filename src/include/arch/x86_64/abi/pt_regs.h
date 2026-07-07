@@ -167,5 +167,5 @@ struct x64_fred_context{
     uint64_t rbp;
     fred_complex fred;
 };
-void filt_frame(x64_standard_context*frame,x64_errcode_exception_frame*raw);
-void filt_frame(x64_standard_context*frame,x64_fred_context*raw);
+void filt_frame(x64_standard_context_v2*frame,x64_errcode_exception_frame*raw);
+void filt_frame(x64_standard_context_v2*frame,x64_fred_context*raw);

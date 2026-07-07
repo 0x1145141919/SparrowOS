@@ -33,7 +33,7 @@ void wrmsr_func(uint32_t offset, uint64_t value)
                    "d" (value_high));
 }
 #include <elf.h>
-extern "C" void init_jump_to_kernel(x64_standard_context* ctx);
+extern "C" void init_jump_to_kernel(x64_standard_context_v2* ctx);
 // ============================================================================
 // 前向声明 & 常量
 // ============================================================================

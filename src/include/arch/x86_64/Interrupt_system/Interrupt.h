@@ -22,22 +22,22 @@ struct interrupt_token_t{
  */
  // namespace gdtentry
 
-extern "C" void div_by_zero_cpp_enter(x64_standard_context*frame);
-extern "C" void debug_cpp_enter(x64_standard_context* frame);
-extern "C" void nmi_cpp_enter(x64_standard_context* frame);
-extern "C" void breakpoint_cpp_enter(x64_standard_context* frame);
-extern "C" void overflow_cpp_enter(x64_standard_context* frame);
-extern "C" void invalid_opcode_cpp_enter(x64_standard_context* frame);        // #UD
+extern "C" void div_by_zero_cpp_enter(x64_standard_context_v2*frame);
+extern "C" void debug_cpp_enter(x64_standard_context_v2* frame);
+extern "C" void nmi_cpp_enter(x64_standard_context_v2* frame);
+extern "C" void breakpoint_cpp_enter(x64_standard_context_v2* frame);
+extern "C" void overflow_cpp_enter(x64_standard_context_v2* frame);
+extern "C" void invalid_opcode_cpp_enter(x64_standard_context_v2* frame);        // #UD
 extern "C" void double_fault_cpp_enter(x64_errcode_exception_frame* frame); // #DF
 extern "C" void invalid_tss_cpp_enter(x64_errcode_exception_frame* frame);   // #TS    
 extern "C" void general_protection_cpp_enter(x64_errcode_exception_frame* frame); // #GP
 extern "C" void page_fault_cpp_enter(x64_errcode_exception_frame* frame);         // #PF
-extern "C" void machine_check_cpp_enter(x64_standard_context* frame);        // #MC
-extern "C" void simd_floating_point_cpp_enter(x64_standard_context* frame);    // #XM
-extern "C" void virtualization_cpp_enter(x64_standard_context* frame);     // #VE
-extern "C" void Control_Protection_cpp_enter(x64_standard_context* frame);
-extern "C" [[noreturn]] void timer_cpp_enter(x64_standard_context* frame);
-// 汇编定义的异常处理入口点typedef void (*soft_interrupt_func_t)(x64_standard_context* context);
+extern "C" void machine_check_cpp_enter(x64_standard_context_v2* frame);        // #MC
+extern "C" void simd_floating_point_cpp_enter(x64_standard_context_v2* frame);    // #XM
+extern "C" void virtualization_cpp_enter(x64_standard_context_v2* frame);     // #VE
+extern "C" void Control_Protection_cpp_enter(x64_standard_context_v2* frame);
+extern "C" [[noreturn]] void timer_cpp_enter(x64_standard_context_v2* frame);
+// 汇编定义的异常处理入口点typedef void (*soft_interrupt_func_t)(x64_standard_context_v2* context);
 extern "C" char div_by_zero_bare_enter;
 extern "C" char breakpoint_bare_enter;
 extern "C" char nmi_bare_enter;

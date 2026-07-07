@@ -14,6 +14,18 @@
 rb_map<bq_id_t,block_queue*>*container;
 spinrwlock_cpp_t container_lock;
 uint64_t next_will_alloc_qid;
+KURD_t block_queue::push_tail(task *t)
+{
+    if(t==nullptr)return KURD_t();
+    if(t->get_state()!=blocked)return KURD_t();
+    {
+        reentrant_spinlock_guard(t->task_lock);
+        t->task_event_shift(this->queue_event);
+    }
+    t->out_of_task_lock_is_task_on_block_queue_bit = true;
+    inner_queue.push_back(t);
+    return KURD_t();
+}
 bq_id_t bq_alloc(block_queue*q)
 {
     interrupt_guard g;
@@ -72,20 +84,24 @@ bool block_queue::is_queue_ready()
 task* block_queue::pop_head()
 {
     if (inner_queue.empty()) return nullptr;
-    return inner_queue.pop_front_value();
+    task* t = inner_queue.pop_front_value();
+    t->out_of_task_lock_is_task_on_block_queue_bit = false;
+    return t;
 }
 
 void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
 {
     uint64_t now = ktime::get_microsecond_stamp();
     while (!inner_queue.empty()) {
-        task* t = *inner_queue.front();
-        if (t->min_wakeup_stamp == 0 || now <= t->min_wakeup_stamp)
+        task* front_t = *inner_queue.front();
+        if (front_t->min_wakeup_stamp == 0 || now <= front_t->min_wakeup_stamp)
             {
                 batch->is_timeout_mov_early = true;
                 break;
             }
-        batch->arr[batch->batch_count++] = inner_queue.pop_front_value();
+        task* popped = inner_queue.pop_front_value();
+        popped->out_of_task_lock_is_task_on_block_queue_bit = false;
+        batch->arr[batch->batch_count++] = popped;
         if(batch->batch_count>=64)break;
     }
     batch->is_queue_empty = inner_queue.empty();
@@ -94,7 +110,9 @@ void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
 void block_queue::pop_all(blocked_tasks_clamps_t* batch)
 {
     while (!inner_queue.empty()) {
-        batch->arr[batch->batch_count++] = inner_queue.pop_front_value();
+        task* t = inner_queue.pop_front_value();
+        t->out_of_task_lock_is_task_on_block_queue_bit = false;
+        batch->arr[batch->batch_count++] = t;
         if(batch->batch_count>=64){
             break;
         }

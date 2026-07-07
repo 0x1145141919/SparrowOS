@@ -71,6 +71,6 @@ extern "C" void halt_on(uint32_t id, bool is_apicid);//is_apicid==true则id是ap
 extern "C" uint64_t fly_ipi_send(ipi_package_t*package);//返回ipi结果码
 extern "C" __uint128_t ret_ipi_send(ipi_package_t*package);//高64bit是函数返回值，低64bit是ipi结果码
 // FRED 分发器声明 (实现在 x86_vecs_deliver_mgr.cpp)
-void fred_vec_demux_hw_dispatch(x64_standard_context* frame, uint8_t vec);
-void fred_vec_demux_soft_dispatch(x64_standard_context* frame, uint8_t vec);
+void fred_vec_demux_hw_dispatch(x64_standard_context_v2* frame, uint8_t vec);
+void fred_vec_demux_soft_dispatch(x64_standard_context_v2* frame, uint8_t vec);
 extern bool fred_support_catch_bit;
