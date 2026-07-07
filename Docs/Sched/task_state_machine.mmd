@@ -1,0 +1,30 @@
+---
+title: SparrowOS Task State Machine
+---
+stateDiagram-v2
+    direction LR
+
+    s_init : init
+    s_ready : ready
+    s_running : running
+    s_blocked : blocked
+    s_zombie : zombie
+    s_dead : dead
+
+    [*] --> s_init : placement_constructor
+
+    s_init --> s_ready : task_start() / set_ready()
+
+    s_ready --> s_running : sched() / set_running()
+    s_ready --> s_zombie : set_zombie()
+
+    s_running --> s_ready : yield / resched / preempt\nset_ready()
+    s_running --> s_blocked : kthread_sleep() / block()\nset_blocked()
+    s_running --> s_zombie : kthread_exit()\nset_zombie()
+
+    s_blocked --> s_ready : wakeup_thread() /\nsleep_tasks_wake() / BQ\nset_ready()
+    s_blocked --> s_zombie : set_zombie()
+
+    s_zombie --> s_dead : set_dead()
+
+    s_dead --> [*] : resource reclaim

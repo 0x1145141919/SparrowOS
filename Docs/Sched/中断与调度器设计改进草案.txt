@@ -7,7 +7,7 @@
 1.1 hard_interrupt_func_t → interrupt_token_t
 
   旧:
-    typedef void (*hard_interrupt_func_t)(x64_standard_context*, uint8_t, uint32_t);
+    typedef void (*hard_interrupt_func_t)(x64_standard_context_v2*, uint8_t, uint32_t);
 
   新:
     struct interrupt_token_t {
