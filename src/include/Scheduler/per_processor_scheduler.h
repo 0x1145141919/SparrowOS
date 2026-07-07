@@ -8,145 +8,142 @@
 #include "ktime.h"
 #include "memory/AddresSpace.h"
 namespace Scheduler {
-    // ── 4 个 in_module_location ───────────────────────────────
-    constexpr uint8_t scheduler          = 1;
-    constexpr uint8_t kthreads           = 2;
-    constexpr uint8_t task_pool          = 3;
-    constexpr uint8_t block_queue_system = 4;
+    // ── in_module_location ───────────────────────────────────
+    // 命名惯例: UPPER_CASE 避免与成员/函数名碰撞
+    constexpr uint8_t SCHEDULER          = 1;
+    constexpr uint8_t KTHREADS           = 2;
+    constexpr uint8_t TASK_POOL          = 3;
+    constexpr uint8_t BLOCK_QUEUE_SYSTEM = 4;
 
-    // ── scheduler location (1) ─────────────────────────────────
-    namespace scheduler_events {
-        // 公共原因 <scheduler, result> 层级
-        namespace common_fail_reasons {
-            constexpr uint16_t null_task_ptr = 0;
-            constexpr uint16_t bad_task_type = 1;
-            constexpr uint16_t insert_fail   = 2;
+    // ── scheduler location (1) ───────────────────────────────
+    namespace SCHEDULER_EVENTS {
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t NULL_TASK_PTR = 0;
+            constexpr uint16_t BAD_TASK_TYPE = 1;
+            constexpr uint16_t INSERT_FAIL   = 2;
             // bound = 3
         }
 
-        constexpr uint8_t insert_ready_task = 1;
+        constexpr uint8_t EVENT_CODE_INSERT_READY_TASK = 1;
         namespace insert_ready_task_results {
-            // 私有原因从 common_fail_reasons 上界 3 起编；当前无私有项
+            // 私有原因从 COMMON_FAIL_REASONS 上界 3 起编；当前无私有项
         }
     }
 
-    // ── kthreads location (2) ──────────────────────────────────
-    namespace kthreads_events {
-        // 公共原因 <kthreads, result> 层级
-        namespace common_fail_reasons {
-            constexpr uint16_t null_param     = 0;
-            constexpr uint16_t bad_task_state = 1;
+    // ── kthreads location (2) ────────────────────────────────
+    namespace KTHREADS_EVENTS {
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t NULL_PARAM     = 0;
+            constexpr uint16_t BAD_TASK_STATE = 1;
             // bound = 2
         }
-        namespace common_fatal_reasons {
-            constexpr uint16_t bad_task_state          = 0;
-            constexpr uint16_t privctx_stackptr_oor    = 1;
-            constexpr uint16_t not_supported_ctx       = 2;
-            constexpr uint16_t null_running_task       = 3;
+        namespace COMMON_FATAL_REASONS {
+            constexpr uint16_t BAD_TASK_STATE        = 0;
+            constexpr uint16_t PRIVCTX_STACKPTR_OOR  = 1;
+            constexpr uint16_t NOT_SUPPORTED_CTX     = 2;
+            constexpr uint16_t NULL_RUNNING_TASK     = 3;
             // bound = 4
         }
 
-        constexpr uint8_t kthread_init        = 1;
-        namespace kthread_init_results {
-            // 成功或 memory 模块 KURD 透传；无私有原因
-        }
+        constexpr uint8_t EVENT_CODE_KTHREAD_INIT        = 1;
+        namespace kthread_init_results {}
 
-        constexpr uint8_t task_launch         = 2;
+        constexpr uint8_t EVENT_CODE_TASK_LAUNCH         = 2;
         namespace task_launch_results {
-            namespace fail_reasons {  // 私有 [2, 6)
-                constexpr uint16_t invalid_tid            = 2;
-                constexpr uint16_t target_not_kernel_addr = 3;
-                constexpr uint16_t not_priv_ctx           = 4;
-                constexpr uint16_t state_transition_fail  = 5;
+            namespace FAIL_REASONS {  // 私有 [2, 6)
+                constexpr uint16_t INVALID_TID            = 2;
+                constexpr uint16_t TARGET_NOT_KERNEL_ADDR = 3;
+                constexpr uint16_t NOT_PRIV_CTX           = 4;
+                constexpr uint16_t STATE_TRANSITION_FAIL  = 5;
             }
         }
 
-        constexpr uint8_t release_kthread     = 3;
+        constexpr uint8_t EVENT_CODE_RELEASE_KTHREAD     = 3;
         namespace release_kthread_results {
-            namespace fail_reasons {  // 私有 [2, 3)
-                constexpr uint16_t task_not_zombie = 2;
+            namespace FAIL_REASONS {  // 私有 [2, 3)
+                constexpr uint16_t TASK_NOT_ZOMBIE = 2;
             }
         }
 
-        constexpr uint8_t wakeup_thread        = 4;
+        constexpr uint8_t EVENT_CODE_WAKEUP_THREAD       = 4;
         namespace wakeup_thread_results {
-            namespace success_reasons {
-                constexpr uint16_t other_entity_wakeup          = 1;
-                constexpr uint16_t already_running_or_wakeup    = 2;
+            namespace SUCCESS_REASONS {
+                constexpr uint16_t OTHER_ENTITY_WAKEUP       = 1;
+                constexpr uint16_t ALREADY_RUNNING_OR_WAKEUP = 2;
             }
-            namespace fail_reasons {  // 私有 [2, 4)
-                constexpr uint16_t task_on_block_queue = 2;
-                constexpr uint16_t bad_task_state      = 3;
+            namespace FAIL_REASONS {  // 私有 [2, 4)
+                constexpr uint16_t TASK_ON_BLOCK_QUEUE = 2;
+                constexpr uint16_t BAD_TASK_STATE      = 3;
             }
         }
 
-        constexpr uint8_t kthread_common_save  = 5;
+        constexpr uint8_t EVENT_CODE_KTHREAD_COMMON_SAVE = 5;
         namespace kthread_common_save_results {
-            namespace fail_reasons {  // 私有 [2, 3)
-                constexpr uint16_t null_running_task = 2;
+            namespace FAIL_REASONS {  // 私有 [2, 3)
+                constexpr uint16_t NULL_RUNNING_TASK = 2;
             }
-            // 致命原因: COMMON_FATAL_REASONS 覆盖，不重复定义
+            // FATAL_REASONS: COMMON_FATAL_REASONS 覆盖
         }
     }
 
-    // ── task_pool location (3) ────────────────────────────────
-    namespace task_pool_events {
-        namespace common_fail_reasons {
-            constexpr uint16_t not_found = 0;
-            constexpr uint16_t bad_tid   = 1;
+    // ── task_pool location (3) ──────────────────────────────
+    namespace TASK_POOL_EVENTS {
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t NOT_FOUND = 0;
+            constexpr uint16_t BAD_TID   = 1;
             // bound = 2
         }
 
-        constexpr uint8_t get_by_tid = 1;
+        constexpr uint8_t EVENT_CODE_GET_BY_TID = 1;
         namespace get_by_tid_results {
-            namespace fail_reasons {
-                // COMMON_FAIL:not_found 覆盖
+            namespace FAIL_REASONS {
+                // COMMON_FAIL_REASONS:NOT_FOUND
             }
         }
 
-        constexpr uint8_t release    = 2;
+        constexpr uint8_t EVENT_CODE_RELEASE    = 2;
         namespace release_results {
-            namespace fail_reasons {
-                // COMMON_FAIL:bad_tid/not_found 覆盖
+            namespace FAIL_REASONS {
+                // COMMON_FAIL_REASONS:BAD_TID / NOT_FOUND
             }
         }
     }
 
-    // ── block_queue_system location (4) ───────────────────────
-    namespace block_queue_system_events {
-        namespace common_fail_reasons {
-            constexpr uint16_t null_param      = 0;
-            constexpr uint16_t invalid_state   = 1;
-            constexpr uint16_t queue_not_empty = 2;
+    // ── block_queue_system location (4) ─────────────────────
+    namespace BLOCK_QUEUE_SYSTEM_EVENTS {
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t NULL_PARAM      = 0;
+            constexpr uint16_t INVALID_STATE   = 1;
+            constexpr uint16_t QUEUE_NOT_EMPTY = 2;
             // bound = 3
         }
 
-        constexpr uint8_t push_tail    = 1;
+        constexpr uint8_t EVENT_CODE_PUSH_TAIL    = 1;
         namespace push_tail_results {
-            namespace fail_reasons {
-                // COMMON_FAIL:null_param 覆盖
+            namespace FAIL_REASONS {
+                // COMMON_FAIL_REASONS:NULL_PARAM / INVALID_STATE
             }
         }
 
-        constexpr uint8_t enable_queue = 2;
+        constexpr uint8_t EVENT_CODE_ENABLE_QUEUE = 2;
         namespace enable_queue_results {
-            namespace fail_reasons {
-                // COMMON_FAIL:invalid_state/queue_not_empty 覆盖
+            namespace FAIL_REASONS {
+                // COMMON_FAIL_REASONS:INVALID_STATE / QUEUE_NOT_EMPTY
             }
         }
 
-        constexpr uint8_t disable_queue = 3;
+        constexpr uint8_t EVENT_CODE_DISABLE_QUEUE = 3;
         namespace disable_queue_results {
-            namespace fail_reasons {
-                // COMMON_FAIL:invalid_state/queue_not_empty 覆盖
+            namespace FAIL_REASONS {
+                // COMMON_FAIL_REASONS:INVALID_STATE / QUEUE_NOT_EMPTY
             }
         }
 
-        constexpr uint8_t bq_free      = 4;
+        constexpr uint8_t EVENT_CODE_BQ_FREE      = 4;
         namespace bq_free_results {
-            namespace fail_reasons {  // 私有 [3, 5)
-                constexpr uint16_t queue_not_found = 3;
-                constexpr uint16_t remove_fail     = 4;
+            namespace FAIL_REASONS {  // 私有 [3, 5)
+                constexpr uint16_t QUEUE_NOT_FOUND = 3;
+                constexpr uint16_t REMOVE_FAIL     = 4;
             }
         }
     }

@@ -20,7 +20,7 @@ namespace {
 static inline KURD_t bq_default_kurd()
 {
     return KURD_t(0, 0, module_code::SCHEDULER,
-                  Scheduler::block_queue_system, 0, 0,
+                  Scheduler::BLOCK_QUEUE_SYSTEM, 0, 0,
                   err_domain::CORE_MODULE);
 }
 static inline KURD_t bq_success(uint8_t event)
@@ -43,16 +43,16 @@ static inline KURD_t bq_fail(uint8_t event)
 
 KURD_t block_queue::push_tail(task *t)
 {
-    namespace ev = Scheduler::block_queue_system_events;
-    KURD_t success = bq_success(ev::push_tail);
-    KURD_t fail    = bq_fail(ev::push_tail);
+    namespace ev = Scheduler::BLOCK_QUEUE_SYSTEM_EVENTS;
+    KURD_t success = bq_success(ev::EVENT_CODE_PUSH_TAIL);
+    KURD_t fail    = bq_fail(ev::EVENT_CODE_PUSH_TAIL);
 
     if (t == nullptr) {
-        fail.reason = ev::common_fail_reasons::null_param;
+        fail.reason = ev::COMMON_FAIL_REASONS::NULL_PARAM;
         return fail;
     }
     if (t->get_state() != blocked) {
-        fail.reason = ev::common_fail_reasons::invalid_state;
+        fail.reason = ev::COMMON_FAIL_REASONS::INVALID_STATE;
         return fail;
     }
     {
@@ -80,22 +80,22 @@ bq_id_t bq_alloc(block_queue*q)
 }
 ckurd bq_free(bq_id_t qid)
 {
-    namespace ev = Scheduler::block_queue_system_events;
-    KURD_t success = bq_success(ev::bq_free);
-    KURD_t fail    = bq_fail(ev::bq_free);
+    namespace ev = Scheduler::BLOCK_QUEUE_SYSTEM_EVENTS;
+    KURD_t success = bq_success(ev::EVENT_CODE_BQ_FREE);
+    KURD_t fail    = bq_fail(ev::EVENT_CODE_BQ_FREE);
 
     interrupt_guard g;
     spinrwlock_interrupt_about_write_guard l(container_lock);
     class block_queue**queue = container->find(qid);
     if (queue == nullptr) {
-        fail.reason = ev::bq_free_results::fail_reasons::queue_not_found;
+        fail.reason = ev::bq_free_results::FAIL_REASONS::QUEUE_NOT_FOUND;
         return kurd_get_raw(fail);
     }
     bool res = container->remove(qid);
     if (res) {
         return kurd_get_raw(success);
     } else {
-        fail.reason = ev::bq_free_results::fail_reasons::remove_fail;
+        fail.reason = ev::bq_free_results::FAIL_REASONS::REMOVE_FAIL;
         return kurd_get_raw(fail);
     }
 }
@@ -104,16 +104,16 @@ ckurd bq_free(bq_id_t qid)
 
 KURD_t block_queue::enable_queue(task::event_type_t type)
 {
-    namespace ev = Scheduler::block_queue_system_events;
-    KURD_t success = bq_success(ev::enable_queue);
-    KURD_t fail    = bq_fail(ev::enable_queue);
+    namespace ev = Scheduler::BLOCK_QUEUE_SYSTEM_EVENTS;
+    KURD_t success = bq_success(ev::EVENT_CODE_ENABLE_QUEUE);
+    KURD_t fail    = bq_fail(ev::EVENT_CODE_ENABLE_QUEUE);
 
     if (state != ready) {
-        fail.reason = ev::common_fail_reasons::invalid_state;
+        fail.reason = ev::COMMON_FAIL_REASONS::INVALID_STATE;
         return fail;
     }
     if (inner_queue.size() != 0) {
-        fail.reason = ev::common_fail_reasons::queue_not_empty;
+        fail.reason = ev::COMMON_FAIL_REASONS::QUEUE_NOT_EMPTY;
         return fail;
     }
     state = running;
@@ -123,16 +123,16 @@ KURD_t block_queue::enable_queue(task::event_type_t type)
 
 KURD_t block_queue::disable_queue()
 {
-    namespace ev = Scheduler::block_queue_system_events;
-    KURD_t success = bq_success(ev::disable_queue);
-    KURD_t fail    = bq_fail(ev::disable_queue);
+    namespace ev = Scheduler::BLOCK_QUEUE_SYSTEM_EVENTS;
+    KURD_t success = bq_success(ev::EVENT_CODE_DISABLE_QUEUE);
+    KURD_t fail    = bq_fail(ev::EVENT_CODE_DISABLE_QUEUE);
 
     if (state != running) {
-        fail.reason = ev::common_fail_reasons::invalid_state;
+        fail.reason = ev::COMMON_FAIL_REASONS::INVALID_STATE;
         return fail;
     }
     if (inner_queue.size() != 0) {
-        fail.reason = ev::common_fail_reasons::queue_not_empty;
+        fail.reason = ev::COMMON_FAIL_REASONS::QUEUE_NOT_EMPTY;
         return fail;
     }
     state = ready;
