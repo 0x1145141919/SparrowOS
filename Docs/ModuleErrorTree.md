@@ -178,6 +178,39 @@ namespace FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES {
 - 两者独立：一个 FATAL result 未必是 FATAL level（可能是已知可恢复的致命错误）
 - 一个 INFO level 的 result 也不意味成功（可能是低影响失败）
 
+### 7. 命名规范 — UPPER_CASE
+
+模块错误树中的所有常量名、命名空间名统一使用 **UPPER_CASE**（全大写+下划线），
+避免与 C++ 成员函数/变量名（通常小写）碰撞。
+
+| 成分 | 命名模式 | 示例 |
+|------|----------|------|
+| `in_module_location` 枚举值 | `UPPER_CASE` | `SCHEDULER`, `KTHREADS`, `BLOCK_QUEUE_SYSTEM` |
+| 事件枚举值 | `EVENT_CODE_<NAME>` | `EVENT_CODE_INSERT_READY_TASK`, `EVENT_CODE_PUSH_TAIL` |
+| 公共原因命名空间 | `COMMON_FAIL_REASONS`, `COMMON_FATAL_REASONS` | 固定这两个名字 |
+| 事件私有原因命名空间 | `FAIL_REASONS`, `FATAL_REASONS`, `SUCCESS_REASONS` | 固定这三个名字 |
+| 原因常量 | `UPPER_CASE` | `NULL_TASK_PTR`, `QUEUE_NOT_FOUND` |
+
+**例外规则：**
+- 结果分组命名空间（`insert_ready_task_results` 等）保持小写，因为它们不直接参与语义枚举，
+  仅作为路径容器。
+
+```cpp
+// ✅ 正确
+namespace SCHEDULER_EVENTS {
+    namespace COMMON_FAIL_REASONS {
+        constexpr uint16_t NULL_TASK_PTR = 0;
+    }
+    constexpr uint8_t EVENT_CODE_INSERT_READY_TASK = 1;
+    namespace insert_ready_task_results {  // 小写：路径容器
+        // ...
+    }
+}
+
+// ❌ 错误：event_code 用的小写，与成员函数同名
+constexpr uint8_t insert_ready_task = 1;  // 与 insert_ready_task() 函数冲突
+```
+
 ---
 
 ## KURD 模块化制造范式（AI 生成规范）
