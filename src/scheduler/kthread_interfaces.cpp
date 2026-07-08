@@ -87,9 +87,8 @@ static inline void panic_with_kurd(KURD_t kurd,char*message=nullptr)
     );
 }
 } // namespace
-task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
+void kthread_common_save(x64_standard_context_v2*frame,bool expect_running,task* task_ptr)
 {
-    task* task_ptr = (task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     if (!task_ptr) {
         KURD_t fatal = make_kthreads_fatal(
             Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
@@ -125,11 +124,6 @@ task* kthread_common_save(x64_standard_context_v2*frame,bool expect_running)
             task_ptr->priv_ctx.core_ctx.idtctx.iret.ss&=0xffff;
         }
     }
-        
-    
-    
-    
-    return task_ptr;
 }
 KURD_t task_launch(task *t, uint32_t pid)
 {//还是要符合从内核上下文线程开始，以及基础iret_complex校验的
@@ -194,9 +188,10 @@ KURD_t task_launch(task *t, uint32_t pid)
     task* yield_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(yield_task->task_lock);
-        kthread_common_save(context,true);
+        kthread_common_save(context,true,yield_task);
         yield_task->set_ready();
     }
+    if(!scheduler.is_the_idle_task(yield_task))
     {
         reentrant_spinlock_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(yield_task);
@@ -211,10 +206,11 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     {
         reentrant_spinlock_guard g(interrupted_task->task_lock);
         if(!is_user_context){
-            kthread_common_save(frame,true);
+            kthread_common_save(frame,true,interrupted_task);
         }
         interrupted_task->set_ready();
     }
+    if(!scheduler.is_the_idle_task(interrupted_task))
     {
         reentrant_spinlock_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(interrupted_task);
@@ -227,7 +223,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     task*exit_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(exit_task->task_lock);
-        kthread_common_save(context,true);
+        kthread_common_save(context,true,exit_task);
         exit_task->set_zombie();
     }
     scheduler.next_task_with_routine();
@@ -238,7 +234,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(blocked_task->task_lock);
-        kthread_common_save(context,true);
+        kthread_common_save(context,true,blocked_task);
         blocked_task->set_blocked();
     }
     scheduler.next_task_with_routine();
@@ -265,7 +261,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         success.reason=ev::wakeup_thread_results::SUCCESS_REASONS::ALREADY_RUNNING_OR_WAKEUP;
         return kurd_get_raw(success);
     }else if(task_ptr->get_state()==task_state_t::blocked){
-        if(task_ptr->out_of_task_lock_is_task_on_block_queue_bit){
+        if(task_ptr->on_queue_bit){
             fail.reason=ev::wakeup_thread_results::FAIL_REASONS::TASK_ON_BLOCK_QUEUE;
             return kurd_get_raw(fail);
         }
@@ -286,14 +282,17 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
     task* sleeper_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
         reentrant_spinlock_guard g(sleeper_task->task_lock);
-        kthread_common_save(context,true);
+        kthread_common_save(context,true,sleeper_task);
         sleeper_task->min_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
         sleeper_task->set_blocked();
-    }
-    {
+        sleeper_task->on_queue_bit = true;
+        sleeper_task->task_event_shift( task::event_type_t::sleep);
+        {
         reentrant_spinlock_guard h(scheduler->sched_lock);
         scheduler->sleep_queue.insert(sleeper_task);
+        }
     }
+    
     scheduler->next_task_with_routine();
 }
 void block_if_equal_cppenter(x64_standard_context_v2 *context)
@@ -320,9 +319,12 @@ void block_if_equal_cppenter(x64_standard_context_v2 *context)
         {
             {
             context->rax|=1;
+            task::event_type_t qevt=waite_queue->get_queue_event();
             reentrant_spinlock_guard h(blocked_task->task_lock);
-            kthread_common_save(context,true);
+            kthread_common_save(context,true,blocked_task);
             blocked_task->set_blocked();
+            blocked_task->task_event_shift(qevt);
+            blocked_task->on_queue_bit = true;
             should_block=true;
             }
             waite_queue->push_tail(blocked_task);//这里面会使用task锁保护一下事件切换历程
@@ -417,6 +419,8 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
         reentrant_spinlock_guard gt(t->task_lock);
         t->priv_ctx.rax = rax_enc;
         t->set_ready();
+        t->on_queue_bit=false;
+        t->task_event_shift(task::event_type_t::offline);
     }
 
     // Phase 2: 逐个 insert_ready_task

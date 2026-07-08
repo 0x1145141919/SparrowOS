@@ -234,6 +234,7 @@ void per_processor_scheduler::sleep_tasks_wake()
         task*candidate=*it;
         {
             reentrant_spinlock_guard g(candidate->task_lock);
+            candidate->on_queue_bit = false;
             candidate->set_ready();
         }
     }
@@ -528,4 +529,11 @@ bool task::resurrect()
 
     task_state=task_state_t::init;
     return true;
+}
+uint64_t task::get_tid() const
+{
+    return this->tid;
+}bool per_processor_scheduler::is_the_idle_task(task *t)
+{
+    return t==(&this->idle);
 }

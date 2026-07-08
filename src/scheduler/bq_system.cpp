@@ -54,12 +54,12 @@ KURD_t block_queue::push_tail(task *t)
     if (t->get_state() != blocked) {
         fail.reason = ev::COMMON_FAIL_REASONS::INVALID_STATE;
         return fail;
-    }
+    }/*
     {
         reentrant_spinlock_guard g(t->task_lock);
         t->task_event_shift(this->queue_event);
-    }
-    t->out_of_task_lock_is_task_on_block_queue_bit = true;
+        t->on_queue_bit = true;
+    }*/ //错误的写法,这些状态改变，应该在一个临界区，也就是外部的
     inner_queue.push_back(t);
     return success;
 }
@@ -148,7 +148,6 @@ task* block_queue::pop_head()
 {
     if (inner_queue.empty()) return nullptr;
     task* t = inner_queue.pop_front_value();
-    t->out_of_task_lock_is_task_on_block_queue_bit = false;
     return t;
 }
 
@@ -163,7 +162,6 @@ void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
                 break;
             }
         task* popped = inner_queue.pop_front_value();
-        popped->out_of_task_lock_is_task_on_block_queue_bit = false;
         batch->arr[batch->batch_count++] = popped;
         if(batch->batch_count>=64)break;
     }
@@ -174,11 +172,14 @@ void block_queue::pop_all(blocked_tasks_clamps_t* batch)
 {
     while (!inner_queue.empty()) {
         task* t = inner_queue.pop_front_value();
-        t->out_of_task_lock_is_task_on_block_queue_bit = false;
         batch->arr[batch->batch_count++] = t;
         if(batch->batch_count>=64){
             break;
         }
     }
     batch->is_queue_empty = inner_queue.empty();
+}
+task::event_type_t block_queue::get_queue_event()
+{
+    return this->queue_event;
 }

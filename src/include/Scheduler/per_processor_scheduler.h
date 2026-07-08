@@ -209,7 +209,7 @@ class task{
     miusecond_time_stamp_t accumulates_time_bank[event_type_COUNT];
     uint64_t accumulates_counters_bank[event_type_COUNT];
     public:
-    bool out_of_task_lock_is_task_on_block_queue_bit = false;
+    bool on_queue_bit = false;
     uint32_t belonged_processor_id;
     task();
     bool usage_of_search_set_tid( uint64_t new_tid);//如其名字，只能在那个task_pool搜索的特殊场景用以用
@@ -269,6 +269,7 @@ class block_queue{
     KURD_t push_tail(task*t);
     KURD_t enable_queue(task::event_type_t type);
     KURD_t disable_queue();
+    task::event_type_t get_queue_event();
     bool is_queue_ready();
     task*pop_head();
     void pop_timeouts(blocked_tasks_clamps_t*batch);
@@ -345,6 +346,7 @@ class alignas(64) per_processor_scheduler {
     void   dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
     friend task;
     friend class task_pool;
+    bool is_the_idle_task(task*t);
     static void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
 };
 per_processor_scheduler* get_self_scheduler();
