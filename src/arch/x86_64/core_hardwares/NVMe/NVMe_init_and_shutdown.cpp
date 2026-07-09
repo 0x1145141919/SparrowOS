@@ -230,6 +230,10 @@ KURD_t NVMe_Controller::second_stage_init()
     uint32_t to = cap.field.to;
     IO_SQ_ENTRY_COUNT = min(DEFAULT_IO_SQ_ENTRY_COUNT, (uint16_t)cap.field.mqes);
     IO_CQ_ENTRY_COUNT = min(DEFAULT_IO_CQ_ENTRY_COUNT, (uint16_t)cap.field.mqes);
+
+    // 硬性要求：cap.mqes 必须 ≥ I/O 队列数
+    if (cap.field.mqes < sq_count - 1)
+        return make_fail(ctrl_disable_timeout);
     if (to == 0) to = 10;
 
     using namespace DEVICES_locs::NVMe_events::init_results::fail_reasons;
@@ -393,10 +397,18 @@ KURD_t NVMe_Controller::pre_init()
     if (this->state != NVMe::CTRL_UNINIT)
         return make_fail(DEVICES_locs::NVMe_events::init_results::fail_reasons::already_init);
 
-    this->sqs = new sq_complex[logical_processor_count + 1]();
+    // sqs 数组：__wrapped_pgs_valloc（物理连续，含内嵌 complete_commands_bank / block_tokens / flying_slots）
+    {
+        const uint64_t bytes = sizeof(sq_complex) * (logical_processor_count + 1);
+        const uint64_t pages = align_up(bytes, 4096) >> 12;
+        KURD_t ak;
+        void* va = __wrapped_pgs_valloc(&ak, pages, page_state_t::kernel_pinned, 12);
+        if (error_kurd(ak) || !va) return ak;
+        ksetmem_8(va, 0, bytes);
+        this->sqs = static_cast<sq_complex*>(va);
+    }
     this->sq_count = logical_processor_count + 1;
-    this->sqs[0].sq_bitmap = new Ktemplats::kernel_bitmap(DEFAULT_ADMIN_QUEUE_ENTRIES);
-    this->sqs[0].block_tokens = new sq_rq_t[DEFAULT_ADMIN_QUEUE_ENTRIES]();
+    this->sqs[0].flying_slots.enable(this->sqs[0].flying_slots_raw_map, DEFAULT_ADMIN_QUEUE_ENTRIES);
     this->sqs[0].sqid          = 0;
     this->sqs[0].num_of_entries = DEFAULT_ADMIN_QUEUE_ENTRIES;
     this->sqs[0].belonged_cqid  = 0;
@@ -495,10 +507,17 @@ KURD_t NVMe_Controller::pre_init()
                 msix_ctrl.fields.function_mask = 0;
                 msix_ctrl.fields.enable = true;
                 this->max_msix_vectors = msix_ctrl.fields.table_size + 1;
-                this->cqs = new cq_complex[this->max_msix_vectors]();
-                cqs[0].is_first_time = true;
                 this->cq_count = 1+min(this->max_msix_vectors-1,logical_processor_count);
-                this->IO_CQ_vecs = new uint8_t[this->max_msix_vectors - 1]();
+                {
+                    const uint64_t bytes = sizeof(cq_complex) * this->cq_count;
+                    const uint64_t pages = align_up(bytes, 4096) >> 12;
+                    KURD_t ak;
+                    void* va = __wrapped_pgs_valloc(&ak, pages, page_state_t::kernel_pinned, 12);
+                    if (error_kurd(ak) || !va) return ak;
+                    ksetmem_8(va, 0, bytes);
+                    this->cqs = static_cast<cq_complex*>(va);
+                }
+                cqs[0].is_first_time = true;
 
                 uint32_t table_bir = msix_cap->table_offset & 0x7;
                 uint32_t table_offset = msix_cap->table_offset & ~0x7;
@@ -628,14 +647,18 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
             msix_table[i].vector_control |= 1;
     }
 
-    delete[] sqs;
-    delete[] cqs;
+    {
+        uint64_t pages = align_up(sizeof(sq_complex) * sq_count, 4096) >> 12;
+        __wrapped_pgs_vfree(sqs, pages);
+    }
+    {
+        uint64_t pages = align_up(sizeof(cq_complex) * cq_count, 4096) >> 12;
+        __wrapped_pgs_vfree(cqs, pages);
+    }
     delete[] NSs;
-    delete[] IO_CQ_vecs;
     sqs = nullptr;
     cqs = nullptr;
     NSs = nullptr;
-    IO_CQ_vecs = nullptr;
     sq_count = 0;
     cq_count = 0;
     NS_count = 0;

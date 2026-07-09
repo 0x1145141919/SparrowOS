@@ -37,8 +37,6 @@ private:
 
     uint32_t ADmin_queue_belonged_processor;
     uint8_t ADmin_queue_vec;
-    uint8_t* IO_CQ_vecs;
-
     static constexpr uint16_t DEFAULT_IO_SQ_ENTRY_COUNT = 256;
     static constexpr uint16_t DEFAULT_IO_CQ_ENTRY_COUNT = 1024;
     uint16_t IO_SQ_ENTRY_COUNT;
@@ -81,19 +79,20 @@ private:
     } __attribute__((packed));
     static_assert(sizeof(head_regs_t) == 0x1000, "head_regs size mismatch");
 
-    struct sq_complex {
+    alignas(64) struct sq_complex {
         uint16_t sqid;
         uint16_t num_of_entries;
         uint16_t belonged_cqid;
-        spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、block_tokens 的更新一致性
-        //               提交/清理路径直接持有；中断路径在 cq_wq_lock 下嵌套持有
-        uint16_t tail_idx;        // 在 sq_lock 下读写
-        Ktemplats::kernel_bitmap* sq_bitmap;  // 在 sq_lock 下读写
         vm_interval sq_ring;
-        sq_rq_t* block_tokens;    // block_token 域：sq_lock 写 WAITING/DONE，wq 内只读 check
+        alignas(64) spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、block_tokens 的更新一致性
+        uint16_t tail_idx;        // 在 sq_lock 下读写
+        bitmap_base flying_slots;
+        uint64_t flying_slots_raw_map[4];
+        alignas(64) NVMe::command::complete_command_common complete_commands_bank[DEFAULT_IO_SQ_ENTRY_COUNT];
+        uint64_t block_tokens[DEFAULT_IO_SQ_ENTRY_COUNT];
     };
 
-    struct cq_complex {
+    alignas(64) struct cq_complex {
         uint16_t cqid;
         uint16_t num_of_entries;
         uint16_t cq_head_ptr;
@@ -114,7 +113,8 @@ private:
          *
          * 禁止逆向（先 sq_lock 再 cq_wq_lock）。
          */
-        tid_wait_queue wait_queue;
+        block_queue wait_queue;
+        uint64_t block_queue_id;
     };
 
     uint16_t sq_count;

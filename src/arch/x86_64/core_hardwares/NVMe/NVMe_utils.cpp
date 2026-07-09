@@ -138,9 +138,7 @@ KURD_t NVMe_Controller::msix_vec_free(uint16_t msix_vec)
     KURD_t kurd=out_interrupt_vec_free(vec,processor_id);
     if(error_kurd (kurd))return kurd;
 
-    if(msix_vec){
-        IO_CQ_vecs[processor_id]=0xff;
-    }else{
+    if(msix_vec == 0){
         ADmin_queue_belonged_processor=~0;
         ADmin_queue_vec=0xff;
     }
