@@ -5,11 +5,9 @@
 #include "Scheduler/per_processor_scheduler.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include <sys/io.h>
+#include "exec_env_detect.h"
 #define COM1_PORT 0x3F8
 void uart_print_num(uint64_t raw, num_format_t format, numer_system_select radix);
-void uart_runtime_p_num(uint64_t raw, num_format_t format, numer_system_select radix);
-void uart_runtime_puts(const char* str, uint64_t len);
-void uart_runtime_putc(char c);
 void* uart_runtime_service_thread_main(void* data);
 
 namespace {
@@ -151,6 +149,22 @@ static void serial_tx_buf_p_num(uint64_t raw, num_format_t format, numer_system_
         serial_tx_buf_putc(buf[i]);
 }
 
+// === kout_backend wrappers: pure ring-submit, no polling fallback ===
+static void backend_submit_write(const char* str, uint64_t len)
+{
+    uart_runtime_submit_string(str, len, false);
+}
+
+static void backend_submit_putchar(char c)
+{
+    uart_runtime_submit_char(c, false);
+}
+
+static void backend_submit_num(uint64_t raw, num_format_t format, numer_system_select radix)
+{
+    uart_runtime_submit_num(raw, format, radix, false);
+}
+
 void serial_init_stage1() {
     // === [1] Disable all UART interrupts ===
     // IER @ +1, Datasheet §8.6.6
@@ -186,9 +200,9 @@ void serial_init_stage1() {
         .name="COM1",
         .is_masked=0,
         .reserved=0,
-        .running_stage_write=uart_runtime_puts,
-        .running_stage_putchar=uart_runtime_putc,
-        .running_stage_num=uart_runtime_p_num,
+        .running_stage_write=backend_submit_write,
+        .running_stage_putchar=backend_submit_putchar,
+        .running_stage_num=backend_submit_num,
         .panic_write=polling_puts,
         .early_write=polling_puts,
     };
@@ -245,26 +259,26 @@ void uart_print_num(uint64_t raw,num_format_t format,numer_system_select radix){
     }
 }
 
-void uart_runtime_puts(const char* str, uint64_t len)
+// 供非实体机服务线程 commit 路径使用：纯 polling，无 ring submit
+static void uart_runtime_puts(const char* str, uint64_t len)
 {
     if (!str || len == 0) return;
-    if (!uart_runtime_submit_string(str, len, false)) {
-        polling_puts(str, len);
+    for (uint64_t i = 0; i < len; i++) {
+        if (str[i]) polling_putc(str[i]);
     }
 }
 
-void uart_runtime_putc(char c)
+static void uart_runtime_putc(char c)
 {
-    if (!uart_runtime_submit_char(c, false)) {
-        polling_putc(c);
-    }
+    polling_putc(c);
 }
 
-void uart_runtime_p_num(uint64_t raw, num_format_t format, numer_system_select radix)
+static void uart_runtime_p_num(uint64_t raw, num_format_t format, numer_system_select radix)
 {
-    if (!uart_runtime_submit_num(raw, format, radix, false)) {
-        uart_print_num(raw, format, radix);
-    }
+    char buf[70];
+    uint64_t n = format_num_to_buffer(buf, raw, format, radix);
+    for (uint64_t i = 0; i < n; i++)
+        polling_putc(buf[i]);
 }
 
 void* uart_runtime_service_thread_main(void* data)
@@ -288,28 +302,52 @@ void* uart_runtime_service_thread_main(void* data)
             continue;
         }
 
-        for (uint32_t i = 0; i < local_batch.count; ++i) {
-            const tc_uart_slot& slot = local_batch.items[i];
-            switch (slot.head.type) {
-                case tc_uart_msg_type::string:
-                    serial_tx_buf_puts(slot.payload.s.string, slot.payload.s.len);
-                    break;
-                case tc_uart_msg_type::single_character:
-                    serial_tx_buf_putc(slot.payload.c.ch);
-                    break;
-                case tc_uart_msg_type::num:
-                    serial_tx_buf_p_num(
-                        slot.payload.n.num_raw,
-                        slot.payload.n.format,
-                        slot.payload.n.radix
-                    );
-                    break;
-                default:
-                    break;
+        // 环境区分：实体机用硬件时序优化路径，KVM/TCG 用简单 polling
+        if (g_env == ENV_BARE_METAL) {
+            for (uint32_t i = 0; i < local_batch.count; ++i) {
+                const tc_uart_slot& slot = local_batch.items[i];
+                switch (slot.head.type) {
+                    case tc_uart_msg_type::string:
+                        serial_tx_buf_puts(slot.payload.s.string, slot.payload.s.len);
+                        break;
+                    case tc_uart_msg_type::single_character:
+                        serial_tx_buf_putc(slot.payload.c.ch);
+                        break;
+                    case tc_uart_msg_type::num:
+                        serial_tx_buf_p_num(
+                            slot.payload.n.num_raw,
+                            slot.payload.n.format,
+                            slot.payload.n.radix
+                        );
+                        break;
+                    default:
+                        break;
+                }
+            }
+            // Flush tail bytes remaining in buffer
+            serial_tx_buf_flush();
+        } else {
+            for (uint32_t i = 0; i < local_batch.count; ++i) {
+                const tc_uart_slot& slot = local_batch.items[i];
+                switch (slot.head.type) {
+                    case tc_uart_msg_type::string:
+                        uart_runtime_puts(slot.payload.s.string, slot.payload.s.len);
+                        break;
+                    case tc_uart_msg_type::single_character:
+                        uart_runtime_putc(slot.payload.c.ch);
+                        break;
+                    case tc_uart_msg_type::num:
+                        uart_runtime_p_num(
+                            slot.payload.n.num_raw,
+                            slot.payload.n.format,
+                            slot.payload.n.radix
+                        );
+                        break;
+                    default:
+                        break;
+                }
             }
         }
-        // Flush tail bytes remaining in buffer
-        serial_tx_buf_flush();
     }
 }
 // 端口输出函数(内联汇编)
