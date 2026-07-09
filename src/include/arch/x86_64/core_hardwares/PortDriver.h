@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-void serial_puts(const char* str,uint64_t len);
+void polling_puts(const char* str,uint64_t len);
 void serial_init_stage1();
 int serial_init_stage2();
-void serial_putc(char c);
+void polling_putc(char c);
 #ifdef __cplusplus
 }
 #endif
