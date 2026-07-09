@@ -134,8 +134,12 @@ static inline void publish_event(uint8_t key_code, uint8_t action, uint16_t flag
     i8042_event_generated_count.add_ka(1, atomic_memory_order::relaxed);
 
     if(GlobalKernelStatus >= SCHEDUL_READY && i8042_analyzed_buffer_subscriber_queue){
-        spinlock_interrupt_about_guard queue_guard(i8042_analyzed_buffer_subscriber_queue->lock);
-        i8042_analyzed_buffer_subscriber_queue->wakeup_all();
+        blocked_tasks_clamps_t clamps = {};
+        {
+            spinlock_interrupt_about_guard g(i8042_analyzed_buffer_subscriber_queue->qlock);
+            i8042_analyzed_buffer_subscriber_queue->pop_all(&clamps);
+        }
+        bq_flush_pending(&clamps, false);
     }
 }
 
@@ -228,8 +232,9 @@ union led_status {
         uint8_t res:5;
     }field;
 };
-tid_wait_queue* i8042_scancode_buffer_subscriber_queue;
-tid_wait_queue* i8042_analyzed_buffer_subscriber_queue;
+block_queue* i8042_scancode_buffer_subscriber_queue;
+block_queue* i8042_analyzed_buffer_subscriber_queue;
+bq_id_t      i8042_analyzed_buffer_subscriber_qid;
 led_status key_board_led;
 
 static bool wait_until_in_buff_clear(){
@@ -315,9 +320,8 @@ extern "C" void i8042_wait_event(uint64_t last_publish_seq)
     if(i8042_analyzed_buffer_subscriber_queue==nullptr){
         return;
     }
-    i8042_analyzed_buffer_subscriber_queue->set_insert_front(true);
     block_if_equal(
-        i8042_analyzed_buffer_subscriber_queue,
+        i8042_analyzed_buffer_subscriber_qid,
         (uint64_t*)&i8042_event_publish_seq_block_token,
         last_publish_seq
     );
@@ -406,6 +410,7 @@ void i8042_interrupt_enable(){
     if (!wait_until_in_buff_clear()) return;
     outb(command, 0x60);
 
-    i8042_scancode_buffer_subscriber_queue = new tid_wait_queue;
-    i8042_analyzed_buffer_subscriber_queue = new tid_wait_queue;
+    i8042_scancode_buffer_subscriber_queue = new block_queue;
+    i8042_analyzed_buffer_subscriber_queue = new block_queue;
+    i8042_analyzed_buffer_subscriber_qid = bq_alloc(i8042_analyzed_buffer_subscriber_queue);
 }

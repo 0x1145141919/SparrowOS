@@ -7,7 +7,8 @@ u16ka i8042_char_event_tail_idx;
 u64ka i8042_char_publish_seq;
 u64ka i8042_char_drop_count;
 const kbd_char_event* i8042_char_ring_readonly_view = nullptr;
-tid_wait_queue* i8042_char_buffer_subscriber_queue;
+block_queue* i8042_char_buffer_subscriber_queue;
+bq_id_t      i8042_char_buffer_subscriber_qid;
 
 namespace {
 alignas(4096) kbd_char_event i8042_char_ring[i8042_char_buffer_max_size];
@@ -188,8 +189,12 @@ static inline void publish_char_event(const kbd_char_event& input)
     i8042_char_publish_seq_block_token = old_seq + 1;
 
     if(GlobalKernelStatus >= SCHEDUL_READY && i8042_char_buffer_subscriber_queue){
-        spinlock_interrupt_about_guard queue_guard(i8042_char_buffer_subscriber_queue->lock);
-        i8042_char_buffer_subscriber_queue->wakeup_all();
+        blocked_tasks_clamps_t clamps = {};
+        {
+            spinlock_interrupt_about_guard g(i8042_char_buffer_subscriber_queue->qlock);
+            i8042_char_buffer_subscriber_queue->pop_all(&clamps);
+        }
+        bq_flush_pending(&clamps, false);
     }
 }
 
@@ -287,9 +292,8 @@ extern "C" void i8042_char_wait_event(uint64_t last_publish_seq)
     if(i8042_char_buffer_subscriber_queue == nullptr){
         return;
     }
-    i8042_char_buffer_subscriber_queue->set_insert_front(true);
     block_if_equal(
-        i8042_char_buffer_subscriber_queue,
+        i8042_char_buffer_subscriber_qid,
         (uint64_t*)&i8042_char_publish_seq_block_token,
         last_publish_seq
     );
@@ -299,7 +303,8 @@ extern "C" void i8042_char_subscriber_init()
 {
     spinlock_interrupt_about_guard init_guard(i8042_char_subscriber_init_lock);
     if(i8042_char_buffer_subscriber_queue == nullptr){
-        i8042_char_buffer_subscriber_queue = new tid_wait_queue;
+        i8042_char_buffer_subscriber_queue = new block_queue;
+        i8042_char_buffer_subscriber_qid = bq_alloc(i8042_char_buffer_subscriber_queue);
     }
     if(i8042_char_ring_readonly_view == nullptr){
         init_char_readonly_view();
@@ -307,8 +312,12 @@ extern "C" void i8042_char_subscriber_init()
     if(i8042_char_subscriber_tid != INVALID_TID){
         return;
     }
+    kthread_creating_package pkg = {};
+    pkg.func_raw = (uint64_t)i8042_char_subscriber_main;
+    pkg.args[0]  = (uint64_t)nullptr;
+    pkg.launch_pid = 0;
     KURD_t kurd{};
-    i8042_char_subscriber_tid = create_kthread(i8042_char_subscriber_main, nullptr, &kurd);
+    i8042_char_subscriber_tid = creat_kthread(&pkg, &kurd);
     if(error_kurd(kurd) || i8042_char_subscriber_tid == INVALID_TID){
         i8042_char_subscriber_tid = INVALID_TID;
     }

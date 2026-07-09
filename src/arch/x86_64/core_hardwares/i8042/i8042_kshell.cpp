@@ -212,24 +212,9 @@ KURD_t cmd_kbdstatus(const line_t* line) {
 
     // 订阅者队列状态
     bsp_kout << "Subscriber Queues:" << kendl;
-    if (i8042_scancode_buffer_subscriber_queue) {
-        spinlock_interrupt_about_guard g(i8042_scancode_buffer_subscriber_queue->lock);
-        bsp_kout << "  scancode:        size=" << i8042_scancode_buffer_subscriber_queue->size() << kendl;
-    } else {
-        bsp_kout << "  scancode:        (null)" << kendl;
-    }
-    if (i8042_analyzed_buffer_subscriber_queue) {
-        spinlock_interrupt_about_guard g(i8042_analyzed_buffer_subscriber_queue->lock);
-        bsp_kout << "  analyzed:        size=" << i8042_analyzed_buffer_subscriber_queue->size() << kendl;
-    } else {
-        bsp_kout << "  analyzed:        (null)" << kendl;
-    }
-    if (i8042_char_buffer_subscriber_queue) {
-        spinlock_interrupt_about_guard g(i8042_char_buffer_subscriber_queue->lock);
-        bsp_kout << "  char:            size=" << i8042_char_buffer_subscriber_queue->size() << kendl;
-    } else {
-        bsp_kout << "  char:            (null)" << kendl;
-    }
+    bsp_kout << "  scancode:        " << (i8042_scancode_buffer_subscriber_queue ? "active" : "(null)") << kendl;
+    bsp_kout << "  analyzed:        " << (i8042_analyzed_buffer_subscriber_queue ? "active" : "(null)") << kendl;
+    bsp_kout << "  char:            " << (i8042_char_buffer_subscriber_queue ? "active" : "(null)") << kendl;
 
     // 健康度评估
     bsp_kout << "Health Assessment: ";
@@ -539,24 +524,14 @@ KURD_t cmd_kbdsubscribers(const line_t* line) {
         else if (token_eq(line->tokens[1], "char"))    which = CHAR;
     }
 
-    auto dump_queue = [](const char* name, tid_wait_queue* q) {
+    auto dump_queue = [](const char* name, block_queue* q) {
         bsp_kout << "--- " << name << " ---" << kendl;
         if (!q) {
             bsp_kout << "  (null)" << kendl;
             return;
         }
-        spinlock_interrupt_about_guard g(q->lock);
-        bsp_kout << "  Queue length: " << q->size() << kendl;
-        if (q->size() > 0) {
-            bsp_kout << "  Waiting TIDs: ";
-            bool first = true;
-            for (auto it = q->begin(); it != q->end(); ++it) {
-                if (!first) bsp_kout << ", ";
-                bsp_kout << *it;
-                first = false;
-            }
-            bsp_kout << kendl;
-        }
+        spinlock_interrupt_about_guard g(q->qlock);
+        bsp_kout << "  Active: " << (q->is_queue_ready() ? "no" : "yes") << kendl;
     };
 
     bsp_kout << "=== Subscriber Queue Status ===" << kendl;

@@ -12,7 +12,8 @@ u16ka text_input_event_tail_idx;
 u64ka text_input_publish_seq;
 u64ka text_input_drop_count;
 const text_input_event* text_input_ring_readonly_view = nullptr;
-tid_wait_queue* text_input_subscribers_queue;
+block_queue* text_input_subscribers_queue;
+bq_id_t      text_input_subscribers_qid;
 
 // ============================================================
 // 内部状态
@@ -274,8 +275,12 @@ static void publish_one(const text_input_event& ev)
     text_input_publish_seq_block_token = old_seq + 1;
 
     if (GlobalKernelStatus >= SCHEDUL_READY && text_input_subscribers_queue) {
-        spinlock_interrupt_about_guard guard(text_input_subscribers_queue->lock);
-        text_input_subscribers_queue->wakeup_all();
+        blocked_tasks_clamps_t clamps = {};
+        {
+            spinlock_interrupt_about_guard g(text_input_subscribers_queue->qlock);
+            text_input_subscribers_queue->pop_all(&clamps);
+        }
+        bq_flush_pending(&clamps, false);
     }
 }
 
@@ -372,9 +377,8 @@ extern "C" uint64_t text_input_get_publish_seq()
 extern "C" void text_input_wait_event(uint64_t last_publish_seq)
 {
     if (!text_input_subscribers_queue) return;
-    text_input_subscribers_queue->set_insert_front(true);
     block_if_equal(
-        text_input_subscribers_queue,
+        text_input_subscribers_qid,
         (uint64_t*)&text_input_publish_seq_block_token,
         last_publish_seq);
 }
@@ -416,7 +420,8 @@ extern "C" void text_input_subscriber_init()
 {
     spinlock_interrupt_about_guard guard(text_input_subscriber_init_lock);
     if (!text_input_subscribers_queue)
-        text_input_subscribers_queue = new tid_wait_queue;
+        text_input_subscribers_queue = new block_queue;
+        text_input_subscribers_qid = bq_alloc(text_input_subscribers_queue);
 
     if (!text_input_ring_readonly_view)
         init_readonly_view();
@@ -424,9 +429,12 @@ extern "C" void text_input_subscriber_init()
     if (text_input_subscriber_tid != INVALID_TID)
         return;
 
+    kthread_creating_package pkg = {};
+    pkg.func_raw = (uint64_t)i8042_text_input_subscriber_main;
+    pkg.args[0]  = (uint64_t)nullptr;
+    pkg.launch_pid = 0;
     KURD_t kurd{};
-    text_input_subscriber_tid = create_kthread(
-        i8042_text_input_subscriber_main, nullptr, &kurd);
+    text_input_subscriber_tid = creat_kthread(&pkg, &kurd);
     if (error_kurd(kurd) || text_input_subscriber_tid == INVALID_TID) {
         text_input_subscriber_tid = INVALID_TID;
     }

@@ -80,9 +80,11 @@ extern u64ka i8042_char_publish_seq;
 extern u64ka i8042_char_drop_count;
 extern const kbd_char_event* i8042_char_ring_readonly_view;
 
-extern tid_wait_queue* i8042_scancode_buffer_subscriber_queue;
-extern tid_wait_queue* i8042_analyzed_buffer_subscriber_queue;
-extern tid_wait_queue* i8042_char_buffer_subscriber_queue;
+extern block_queue* i8042_scancode_buffer_subscriber_queue;
+extern block_queue* i8042_analyzed_buffer_subscriber_queue;
+extern bq_id_t      i8042_analyzed_buffer_subscriber_qid;
+extern block_queue* i8042_char_buffer_subscriber_queue;
+extern bq_id_t      i8042_char_buffer_subscriber_qid;
 
 extern "C" bool i8042_read_event_by_seq(uint64_t seq, ps_2_keyboard_event* out_event);
 extern "C" uint64_t i8042_get_publish_seq();
@@ -122,7 +124,8 @@ extern u16ka text_input_event_tail_idx;
 extern u64ka text_input_publish_seq;
 extern u64ka text_input_drop_count;
 extern const text_input_event* text_input_ring_readonly_view;
-extern tid_wait_queue* text_input_subscribers_queue;
+extern block_queue* text_input_subscribers_queue;
+extern bq_id_t      text_input_subscribers_qid;
 
 // text_input_event Level 1：单事件
 extern "C" bool   text_input_read_event_by_seq(uint64_t seq, text_input_event* out);
