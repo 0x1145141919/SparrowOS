@@ -95,7 +95,7 @@ namespace NVMe {
     union command_result_t {
         struct {
                 uint64_t cmd_spcify;
-                uint64_t result_type_t:4;
+                uint64_t result_type:4;
                 uint64_t reserved:45;
                 uint64_t status : 15;
             } __attribute__((packed)) fields;

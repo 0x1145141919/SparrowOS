@@ -16,9 +16,12 @@ extern uint32_t logical_processor_count;
 static constexpr uint32_t CQ_ENTRY_SIZE = 16;
 static constexpr uint32_t SQ_ENTRY_SIZE = 64;
 
-static NVMe::command_result_t NVMe_result_construtor_wrong_kurd()
+static NVMe::command_result_t NVMe_result_construtor_wrong_kurd(KURD_t kurd)
 {
-    return NVMe::command_result_t{ .fields = { .result_type_t = NVMe::command_result_types::not_success_kurd } };
+    NVMe::command_result_t r;
+    r.fields.result_type_t = NVMe::command_result_types::not_success_kurd;
+    r.fields.cmd_spcify = kurd_get_raw(kurd);
+    return r;
 }
 
 // ============================================================
@@ -61,14 +64,14 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     uint32_t cq_bytes = align_up(qsize * CQ_ENTRY_SIZE, 4096);
     void* cq_ring_va = __wrapped_pgs_valloc(
         &kurd, cq_bytes / 4096, page_state_t::kernel_pinned, 12);
-    if (error_kurd(kurd) || !cq_ring_va) return NVMe_result_construtor_wrong_kurd();
+    if (error_kurd(kurd) || !cq_ring_va) return NVMe_result_construtor_wrong_kurd(kurd);
     ksetmem_8(cq_ring_va, 0, cq_bytes);
 
     phyaddr_t cq_ring_pa = 0;
     kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)cq_ring_va, cq_ring_pa);
     if (error_kurd(kurd)) {
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
-        return NVMe_result_construtor_wrong_kurd();
+        return NVMe_result_construtor_wrong_kurd(kurd);
     }
 
     // ---- 2. 分配 MSI-X vector（先 Mask，create 成功后 Unmask）----
@@ -76,7 +79,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     msix_kurd = msix_vec_alloc(qid - 1, qid);
     if (error_kurd(msix_kurd)) {
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
-        return NVMe_result_construtor_wrong_kurd();
+        return NVMe_result_construtor_wrong_kurd(msix_kurd);
     }
 
     // ---- 3. 预填 cqs[] 状态 ----
@@ -94,7 +97,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::CREATE_IO_COMPLETION_QUEUE,
                         qid, qsize, cdw11.raw, cq_ring_pa);
-    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         // 失败回滚
         msix_vec_free(qid);
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
@@ -129,14 +132,14 @@ NVMe::command_result_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsiz
     uint32_t sq_bytes = align_up(qsize * SQ_ENTRY_SIZE, 4096);
     void* sq_ring_va = __wrapped_pgs_valloc(
         &kurd, sq_bytes / 4096, page_state_t::kernel_pinned, 12);
-    if (error_kurd(kurd) || !sq_ring_va) return NVMe_result_construtor_wrong_kurd();
+    if (error_kurd(kurd) || !sq_ring_va) return NVMe_result_construtor_wrong_kurd(kurd);
     ksetmem_8(sq_ring_va, 0, sq_bytes);
 
     phyaddr_t sq_ring_pa = 0;
     kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)sq_ring_va, sq_ring_pa);
     if (error_kurd(kurd)) {
         __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
-        return NVMe_result_construtor_wrong_kurd();
+        return NVMe_result_construtor_wrong_kurd(kurd);
     }
 
     // ---- 2. 预填 sqs[] 状态（内嵌数据，无需额外分配）----
@@ -156,7 +159,7 @@ NVMe::command_result_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsiz
     NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::CREATE_IO_SUBMISSION_QUEUE,
                         qid, qsize, cdw11.raw, sq_ring_pa);
-    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         // 失败回滚（内嵌数据无需释放，只回滚外部资源）
         __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
         sqs[qid] = sq_complex{};  // zero
@@ -265,7 +268,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
 
     // ---- 1. Set Features Number of Queues ----
     NVMe::command_result_t r = set_features_num_queues(iosq_count, iocq_count);
-    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         bsp_kout << "[NVMe] set_features_num_queues FAILED" << kendl;
         return r;
     }
@@ -273,7 +276,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
     // ---- 2. 创建 I/O CQ (qid 1..iocq_count) ----
     for (uint16_t qid = 1; qid <= iocq_count; qid++) {
         r = create_io_cq(qid, IO_CQ_ENTRY_COUNT, true);
-        if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
             bsp_kout << "[NVMe] create_io_cq qid="
                      << (uint32_t)qid << " failed" << kendl;
             continue;
@@ -287,7 +290,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
 
         r = create_io_sq(sqid, IO_SQ_ENTRY_COUNT, cqid,
                           NVMe::io_queue::SQ_PRIO_HIGH);
-        if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
             bsp_kout << "[NVMe] create_io_sq sqid="
                      << (uint32_t)sqid << " failed" << kendl;
             continue;
@@ -309,7 +312,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_free()
     for (uint16_t qid = 1; qid < sq_count; qid++) {
         if (sqs[qid].sq_ring.vpn == 0) continue;
         NVMe::command_result_t r = delete_io_sq(qid);
-        if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
             bsp_kout << "[NVMe] delete_io_sq qid="
                      << (uint32_t)qid << " failed" << kendl;
         }
@@ -319,7 +322,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_free()
     for (uint16_t qid = 1; qid < cq_count; qid++) {
         if (cqs[qid].cq_ring.vpn == 0) continue;
         NVMe::command_result_t r = delete_io_cq(qid);
-        if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
             bsp_kout << "[NVMe] delete_io_cq qid="
                      << (uint32_t)qid << " failed" << kendl;
         }
