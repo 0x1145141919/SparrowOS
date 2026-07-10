@@ -482,31 +482,10 @@ ckurd kthread_init(task *t,kthread_creating_package*p)
 }
 void per_processor_scheduler::next_task_with_routine()
 {
-    // Phase 1: 随机翻一张 BQ 牌，弹一波超时任务
-    blocked_tasks_clamps_t clamps;
-    ksetmem_8(&clamps, 0, sizeof(clamps));
-
-    if (next_will_alloc_qid > 0) {
-        bq_id_t pick = rdtsc() % next_will_alloc_qid;
-        block_queue* q = nullptr;
-        {
-            interrupt_guard gi;
-            spinrwlock_interrupt_about_read_guard lc(container_lock);
-            q = *container->find(pick);
-        }
-        if (q) {
-            {
-                spinlock_interrupt_about_guard gq(q->qlock);
-                q->pop_timeouts(&clamps);
-            }
-            bq_flush_pending(&clamps, true);
-        }
-    }
-
-    // Phase 2: 睡眠队列超时唤醒
+    // 睡眠队列超时唤醒
     sleep_tasks_wake();
 
-    // Phase 3: 调度
+    // 调度
     sched();
 }
 per_processor_scheduler *get_other_scheduler(uint32_t pid)

@@ -88,6 +88,8 @@ constexpr uint8_t test_kthread_count = 100;
 uint64_t test_kthreads[test_kthread_count];
 void* burnin_thread(void* arg);
 void* i8042_char_listener_thread(void* arg);
+extern void* bq_timeout_sweeper(void*);
+
 void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
@@ -95,6 +97,22 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
     i8042_char_subscriber_init();
     pcie_text_praser();
     //text_input_subscriber_init();
+
+    // 启动 BQ 超时扫描线程
+    {
+        kthread_creating_package pkg = {};
+        pkg.func_raw = (uint64_t)bq_timeout_sweeper;
+        pkg.args[0]  = (uint64_t)nullptr;
+        pkg.launch_pid = 0;
+        KURD_t kurd2{};
+        uint64_t tid = creat_kthread(&pkg, &kurd2);
+        if (error_kurd(kurd2)) {
+            bsp_kout << "[BQ] sweeper thread spawn failed" << kendl;
+        } else {
+            bsp_kout << "[BQ] sweeper thread tid=" << tid << kendl;
+        }
+    }
+
     // 初始化 kshell 框架
     kurd=kshell_framework_t::Init();
     if (error_kurd(kurd)) {
