@@ -10,14 +10,7 @@
 static KURD_t make_identify_kurd(NVMe::command::complete_command_common cqe,
                                   uint16_t fail_reason)
 {
-    KURD_t kurd;
-    kurd = KURD_t(
-        result_code::FAIL, fail_reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::ERROR, err_domain::CORE_MODULE);
-    kurd.reason = cqe.fields.status;
-    return kurd;
+    return empty_kurd;
 }
 
 static KURD_t do_identify(NVMe_Controller* ctrl,
@@ -35,13 +28,9 @@ static KURD_t do_identify(NVMe_Controller* ctrl,
         ctrl->ADMIN_cmd_submit_and_process(cmd, kurd);
 
     if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_identify_kurd(cqe, 0);
+        return empty_kurd;
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 KURD_t NVMe_Controller::identify_ctrl(phyaddr_t buf_pa, KURD_t& kurd)
@@ -80,11 +69,7 @@ KURD_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,
         ADMIN_cmd_submit_and_process(cmd, kurd);
 
     if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_identify_kurd(cqe, 0);
+        return empty_kurd;
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }

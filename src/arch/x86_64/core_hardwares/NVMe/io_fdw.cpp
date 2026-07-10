@@ -68,18 +68,10 @@ static KURD_t fdw_result_kurd(NVMe::command::complete_command_common cqe,
                                uint8_t event_code)
 {
     if (!NVMe::status::is_error(cqe.fields.status)) {
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            event_code,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
-    KURD_t kurd(
-        result_code::FAIL, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        event_code,
-        level_code::ERROR, err_domain::CORE_MODULE);
+    KURD_t kurd = empty_kurd;
     kurd.reason = cqe.fields.status;
     return kurd;
 }
@@ -89,24 +81,15 @@ static KURD_t fdw_result_kurd(NVMe::command::complete_command_common cqe,
 // ============================================================
 static KURD_t param_error_flush(uint16_t reason)
 {
-    return KURD_t(result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::flush,
-        level_code::ERROR, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 static KURD_t param_error_discard(uint16_t reason)
 {
-    return KURD_t(result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::discard,
-        level_code::ERROR, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 static KURD_t param_error_wz(uint16_t reason)
 {
-    return KURD_t(result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::wz,
-        level_code::ERROR, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -155,7 +138,7 @@ KURD_t NVMe_Controller::flush(BlockDevice* dev, uint64_t flags)
     NVMe::command::complete_command_common cqe =
         submit_to_io_queue(ctrl, cmd, kurd);
 
-    return fdw_result_kurd(cqe, DEVICES_locs::NVMe_events::flush);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -186,10 +169,7 @@ KURD_t NVMe_Controller::write_zero(BlockDevice* dev,LBA_interval_t interval,uint
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::wz,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     // LBA 范围
@@ -216,7 +196,7 @@ KURD_t NVMe_Controller::write_zero(BlockDevice* dev,LBA_interval_t interval,uint
     NVMe::command::complete_command_common cqe =
         submit_to_io_queue(ctrl, cmd, kurd);
 
-    return fdw_result_kurd(cqe, DEVICES_locs::NVMe_events::wz);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -253,10 +233,7 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::discard,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     // LBA 范围
@@ -322,5 +299,5 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
     }
     __wrapped_pgs_vfree(range_va, 1);
 
-    return fdw_result_kurd(cqe, DEVICES_locs::NVMe_events::discard);
+    return empty_kurd;
 }

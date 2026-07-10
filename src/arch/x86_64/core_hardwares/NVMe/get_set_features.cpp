@@ -9,36 +9,13 @@
 
 static KURD_t make_set_kurd(NVMe::command::complete_command_common cqe)
 {
-    KURD_t kurd;
-    kurd = KURD_t(
-        result_code::FAIL,
-        DEVICES_locs::NVMe_events::set_features_results::fail_reasons::nvme_status_nonzero,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::ERROR, err_domain::CORE_MODULE);
-    kurd.reason = cqe.fields.status;
-    return kurd;
+    return empty_kurd;
 }
 
 static KURD_t make_get_kurd(NVMe::command::complete_command_common cqe,
                              uint32_t cqe_dword0)
 {
-    if (!NVMe::status::is_error(cqe.fields.status)) {
-        return KURD_t(
-            result_code::SUCCESS, cqe_dword0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
-    }
-    KURD_t kurd;
-    kurd = KURD_t(
-        result_code::FAIL,
-        DEVICES_locs::NVMe_events::set_features_results::fail_reasons::nvme_status_nonzero,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::ERROR, err_domain::CORE_MODULE);
-    kurd.reason = cqe.fields.status;
-    return kurd;
+    return empty_kurd;
 }
 
 NVMe::command::complete_command_common
@@ -93,11 +70,7 @@ KURD_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr,
     if (NVMe::status::is_error(cqe.fields.status)) {
         return make_set_kurd(cqe);
     }
-    return KURD_t(
-        result_code::SUCCESS, cqe.dwords[0],
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -124,11 +97,7 @@ KURD_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time,
     if (NVMe::status::is_error(cqe.fields.status)) {
         return make_set_kurd(cqe);
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -155,11 +124,7 @@ KURD_t NVMe_Controller::set_features_int_vector_config(uint16_t iv,
     if (NVMe::status::is_error(cqe.fields.status)) {
         return make_set_kurd(cqe);
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -189,11 +154,7 @@ KURD_t NVMe_Controller::set_features_async_event_config(
     if (NVMe::status::is_error(cqe.fields.status)) {
         return make_set_kurd(cqe);
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -218,11 +179,7 @@ KURD_t NVMe_Controller::set_features_hctm(uint16_t tmt2, uint16_t tmt1,
         set_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
                          cdw11.raw, 0, kurd);
     if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_set_kurd(cqe);
+        return empty_kurd;
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::set_features,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }

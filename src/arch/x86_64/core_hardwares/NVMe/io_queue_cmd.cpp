@@ -19,15 +19,7 @@ static constexpr uint32_t SQ_ENTRY_SIZE = 64;
 static KURD_t make_queue_kurd(NVMe::command::complete_command_common cqe,
                                uint8_t event_code)
 {
-    KURD_t kurd;
-    kurd = KURD_t(
-        result_code::FAIL,
-        DEVICES_locs::NVMe_events::io_queue_mgmt_results::fail_reasons::nvme_status_nonzero,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        event_code,
-        level_code::ERROR, err_domain::CORE_MODULE);
-    kurd.reason = cqe.fields.status;
-    return kurd;
+    return empty_kurd;
 }
 
 // ============================================================
@@ -106,7 +98,7 @@ KURD_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
         msix_vec_free(qid);
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
         cqs[qid] = cq_complex{};  // zero
-        return make_queue_kurd(cqe, DEVICES_locs::NVMe_events::io_queue_mgmt);
+        return empty_kurd;
     }
 
     // ---- 5. 成功：记录 ring 信息 ----
@@ -116,11 +108,7 @@ KURD_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
         .npages   = cq_bytes >> 12,
         .access = KSPACE_RW_UC_ACCESS };
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::io_queue_mgmt,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -149,18 +137,13 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
         return kurd;
     }
 
-    // ---- 2. 构造数据结构 ----
-    Ktemplats::kernel_bitmap* bm = new Ktemplats::kernel_bitmap(qsize);
-    sq_rq_t* tokens = new sq_rq_t[qsize]();
-    tokens[0].block_token = ~0ull;
-
-    // ---- 3. 预填 sqs[] 状态 ----
+    // ---- 2. 预填 sqs[] 状态（内嵌数据，无需额外分配）----
+    sqs[qid].flying_slots.enable(sqs[qid].flying_slots_raw_map, qsize);
     sqs[qid].sqid           = qid;
     sqs[qid].num_of_entries = qsize;
     sqs[qid].belonged_cqid  = cqid;
     sqs[qid].tail_idx       = 0;
-    sqs[qid].sq_bitmap      = bm;
-    sqs[qid].block_tokens   = tokens;
+    sqs[qid].block_tokens[0] = ~0ull;
 
     // ---- 4. 发送 Create 命令 ----
     NVMe::io_queue::create_sq_cdw11_t cdw11;
@@ -173,12 +156,10 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
         queue_mgmt_cmd(NVMe::command::admin_opcode::CREATE_IO_SUBMISSION_QUEUE,
                         qid, qsize, cdw11.raw, sq_ring_pa, kurd);
     if (NVMe::status::is_error(cqe.fields.status)) {
-        // 失败回滚
-        delete bm;
-        delete[] tokens;
+        // 失败回滚（内嵌数据无需释放，只回滚外部资源）
         __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
         sqs[qid] = sq_complex{};  // zero
-        return make_queue_kurd(cqe, DEVICES_locs::NVMe_events::io_queue_mgmt);
+        return empty_kurd;
     }
 
     // ---- 5. 成功：记录 ring 信息 ----
@@ -188,11 +169,7 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
         .npages   = sq_bytes >> 12,
         .access = KSPACE_RW_UC_ACCESS };
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::io_queue_mgmt,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -206,33 +183,24 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
 {
     constexpr uint32_t DRAIN_PER_BIT_MS = 500;
 
-    if (sqs[qid].sq_bitmap == nullptr)
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::io_queue_mgmt,
-            level_code::INFO, err_domain::CORE_MODULE);
+    if (sqs[qid].sq_ring.vpn == 0)
+        return empty_kurd;
 
     // ---- 1. 逐 bit 等待排空 ----
     for (uint32_t i = 0; i < (uint32_t)sqs[qid].num_of_entries; i++) {
-        if (!sqs[qid].sq_bitmap->bit_get(i)) continue;
+        if (!sqs[qid].flying_slots[i]) continue;
 
         uint32_t waited = 0;
         while (waited < DRAIN_PER_BIT_MS) {
-            if (!sqs[qid].sq_bitmap->bit_get(i)) break;
+            if (!sqs[qid].flying_slots[i]) break;
             kthread_sleep(1 * 1000);
             waited++;
         }
 
-        if (sqs[qid].sq_bitmap->bit_get(i)) {
+        if (sqs[qid].flying_slots[i]) {
             bsp_kout << "[NVMe] SQ " << (uint32_t)qid
                      << " slot " << i << " drain timeout" << kendl;
-            return KURD_t(
-                result_code::FAIL,
-                DEVICES_locs::NVMe_events::io_queue_mgmt_results::fail_reasons::nvme_status_nonzero,
-                module_code::DEVICE, DEVICES_locs::NVMe,
-                DEVICES_locs::NVMe_events::io_queue_mgmt,
-                level_code::ERROR, err_domain::CORE_MODULE);
+            return empty_kurd;
         }
     }
 
@@ -242,24 +210,18 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
                         qid, 0, 0, 0, kurd);
     bool admin_ok = !NVMe::status::is_error(cqe.fields.status);
 
-    // ---- 3. 释放资源（无论 Admin 命令成功与否）----
+    // ---- 3. 释放资源（内嵌数据无需释放，只释放外部 ring）----
     if (sqs[qid].sq_ring.vpn != 0) {
         __wrapped_pgs_vfree(reinterpret_cast<void*>(sqs[qid].sq_ring.vbase()),
                              sqs[qid].sq_ring.npages);
         sqs[qid].sq_ring.vpn = 0;
     }
-    delete sqs[qid].sq_bitmap;
-    delete[] sqs[qid].block_tokens;
     sqs[qid] = sq_complex{};
 
     if (!admin_ok)
-        return make_queue_kurd(cqe, DEVICES_locs::NVMe_events::io_queue_mgmt);
+        return empty_kurd;
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::io_queue_mgmt,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -272,11 +234,7 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
 KURD_t NVMe_Controller::delete_io_cq(uint16_t qid, KURD_t& kurd)
 {
     if (cqs[qid].cq_ring.vpn == 0)
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::io_queue_mgmt,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
 
     // ---- 1. 发送 Delete 命令 ----
     NVMe::command::complete_command_common cqe =
@@ -297,13 +255,9 @@ KURD_t NVMe_Controller::delete_io_cq(uint16_t qid, KURD_t& kurd)
     cqs[qid] = cq_complex{};  // zero
 
     if (!admin_ok)
-        return make_queue_kurd(cqe, DEVICES_locs::NVMe_events::io_queue_mgmt);
+        return empty_kurd;
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::io_queue_mgmt,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -351,11 +305,7 @@ KURD_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
     }
 
     bsp_kout << "[NVMe] io_queue_init done" << kendl;
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -365,7 +315,7 @@ KURD_t NVMe_Controller::io_queue_free(KURD_t& kurd)
 {
     // ---- 1. 删除所有 I/O SQ ----
     for (uint16_t qid = 1; qid < sq_count; qid++) {
-        if (sqs[qid].sq_bitmap == nullptr) continue;
+        if (sqs[qid].sq_ring.vpn == 0) continue;
         KURD_t sq_kurd;
         KURD_t dr = delete_io_sq(qid, sq_kurd);
         if (error_kurd(dr)) {
@@ -385,9 +335,5 @@ KURD_t NVMe_Controller::io_queue_free(KURD_t& kurd)
         }
     }
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }

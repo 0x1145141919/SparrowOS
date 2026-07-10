@@ -27,28 +27,6 @@ union io_cdw12_t {
     } __attribute__((packed));
 };
 
-// ============================================================
-// io_cmd_result_kurd: 辅助构造 I/O 命令的返回 KURD
-// ============================================================
-static KURD_t io_cmd_result_kurd(NVMe::command::complete_command_common cqe,
-                                  uint8_t event_code)
-{
-    if (!NVMe::status::is_error(cqe.fields.status)) {
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            event_code,
-            level_code::INFO, err_domain::CORE_MODULE);
-    }
-
-    KURD_t kurd(
-        result_code::FAIL, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        event_code,
-        level_code::ERROR, err_domain::CORE_MODULE);
-    kurd.reason = cqe.fields.status;
-    return kurd;
-}
 
 // ============================================================
 // read_param_error: 参数校验失败时的 KURD
@@ -57,8 +35,7 @@ static KURD_t read_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::Read,
+        module_code::DEVICE,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -108,8 +85,7 @@ KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interva
     if (count == 0) {
         return KURD_t(
             result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::Read,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -193,7 +169,7 @@ KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interva
     }
 
     // ---- 11. 返回 ----
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::Read);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -203,8 +179,7 @@ static KURD_t read_advance_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::Read,
+        module_code::DEVICE,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -257,8 +232,7 @@ KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_inte
     if (count == 0) {
         return KURD_t(
             result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::Read,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -338,7 +312,7 @@ KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_inte
     }
 
     // ---- 12. 返回 ----
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::Read);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -348,8 +322,7 @@ static KURD_t write_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::Write,
+        module_code::DEVICE,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -357,8 +330,7 @@ static KURD_t cmp_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::cmp,
+        module_code::DEVICE,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -387,8 +359,7 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interv
     uint64_t count = interval.LBA_count;
     if (count == 0) {
         return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::Write,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -449,7 +420,7 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interv
     // ---- 10. 清理 ----
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::Write);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -480,8 +451,7 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_int
     uint64_t count = interval.LBA_count;
     if (count == 0) {
         return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::Write,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -545,7 +515,7 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_int
     // ---- 11. 清理 ----
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::Write);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -572,8 +542,7 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t inte
     uint64_t count = interval.LBA_count;
     if (count == 0) {
         return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::cmp,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -625,7 +594,7 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t inte
 
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::cmp);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -654,8 +623,7 @@ KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_i
     uint64_t count = interval.LBA_count;
     if (count == 0) {
         return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::cmp,
+            module_code::DEVICE,
             level_code::INFO, err_domain::CORE_MODULE);
     }
 
@@ -708,5 +676,5 @@ KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_i
 
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 
-    return io_cmd_result_kurd(cqe, DEVICES_locs::NVMe_events::cmp);
+    return empty_kurd;
 }

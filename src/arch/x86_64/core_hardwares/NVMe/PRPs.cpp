@@ -110,22 +110,14 @@ KURD_t build_PRP_root(phyaddr_t pbase, uint32_t page_count,
         // §4.3.1(d): 仅 PRP1，PRP2 = 0
         root_out->prp1 = pbase;
         root_out->prp2 = 0;
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     if (page_count == 2) {
         // §4.3.1(d): PRP1 → page 0, PRP2 → page 1 (offset = 0h)
         root_out->prp1 = pbase;
         root_out->prp2 = pbase + mps;
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     // ≥3 pages: need PRP List
@@ -175,11 +167,7 @@ KURD_t build_PRP_root(phyaddr_t pbase, uint32_t page_count,
         }
     }
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -233,21 +221,13 @@ KURD_t build_PRP_root_advance(mem_segs_t& segs,
     if (total_pages == 1) {
         root_out->prp2 = 0;
         delete[] page_addrs;
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     if (total_pages == 2) {
         root_out->prp2 = page_addrs[1];
         delete[] page_addrs;
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     // ≥3 pages: need PRP List
@@ -296,11 +276,7 @@ KURD_t build_PRP_root_advance(mem_segs_t& segs,
 
     delete[] page_addrs;
 
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -319,9 +295,5 @@ KURD_t destroy_PRP_root(const prp_root_t& root,
             FreePagesAllocator::free(list_page_pa, mps);
         }
     }
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }

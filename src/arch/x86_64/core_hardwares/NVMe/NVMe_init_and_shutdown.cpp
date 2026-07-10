@@ -18,20 +18,6 @@ uint32_t NVMe_Controller::controllers_count;
 // 预初始化阶段的 KURD helper
 // ============================================================
 namespace {
-static KURD_t make_success() {
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::Init,
-        level_code::INFO, err_domain::CORE_MODULE);
-}
-static KURD_t make_fail(uint16_t reason) {
-    return KURD_t(
-        result_code::FAIL, reason,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::Init,
-        level_code::ERROR, err_domain::CORE_MODULE);
-}
 
 constexpr uint64_t CAP_TO(uint64_t cap)    { return (cap >> 24) & 0xFF; }
 constexpr uint64_t CAP_DSTRD(uint64_t cap) { return (cap >> 32) & 0xF; }
@@ -66,7 +52,7 @@ static KURD_t alloc_contiguous_pages(KURD_t* kurd_out,
     if (error_kurd(*kurd_out) || !*pa_out) {
         return *kurd_out;
     }
-    return make_success();
+    return empty_kurd;
 }
 
 } // anonymous namespace
@@ -99,11 +85,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
     uint32_t hmpre_4k = *(uint32_t*)(admin_buffer.vbase() + 0x110);
     if (hmpre_4k == 0) {
         bsp_kout << "[NVMe] HMB not recommended" << kendl;
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t page_count = hmpre_4k;
@@ -171,11 +153,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
 
     bsp_kout << "[NVMe] HMB enabled: " << (uint32_t)page_count
              << " pages (" << (uint32_t)mps_units << " MPS units)" << kendl;
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 
 // ============================================================
@@ -184,11 +162,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
 KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
 {
     if (hmb_buffer.vbase() == 0)
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE, DEVICES_locs::NVMe,
-            DEVICES_locs::NVMe_events::submit_command,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
 
     NVMe::features_detail::hmb_cdw11_t dis{};
     dis.ehm = 0;
@@ -199,11 +173,7 @@ KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
     hmb_buffer = {};
 
     bsp_kout << "[NVMe] HMB freed" << kendl;
-    return KURD_t(
-        result_code::SUCCESS, 0,
-        module_code::DEVICE, DEVICES_locs::NVMe,
-        DEVICES_locs::NVMe_events::submit_command,
-        level_code::INFO, err_domain::CORE_MODULE);
+    return empty_kurd;
 }
 NVMe_Controller::NVMe_Controller(vaddr_t ecam) : ecam(ecam)
 {
@@ -233,10 +203,8 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // 硬性要求：cap.mqes 必须 ≥ I/O 队列数
     if (cap.field.mqes < sq_count - 1)
-        return make_fail(ctrl_disable_timeout);
+        return empty_kurd;
     if (to == 0) to = 10;
-
-    using namespace DEVICES_locs::NVMe_events::init_results::fail_reasons;
 
     // ---- 2. CC.EN = 0, 配置 ----
     NVMe::controler_ctrl_t ctrl{ .value = head_regs->controller_configuration };
@@ -246,7 +214,7 @@ KURD_t NVMe_Controller::second_stage_init()
     ctrl.field.CSS     = 0;
     head_regs->controller_configuration = ctrl.value;
     if (!wait_for_ready(head_regs, false, to))
-        return make_fail(ctrl_disable_timeout);
+        return empty_kurd;
 
     KURD_t kurd = empty_kurd;
 
@@ -277,7 +245,7 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // Clear INTMC bits before enabling
     if (!wait_for_ready(head_regs, true, to))
-        return make_fail(ctrl_enable_timeout);
+        return empty_kurd;
 
     // Clear interrupt mask set
     head_regs->interrupt_mask_set = 0;
@@ -313,7 +281,7 @@ KURD_t NVMe_Controller::second_stage_init()
         return kurd;
     }
     kurd = identify_ctrl(admin_buffer.pbase(), kurd);
-    if (error_kurd(kurd)) return make_fail(identify_ctrl_fail);
+    if (error_kurd(kurd)) return empty_kurd;
 
     bsp_kout << "[NVMe] VID=0x";
     bsp_kout.shift_hex();
@@ -385,7 +353,7 @@ KURD_t NVMe_Controller::second_stage_init()
 
     state = NVMe::CTRL_READY;
     bsp_kout << "[NVMe] init complete (" << (uint32_t)nn << " namespaces)" << kendl;
-    return make_success();
+    return empty_kurd;
 }
 
 // ============================================================
@@ -393,9 +361,8 @@ KURD_t NVMe_Controller::second_stage_init()
 // ============================================================
 KURD_t NVMe_Controller::pre_init()
 {
-    using namespace DEVICES_locs::NVMe_events::pre_init_results::fail_reasons;
     if (this->state != NVMe::CTRL_UNINIT)
-        return make_fail(DEVICES_locs::NVMe_events::init_results::fail_reasons::already_init);
+        return empty_kurd;
 
     // sqs 数组：__wrapped_pgs_valloc（物理连续，含内嵌 complete_commands_bank / block_tokens / flying_slots）
     {
@@ -581,9 +548,8 @@ KURD_t NVMe_Controller::device_init(NVMe_Controller* dev)
 // ============================================================
 KURD_t NVMe_Controller::offline(uint64_t flags)
 {
-    using namespace DEVICES_locs::NVMe_events::init_results::fail_reasons;
     if (state != NVMe::CTRL_READY)
-        return make_fail(already_init);
+        return empty_kurd;
 
     KURD_t kurd = empty_kurd;
     // Free IO queues（先删所有 SQ，再删所有 CQ，需要 Admin 队列活着）
@@ -664,5 +630,5 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
     NS_count = 0;
 
     state = NVMe::CTRL_UNINIT;
-    return make_success();
+    return empty_kurd;
 }

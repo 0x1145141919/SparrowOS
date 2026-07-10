@@ -3,22 +3,6 @@
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include <util/arch/x86-64/cpuid_intel.h>
 
-KURD_t NVMe_Controller::default_kurd()
-{
-    return KURD_t(result_code::SUCCESS,0,module_code::DEVICE,DEVICES_locs::NVMe,0,level_code::INFO,err_domain::HARDWARE);
-}
-KURD_t NVMe_Controller::default_success()
-{
-    return default_kurd();
-}
-KURD_t NVMe_Controller::default_failure()
-{
-    return set_result_fail_and_error_level(default_kurd());
-}
-KURD_t NVMe_Controller::default_fatal()
-{
-    return set_fatal_result_level(default_kurd());
-}
 // ============================================================
 // Doorbell 寄存器读写
 // NVMe Spec 3.1.2:
@@ -71,14 +55,13 @@ void NVMe_Controller::msix_enable(uint32_t x2apic_id, uint16_t msix_vec, uint8_t
 }
 KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
 {
-    using namespace DEVICES_locs::NVMe_events::msix_vec_alloc_results::fail_reasons;
-    KURD_t success=default_success();
+    KURD_t success=empty_kurd;
     success.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
     // msix_vec 0=Admin CQ, ≥1=IO CQ → 与 cq_count 比较确保不越界
     if(msix_vec >= this->cq_count||processor_id >= logical_processor_count){
-        KURD_t fail=default_failure();
+        KURD_t fail=empty_kurd;
         fail.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
-        fail.reason=param_out_of_range;
+        fail.reason=DEVICES_locs::NVMe_events::msix_vec_alloc_results::fail_reasons::param_out_of_range;
         return fail;
     }
     KURD_t kurd;
@@ -107,9 +90,9 @@ KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
     uint32_t x2apicid = tran_get_x2apic_id(processor_id);
     if (x2apicid == 0xFFFFFFFF) {
         out_interrupt_vec_free(vec, processor_id);
-        KURD_t fail=default_failure();
+        KURD_t fail=empty_kurd;
         fail.event_code=DEVICES_locs::NVMe_events::msix_vec_alloc;
-        fail.reason=param_out_of_range;
+        fail.reason=DEVICES_locs::NVMe_events::msix_vec_alloc_results::fail_reasons::param_out_of_range;
         return fail;
     }
     msix_enable(x2apicid, msix_vec, vec);
@@ -117,8 +100,8 @@ KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
 }
 KURD_t NVMe_Controller::msix_vec_free(uint16_t msix_vec)
 {
-    KURD_t success=default_success();
-    KURD_t fail=default_failure();
+    KURD_t success=empty_kurd;
+    KURD_t fail=empty_kurd;
     success.event_code=DEVICES_locs::NVMe_events::msix_vec_dealloc;
     fail.event_code=DEVICES_locs::NVMe_events::msix_vec_dealloc;
     MSIX_entry_t& entry=this->msix_table[msix_vec];
