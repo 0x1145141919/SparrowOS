@@ -79,7 +79,7 @@ private:
     } __attribute__((packed));
     static_assert(sizeof(head_regs_t) == 0x1000, "head_regs size mismatch");
 
-    alignas(64) struct sq_complex {
+    struct alignas(64) sq_complex {
         uint16_t sqid;
         uint16_t num_of_entries;
         uint16_t belonged_cqid;
@@ -92,7 +92,7 @@ private:
         uint64_t block_tokens[DEFAULT_IO_SQ_ENTRY_COUNT];
     };
 
-    alignas(64) struct cq_complex {
+    struct alignas(64) cq_complex {
         uint16_t cqid;
         uint16_t num_of_entries;
         uint16_t cq_head_ptr;
@@ -163,7 +163,14 @@ public:
         uint16_t qid,
         NVMe::command::submit_command_common cmd,
         KURD_t& kurd);
-
+    uint64_t synchronized_cmd_submit(
+        uint16_t qid,
+        NVMe::command::submit_command_common cmd
+    );
+    bool release_cmd(
+        uint16_t qid,
+        uint64_t cid
+    );
     void cq_interrupt_handler(uint16_t qid);
     void ADMIN_CQ_interrupt_handler();
     void IO_CQ_interrupt_handler(uint32_t proc_id);

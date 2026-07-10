@@ -3,9 +3,9 @@
  *
  * 三类锁，按 `cq_wq_lock > sq_lock` 方向拿取，允许嵌套，禁止逆向：
  *
- *    cq_wq_lock  (tid_wait_queue::lock)
+ *    cq_wq_lock  (block_queue::qlock)
  *         │
- *         ├ 保护：wait_queue 的 task* 链表出入（pop/push）
+ *         ├ 保护：wait_queue（block_queue）的 task* 链表出入（pop）
  *         ├ 仅中断路径持有(cq_interrupt_handler)
  *         ├ 提交/清理路径不碰此锁
  *         │
@@ -13,7 +13,7 @@
  *
  *    sq_lock    (sq_complex::sq_lock)
  *         │
- *         ├ 保护：sq_bitmap、tail_idx、block_tokens[] 的更新一致性
+ *         ├ 保护：flying_slots、tail_idx、block_tokens[]、complete_commands_bank[]
  *         ├ 提交路径(cmd_submit_and_process)持有
  *         ├ 清理路径(spinlock_interrupt_about_guard → sq_lock)持有
  *         ├ 中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens
@@ -22,22 +22,23 @@
  * 路径拆解：
  *
  *   [提交] cmd_submit_and_process
- *     sq_lock → sq_bitmap.set + sq_ring[cid] + block_tokens[cid].init
+ *     sq_lock → flying_slots.set + sq_ring[cid] + block_tokens[cid]
  *             → sq_lock.unlock()
- *     block_if_equal(&cq.wait_queue, &block_token, entry_block_token)
+ *     block_if_equal(cq.block_queue_id, &block_tokens[cid], entry_block_token)
  *     醒来后：
- *     spinlock_interrupt_about_guard(sq_lock) → 清 sq_bitmap + 读结果
+ *     spinlock_interrupt_about_guard(sq_lock) → 清 flying_slots + 读结果
  *
  *   [中断] cq_interrupt_handler
  *     spinlock_interrupt_about_guard(cq_wq_lock)
  *       读 CQ ring
- *       对每完成：sq_lock(对应 SQ) → 写 block_token → sq_lock.unlock()
- *       wakeup_all()  / 仍在 cq_wq_lock 下确保 pop 不竞争 /
+ *       对每完成：写 complete_commands_bank[] + block_tokens[]（无需 sq_lock）
+ *       pop_all()  → 放入 batch
  *     cq_wq_lock.unlock()
+ *     bq_flush_pending(batch, false)
  *     写 doorbell
  *
  *   [清理]（超时后同上提交路径后半段）
- *     spinlock_interrupt_about_guard(sq_lock) → 清 bitmap + 读结果
+ *     spinlock_interrupt_about_guard(sq_lock) → 清 flying_slots + 读结果
  *
  * ═══════════════════════════════════════════════════════════════════════ */
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
@@ -62,47 +63,93 @@ NVMe_Controller::cmd_submit_and_process(
     sq_complex& sq = sqs[qid];
     cq_complex& cq = cqs[sq.belonged_cqid];
     auto* sq_ring = (NVMe::command::submit_command_common*)sq.sq_ring.vbase();
-    spinlock_cpp_t& lock = cq.wait_queue.lock;
 
     uint16_t cid;
     {
         interrupt_guard g;
-        spinlock_interrupt_about_guard l(lock);
+        spinlock_interrupt_about_guard l(sq.sq_lock);
 
-        if (sq.sq_bitmap->bit_get(sq.tail_idx)) {
+        if (sq.flying_slots[sq.tail_idx]) {
             // TODO: queue full handling
         }
 
         cid = sq.tail_idx;
-        sq.sq_bitmap->bit_set(cid, true);
+        sq.flying_slots[cid] = true;
         sq_ring[cid] = cmd;
         sq_ring[cid].fiedls.cid = cid;
-        sq.block_tokens[cid].block_token = NVMe::entry_block_token;
+        sq.block_tokens[cid] = NVMe::entry_block_token;
         sq.tail_idx = (sq.tail_idx + 1) % sq.num_of_entries;
     }
 
     sq_dorbell_write(qid, sq.tail_idx);
 
-    block_if_equal(&cq.wait_queue,
-                   &sq.block_tokens[cid].block_token,
+    block_if_equal(cq.block_queue_id,
+                   &sq.block_tokens[cid],
                    NVMe::entry_block_token);
 
     {
         interrupt_guard g;
-        spinlock_interrupt_about_guard l(lock);
-        sq.sq_bitmap->bit_set(cid, false);
+        spinlock_interrupt_about_guard l(sq.sq_lock);
+        sq.flying_slots[cid] = false;
         // Return the full CQE
-        return sq.block_tokens[cid].sq_entry;
+        return sq.complete_commands_bank[cid];
     }
 }
+uint64_t NVMe_Controller::synchronized_cmd_submit(
+    uint16_t qid, 
+    NVMe::command::submit_command_common cmd
+)
+{
+    sq_complex& sq = sqs[qid];
+    cq_complex& cq = cqs[sq.belonged_cqid];
+    auto* sq_ring = (NVMe::command::submit_command_common*)sq.sq_ring.vbase();
+
+    uint16_t cid;
+    {
+        interrupt_guard g;
+        spinlock_interrupt_about_guard l(sq.sq_lock);
+
+        if (sq.flying_slots[sq.tail_idx]) {
+            // TODO: queue full handling
+        }
+
+        cid = sq.tail_idx;
+        sq.flying_slots[cid] = true;
+        sq_ring[cid] = cmd;
+        sq_ring[cid].fiedls.cid = cid;
+        sq.block_tokens[cid] = NVMe::entry_block_token;
+        sq.tail_idx = (sq.tail_idx + 1) % sq.num_of_entries;
+    }
+
+    sq_dorbell_write(qid, sq.tail_idx);
+
+    uint64_t res=block_if_equal(cq.block_queue_id,
+                   &sq.block_tokens[cid],
+                   NVMe::entry_block_token);
+    return res|cid<<16;
+}
+bool NVMe_Controller::release_cmd(uint16_t qid, uint64_t cid)
+{
+    
+        if(qid>=this->sq_count)return false;
+        sq_complex& sq = sqs[qid];
+        if(cid>=sq.num_of_entries)return false;
+        interrupt_guard g;
+        spinlock_interrupt_about_guard l(sq.sq_lock);
+        sq.flying_slots[cid] = false;
+        // Return the full CQE
+        return true;
+    
+}
+
 uint64_t NVMe_Controller::interrupt_handle(interrupt_token_t *token)
 {
-    //那token_private的[0:63]是NVMe_Controller*指针，而[64:79]是cq_id
+    // token_private 的 [0:63] 是 NVMe_Controller* 指针，[64:79] 是 cq_id
     __uint128_t token_private = token->token_private;
     NVMe_Controller* dev = (NVMe_Controller*)token_private;
-    uint16_t cqid= token->token_private >> 64;
+    uint16_t cqid = token->token_private >> 64;
     dev->cq_interrupt_handler(cqid);
-    return 1;//符合那个TOKEN_FLAG_MASK_TOKEN_SCHEDULE，触发调度
+    return 1; // TOKEN_FLAG_MASK_TOKEN_SCHEDULE
 }
 
 // ============================================================
@@ -111,44 +158,54 @@ uint64_t NVMe_Controller::interrupt_handle(interrupt_token_t *token)
 void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
 {
     cq_complex& cq = cqs[qid];
-    spinlock_interrupt_about_guard l(cq.wait_queue.lock);
+    blocked_tasks_clamps_t clamp;
 
-    if (cq.is_first_time) {
-        cq.unprocessed_entry_expect = true;
-        cq.is_first_time = false;
-    }
+    {
+        spinlock_interrupt_about_guard l(cq.wait_queue.qlock);
 
-    auto* cq_ring = (NVMe::command::complete_command_common*)cq.cq_ring.vbase();
-    uint16_t processed = 0;
-    uint16_t cursor = cq.head_idx;
-
-    while (processed < cq.num_of_entries) {
-        auto& entry = cq_ring[cursor];
-        if (entry.fields.phase != cq.unprocessed_entry_expect) break;
-
-        uint16_t sq_id  = entry.fields.sq_id;
-        uint16_t cmd_id = entry.fields.cmd_id;
-
-        // Detect AER completions (CID >= AER_base_cid)
-        if (cmd_id >= AER_base_cid) {
-            // AER completion - store the CQE in block_tokens and signal
-            sqs[sq_id].block_tokens[cmd_id].sq_entry    = entry;
-            sqs[sq_id].block_tokens[cmd_id].block_token = entry.fields.status;
-        } else {
-            // Normal completion: store full CQE + status
-            sqs[sq_id].block_tokens[cmd_id].sq_entry    = entry;
-            sqs[sq_id].block_tokens[cmd_id].block_token = entry.fields.status;
+        if (cq.is_first_time) {
+            cq.unprocessed_entry_expect = true;
+            cq.is_first_time = false;
         }
 
-        cursor = (cursor + 1) % cq.num_of_entries;
-        processed++;
-        if (cursor == 0) cq.unprocessed_entry_expect ^= 1;
+        auto* cq_ring = (NVMe::command::complete_command_common*)cq.cq_ring.vbase();
+        uint16_t processed = 0;
+        uint16_t cursor = cq.head_idx;
+
+        while (processed < cq.num_of_entries) {
+            auto& entry = cq_ring[cursor];
+            if (entry.fields.phase != cq.unprocessed_entry_expect) break;
+
+            uint16_t sq_id  = entry.fields.sq_id;
+            uint16_t cmd_id = entry.fields.cmd_id;
+
+            // 写入 CQE 结果 — 提交端的 block_if_equal 醒来后读取
+            {
+            spinlock_interrupt_about_guard g( sqs[sq_id].sq_lock);
+            sqs[sq_id].complete_commands_bank[cmd_id] = entry;
+            sqs[sq_id].block_tokens[cmd_id] = entry.fields.status;
+            }
+
+            cursor = (cursor + 1) % cq.num_of_entries;
+            processed++;
+            if (cursor == 0) cq.unprocessed_entry_expect ^= 1;
+        }
+
+        if (processed > 0) {
+            cq.head_idx = cursor;
+            cq_dorbell_write(qid, cursor);
+            
+            while(true)
+            {
+                cq.wait_queue.pop_all(&clamp);
+                if(clamp.is_queue_empty)break;
+                bq_flush_pending(&clamp,false);
+            }
+        }
     }
 
-    if (processed > 0) {
-        cq.head_idx = cursor;
-        cq_dorbell_write(qid, cursor);
-        cq.wait_queue.wakeup_all();
+    if (clamp.batch_count > 0) {
+        bq_flush_pending(&clamp, false);
     }
 }
 
@@ -164,14 +221,17 @@ NVMe_Controller::ADMIN_cmd_submit_and_process(
 
 // ============================================================
 // AER 提交（非阻塞）
+//
+// 注意：AER CID 使用高位范围（AER_base_cid + aer_index），
+// 不经过常规 flying_slots 位图（位图仅覆盖 256 个 slot）。
+// AER 在 Admin SQ 上提交，提交端不阻塞；其中断完成走 admin CQ 路径。
 // ============================================================
 void NVMe_Controller::aer_submit(uint16_t aer_index, KURD_t& kurd)
 {
     uint16_t cid = AER_base_cid + aer_index;
 
-    // Allocate the AER CID slot in the bitmap
-    sqs[0].sq_bitmap->bit_set(cid, true);
-    sqs[0].block_tokens[cid].block_token = NVMe::entry_block_token;
+    // AER CID 在 flying_slots 位图范围之外，不设 bitmap
+    sqs[0].block_tokens[cid] = NVMe::entry_block_token;
 
     // Build AER command
     NVMe::command::submit_command_common cmd{};
