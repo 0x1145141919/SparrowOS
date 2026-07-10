@@ -83,8 +83,19 @@ namespace NVMe {
             static_assert(sizeof(fields) == 16, "not 8 bytes");
             uint32_t dwords[4];
         };
+        
+        
     };
-
+    union command_result_t {
+        struct {
+                uint64_t cmd_spcify;
+                uint16_t free_to_use[3];
+                uint16_t timeout_bit : 1;
+                uint16_t status : 15;
+            } __attribute__((packed)) fields;
+            static_assert(sizeof(fields) == 16, "not 8 bytes");
+        uint32_t dwords[4];
+    };
     namespace status {
         constexpr uint16_t SUCCESSFUL_COMPLETION = 0x00;
         constexpr uint16_t INVALID_COMMAND_OPCODE = 0x01;

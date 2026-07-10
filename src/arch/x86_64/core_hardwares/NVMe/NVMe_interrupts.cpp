@@ -51,11 +51,25 @@
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
-
-uint64_t NVMe_Controller::synchronized_cmd_submit(
-    uint16_t qid, 
-    NVMe::command::submit_command_common cmd
-)
+NVMe::command_result_t NVMe_Controller::cmd_submit_and_process(uint16_t qid, NVMe::command::submit_command_common cmd)
+{
+    sq_complex& sq = sqs[qid];
+    cq_complex& cq = cqs[sq.belonged_cqid];
+    uint16_t cid= asynchronized_cmd_submit(qid,cmd);
+    uint64_t res= block_if_equal(cq.block_queue_id,&sq.complete_commands_bank[cid].fields.cmd_spcify,NVMe::entry_block_token);
+    NVMe::command_result_t r;
+    if(res&2){
+        
+        r.fields.timeout_bit=1;
+    }else{
+        r=sq.complete_commands_bank[cid];
+        release_cmd(qid,cid);
+        r.fields.timeout_bit=false;
+        
+    }
+    return r;
+}
+uint16_t NVMe_Controller::asynchronized_cmd_submit(uint16_t qid, NVMe::command::submit_command_common cmd)
 {
     sq_complex& sq = sqs[qid];
     cq_complex& cq = cqs[sq.belonged_cqid];
@@ -74,16 +88,12 @@ uint64_t NVMe_Controller::synchronized_cmd_submit(
         sq.flying_slots[cid] = true;
         sq_ring[cid] = cmd;
         sq_ring[cid].fiedls.cid = cid;
-        sq.block_tokens[cid] = NVMe::entry_block_token;
+        sq.complete_commands_bank->fields.cmd_spcify = NVMe::entry_block_token;
         sq.tail_idx = (sq.tail_idx + 1) % sq.num_of_entries;
     }
 
     sq_dorbell_write(qid, sq.tail_idx);
-
-    uint64_t res=block_if_equal(cq.block_queue_id,
-                   &sq.block_tokens[cid],
-                   NVMe::entry_block_token);
-    return res|cid<<16;
+    return cid;
 }
 bool NVMe_Controller::release_cmd(uint16_t qid, uint64_t cid)
 {
@@ -140,7 +150,6 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
             {
             spinlock_interrupt_about_guard g( sqs[sq_id].sq_lock);
             sqs[sq_id].complete_commands_bank[cmd_id] = entry;
-            sqs[sq_id].block_tokens[cmd_id] = entry.fields.status;
             }
 
             cursor = (cursor + 1) % cq.num_of_entries;
@@ -176,9 +185,6 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
 void NVMe_Controller::aer_submit(uint16_t aer_index, KURD_t& kurd)
 {
     uint16_t cid = AER_base_cid + aer_index;
-
-    // AER CID 在 flying_slots 位图范围之外，不设 bitmap
-    sqs[0].block_tokens[cid] = NVMe::entry_block_token;
 
     // Build AER command
     NVMe::command::submit_command_common cmd{};

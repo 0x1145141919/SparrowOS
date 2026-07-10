@@ -89,7 +89,6 @@ private:
         bitmap_base flying_slots;
         uint64_t flying_slots_raw_map[4];
         alignas(64) NVMe::command::complete_command_common complete_commands_bank[DEFAULT_IO_SQ_ENTRY_COUNT];
-        uint64_t block_tokens[DEFAULT_IO_SQ_ENTRY_COUNT];
     };
 
     struct alignas(64) cq_complex {
@@ -154,7 +153,10 @@ public:
     // 外部获取 namespace 列表
     BlockDevice* get_namespaces()       { return NSs; }
     uint32_t     get_ns_count()  const  { return NS_count; }
-
+    NVMe::command_result_t cmd_submit_and_process(
+        uint16_t qid,
+        NVMe::command::submit_command_common cmd
+    );
     NVMe_Controller(vaddr_t ecam);
     static KURD_t device_init(NVMe_Controller* dev);
     KURD_t offline(uint64_t flags);
@@ -163,6 +165,10 @@ public:
         uint16_t qid,
         NVMe::command::submit_command_common cmd
     );
+    uint16_t asynchronized_cmd_submit(
+        uint16_t qid,
+        NVMe::command::submit_command_common cmd
+    );//返回的是cid
     bool release_cmd(
         uint16_t qid,
         uint64_t cid
