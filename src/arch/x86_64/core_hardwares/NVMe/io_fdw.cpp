@@ -95,14 +95,14 @@ static KURD_t param_error_wz(uint16_t reason)
 // ============================================================
 // submit_to_io_queue: 提交命令到当前 CPU 绑定的 I/O 队列并等待完成
 // ============================================================
-static NVMe::command::complete_command_common
+static void
 submit_to_io_queue(NVMe_Controller* ctrl,
-                   NVMe::command::submit_command_common cmd,
-                   KURD_t& kurd)
+                   NVMe::command::submit_command_common cmd)
 {
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
-    return ctrl->cmd_submit_and_process(qid, cmd, kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 }
 
 // ============================================================
@@ -134,9 +134,7 @@ KURD_t NVMe_Controller::flush(BlockDevice* dev, uint64_t flags)
     cmd.fiedls.opcode = NVMe::command::io_opcode::FLUSH;
     cmd.fiedls.nsid   = nsid;
 
-    KURD_t kurd;
-    NVMe::command::complete_command_common cqe =
-        submit_to_io_queue(ctrl, cmd, kurd);
+    submit_to_io_queue(ctrl, cmd);
 
     return empty_kurd;
 }
@@ -192,9 +190,7 @@ KURD_t NVMe_Controller::write_zero(BlockDevice* dev,LBA_interval_t interval,uint
     // NSZ=0, STC=0, PRCHK=0（默认零值）
     cmd.dwords[12] = cdw12.raw;
 
-    KURD_t kurd;
-    NVMe::command::complete_command_common cqe =
-        submit_to_io_queue(ctrl, cmd, kurd);
+    submit_to_io_queue(ctrl, cmd);
 
     return empty_kurd;
 }
@@ -289,8 +285,7 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
     cmd.dwords[11] = cdw11.raw;
 
     // ---- 提交 ----
-    NVMe::command::complete_command_common cqe =
-        submit_to_io_queue(ctrl, cmd, kurd);
+    submit_to_io_queue(ctrl, cmd);
 
     // ---- 清理 ----
     {

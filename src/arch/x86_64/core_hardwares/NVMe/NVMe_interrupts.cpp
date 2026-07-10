@@ -14,19 +14,21 @@
  *    sq_lock    (sq_complex::sq_lock)
  *         │
  *         ├ 保护：flying_slots、tail_idx、block_tokens[]、complete_commands_bank[]
- *         ├ 提交路径(cmd_submit_and_process)持有
+ *         ├ 提交路径(synchronized_cmd_submit)持有
  *         ├ 清理路径(spinlock_interrupt_about_guard → sq_lock)持有
  *         ├ 中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens
  *         └ 中断路径不会先拿 sq_lock→再拿 cq_wq_lock（禁止逆向）
  *
  * 路径拆解：
  *
- *   [提交] cmd_submit_and_process
+ *   [提交] synchronized_cmd_submit
  *     sq_lock → flying_slots.set + sq_ring[cid] + block_tokens[cid]
  *             → sq_lock.unlock()
  *     block_if_equal(cq.block_queue_id, &block_tokens[cid], entry_block_token)
- *     醒来后：
- *     spinlock_interrupt_about_guard(sq_lock) → 清 flying_slots + 读结果
+ *     返回编码 res|cid<<16
+ *
+ *   [释放] release_cmd
+ *     sq_lock → 清 flying_slots + 边界检查
  *
  *   [中断] cq_interrupt_handler
  *     spinlock_interrupt_about_guard(cq_wq_lock)
@@ -50,51 +52,6 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 
-// ============================================================
-// 通用 SQ 提交 + 阻塞等待完成（任意队列）
-// 返回完整 CQE
-// ============================================================
-NVMe::command::complete_command_common
-NVMe_Controller::cmd_submit_and_process(
-    uint16_t qid,
-    NVMe::command::submit_command_common cmd,
-    KURD_t& kurd)
-{
-    sq_complex& sq = sqs[qid];
-    cq_complex& cq = cqs[sq.belonged_cqid];
-    auto* sq_ring = (NVMe::command::submit_command_common*)sq.sq_ring.vbase();
-
-    uint16_t cid;
-    {
-        interrupt_guard g;
-        spinlock_interrupt_about_guard l(sq.sq_lock);
-
-        if (sq.flying_slots[sq.tail_idx]) {
-            // TODO: queue full handling
-        }
-
-        cid = sq.tail_idx;
-        sq.flying_slots[cid] = true;
-        sq_ring[cid] = cmd;
-        sq_ring[cid].fiedls.cid = cid;
-        sq.block_tokens[cid] = NVMe::entry_block_token;
-        sq.tail_idx = (sq.tail_idx + 1) % sq.num_of_entries;
-    }
-
-    sq_dorbell_write(qid, sq.tail_idx);
-
-    block_if_equal(cq.block_queue_id,
-                   &sq.block_tokens[cid],
-                   NVMe::entry_block_token);
-
-    {
-        interrupt_guard g;
-        spinlock_interrupt_about_guard l(sq.sq_lock);
-        sq.flying_slots[cid] = false;
-        // Return the full CQE
-        return sq.complete_commands_bank[cid];
-    }
-}
 uint64_t NVMe_Controller::synchronized_cmd_submit(
     uint16_t qid, 
     NVMe::command::submit_command_common cmd
@@ -207,16 +164,6 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
     if (clamp.batch_count > 0) {
         bq_flush_pending(&clamp, false);
     }
-}
-
-// ============================================================
-// Admin 包装
-// ============================================================
-NVMe::command::complete_command_common
-NVMe_Controller::ADMIN_cmd_submit_and_process(
-    NVMe::command::submit_command_common cmd, KURD_t& kurd)
-{
-    return cmd_submit_and_process(0, cmd, kurd);
 }
 
 // ============================================================

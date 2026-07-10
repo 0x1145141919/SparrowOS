@@ -41,7 +41,11 @@ NVMe_Controller::queue_mgmt_cmd(uint8_t opcode, uint16_t qid,
         cmd.fiedls.DPTR1 = prp1;
     }
 
-    return ADMIN_cmd_submit_and_process(cmd, kurd);
+    uint64_t enc = synchronized_cmd_submit(0, cmd);
+    uint16_t cid = enc >> 16;
+    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
+    release_cmd(0, cid);
+    return cqe;
 }
 
 // ============================================================

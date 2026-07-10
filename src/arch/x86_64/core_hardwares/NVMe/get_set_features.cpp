@@ -26,7 +26,11 @@ NVMe_Controller::get_features_cmd(uint8_t fid, uint8_t sel, KURD_t& kurd)
     cmd.fiedls.nsid   = 0;
     cmd.dwords[10]    = fid | (uint32_t(sel) << 8);
 
-    return ADMIN_cmd_submit_and_process(cmd, kurd);
+    uint64_t enc = synchronized_cmd_submit(0, cmd);
+    uint16_t cid = enc >> 16;
+    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
+    release_cmd(0, cid);
+    return cqe;
 }
 
 NVMe::command::complete_command_common
@@ -40,7 +44,11 @@ NVMe_Controller::set_features_cmd(uint8_t fid, uint32_t cdw11,
     cmd.dwords[11]    = cdw11;
     cmd.fiedls.DPTR1  = buf_pa;
 
-    return ADMIN_cmd_submit_and_process(cmd, kurd);
+    uint64_t enc = synchronized_cmd_submit(0, cmd);
+    uint16_t cid = enc >> 16;
+    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
+    release_cmd(0, cid);
+    return cqe;
 }
 
 // ============================================================

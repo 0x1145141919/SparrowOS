@@ -108,7 +108,7 @@ private:
          *   提交/清理路径不碰此锁。
          *
          * sq_lock：保护 sq_bitmap、tail_idx、block_tokens 的更新一致性。
-         *   持有者：提交路径（cmd_submit_and_process）与清理路径。
+         *   持有者：提交路径（synchronized_cmd_submit）与清理路径。
          *   中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens。
          *
          * 禁止逆向（先 sq_lock 再 cq_wq_lock）。
@@ -159,10 +159,6 @@ public:
     static KURD_t device_init(NVMe_Controller* dev);
     KURD_t offline(uint64_t flags);
 
-    NVMe::command::complete_command_common cmd_submit_and_process(
-        uint16_t qid,
-        NVMe::command::submit_command_common cmd,
-        KURD_t& kurd);
     uint64_t synchronized_cmd_submit(
         uint16_t qid,
         NVMe::command::submit_command_common cmd
@@ -174,14 +170,6 @@ public:
     void cq_interrupt_handler(uint16_t qid);
     void ADMIN_CQ_interrupt_handler();
     void IO_CQ_interrupt_handler(uint32_t proc_id);
-
-    NVMe::command::complete_command_common ADMIN_cmd_submit_and_process(
-        NVMe::command::submit_command_common cmd,
-        KURD_t& kurd);
-
-    KURD_t IO_cmd_submit(NVMe::command::submit_command_common cmd,
-                         uint32_t proc_id,
-                         bool soon_ring_bell);
 
     static KURD_t read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
     static KURD_t read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);

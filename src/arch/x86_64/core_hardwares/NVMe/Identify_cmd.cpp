@@ -24,12 +24,8 @@ static KURD_t do_identify(NVMe_Controller* ctrl,
     cmd.fiedls.DPTR1  = buf_pa;
     cmd.dwords[10]    = cns;
 
-    NVMe::command::complete_command_common cqe =
-        ctrl->ADMIN_cmd_submit_and_process(cmd, kurd);
-
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return empty_kurd;
-    }
+    uint64_t enc = ctrl->synchronized_cmd_submit(0, cmd);
+    ctrl->release_cmd(0, enc >> 16);
     return empty_kurd;
 }
 
@@ -65,9 +61,10 @@ KURD_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,
     cmd.dwords[10]    = 0x14 | (uint32_t(cntid) << 16);  // CNS 14h + CNTID
     cmd.dwords[11]    = 0;  // reserved for CNS 14h
 
-    NVMe::command::complete_command_common cqe =
-        ADMIN_cmd_submit_and_process(cmd, kurd);
-
+    uint64_t enc = synchronized_cmd_submit(0, cmd);
+    uint16_t cid = enc >> 16;
+    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
+    release_cmd(0, cid);
     if (NVMe::status::is_error(cqe.fields.status)) {
         return empty_kurd;
     }

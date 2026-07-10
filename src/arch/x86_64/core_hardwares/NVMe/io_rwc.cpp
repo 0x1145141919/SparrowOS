@@ -158,9 +158,8 @@ KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interva
     // ---- 9. 提交到 I/O 队列 ----
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     // ---- 10. 清理 PRP ----
     {
@@ -301,9 +300,8 @@ KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_inte
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
 
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     // ---- 11. 清理 PRP ----
     {
@@ -413,9 +411,8 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interv
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
 
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     // ---- 10. 清理 ----
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
@@ -508,9 +505,8 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_int
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
 
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     // ---- 11. 清理 ----
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
@@ -588,9 +584,8 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t inte
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
 
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 
@@ -670,9 +665,8 @@ KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_i
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
 
-    KURD_t cmd_kurd;
-    NVMe::command::complete_command_common cqe =
-        ctrl->cmd_submit_and_process(qid, cmd, cmd_kurd);
+    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
+    ctrl->release_cmd(qid, enc >> 16);
 
     { KURD_t dk; destroy_PRP_root(prp_root, mps_shift, dk); }
 

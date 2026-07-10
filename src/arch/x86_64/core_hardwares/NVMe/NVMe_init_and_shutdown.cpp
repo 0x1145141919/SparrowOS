@@ -111,7 +111,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
     uint32_t mps       = 1u << mps_shift;
     uint32_t mps_units = page_count * 4096 / mps;
 
-    // 栈上构建描述符——ADMIN_cmd_submit_and_process 同步完成
+    // 栈上构建描述符——synchronized_cmd_submit 同步完成
     NVMe::features_detail::hmb_descriptor_t desc;
     desc.baddr = buf_pa;
     desc.bsize = mps_units;
@@ -138,8 +138,10 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
     // 确保写入顺序：描述符先写，Set Features 后发
     __sync_synchronize();
 
-    NVMe::command::complete_command_common cqe =
-        ADMIN_cmd_submit_and_process(cmd, kurd);
+    uint64_t enc = synchronized_cmd_submit(0, cmd);
+    uint16_t cid = enc >> 16;
+    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
+    release_cmd(0, cid);
     if (NVMe::status::is_error(cqe.fields.status)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
