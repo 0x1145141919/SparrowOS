@@ -84,7 +84,7 @@ private:
         uint16_t num_of_entries;
         uint16_t belonged_cqid;
         vm_interval sq_ring;
-        alignas(64) spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、block_tokens 的更新一致性
+        alignas(64) spinlock_cpp_t sq_lock;   // 保护 sq_bitmap、tail_idx、complete_commands_bank 的更新一致性
         uint16_t tail_idx;        // 在 sq_lock 下读写
         bitmap_base flying_slots;
         uint64_t flying_slots_raw_map[4];
@@ -106,9 +106,8 @@ private:
          *   持有者：仅中断路径（cq_interrupt_handler）。
          *   提交/清理路径不碰此锁。
          *
-         * sq_lock：保护 sq_bitmap、tail_idx、block_tokens 的更新一致性。
-         *   持有者：提交路径（synchronized_cmd_submit）与清理路径。
-         *   中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens。
+         * sq_lock：保护 sq_bitmap、tail_idx、complete_commands_bank.cmd_spcify 的更新一致性。
+         *   持有者：提交路径（asynchronized_cmd_submit / cmd_submit_and_process）与清理路径（release_cmd）。
          *
          * 禁止逆向（先 sq_lock 再 cq_wq_lock）。
          */
@@ -160,11 +159,6 @@ public:
     NVMe_Controller(vaddr_t ecam);
     static KURD_t device_init(NVMe_Controller* dev);
     KURD_t offline(uint64_t flags);
-
-    uint64_t synchronized_cmd_submit(
-        uint16_t qid,
-        NVMe::command::submit_command_common cmd
-    );
     uint16_t asynchronized_cmd_submit(
         uint16_t qid,
         NVMe::command::submit_command_common cmd
@@ -191,7 +185,7 @@ public:
     KURD_t identify_ns(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
     KURD_t identify_ns_list(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
     KURD_t identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
-    KURD_t identify_primary_ctrl_caps(uint16_t cntid, phyaddr_t buf_pa, KURD_t& kurd);
+    NVMe::command_result_t identify_primary_ctrl_caps(uint16_t cntid, phyaddr_t buf_pa);
 
     // AER methods
     void aer_submit(uint16_t aer_index, KURD_t& kurd);
@@ -202,10 +196,10 @@ public:
     void aer_handle_one_shot(uint32_t info);
 
     // Get/Set Features
-    NVMe::command::complete_command_common get_features_cmd(
-        uint8_t fid, uint8_t sel, KURD_t& kurd);
-    NVMe::command::complete_command_common set_features_cmd(
-        uint8_t fid, uint32_t cdw11, phyaddr_t buf_pa, KURD_t& kurd);
+    NVMe::command_result_t get_features_cmd(
+        uint8_t fid, uint8_t sel);
+    NVMe::command_result_t set_features_cmd(
+        uint8_t fid, uint32_t cdw11, phyaddr_t buf_pa);
     KURD_t get_features_num_queues(KURD_t& kurd);
     KURD_t set_features_num_queues(uint16_t nsqr, uint16_t ncqr, KURD_t& kurd);
     KURD_t get_features_int_coalescing(KURD_t& kurd);
@@ -219,9 +213,9 @@ public:
     KURD_t set_features_hctm(uint16_t tmt2, uint16_t tmt1, KURD_t& kurd);
 
     // IO Queue management
-    NVMe::command::complete_command_common queue_mgmt_cmd(
+    NVMe::command_result_t queue_mgmt_cmd(
         uint8_t opcode, uint16_t qid, uint16_t qsize,
-        uint32_t cdw11, phyaddr_t prp1, KURD_t& kurd);
+        uint32_t cdw11, phyaddr_t prp1);
     KURD_t create_io_cq(uint16_t qid, uint16_t qsize, bool ien, KURD_t& kurd);
     KURD_t create_io_sq(uint16_t qid, uint16_t qsize, uint16_t cqid,
                          uint8_t qprio, KURD_t& kurd);

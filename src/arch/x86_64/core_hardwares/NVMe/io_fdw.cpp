@@ -101,8 +101,7 @@ submit_to_io_queue(NVMe_Controller* ctrl,
 {
     uint32_t cpu_id = fast_get_processor_id();
     uint16_t qid    = cpu_id + 1;
-    uint64_t enc = ctrl->synchronized_cmd_submit(qid, cmd);
-    ctrl->release_cmd(qid, enc >> 16);
+    ctrl->cmd_submit_and_process(qid, cmd);
 }
 
 // ============================================================

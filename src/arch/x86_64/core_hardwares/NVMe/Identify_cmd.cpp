@@ -7,7 +7,7 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 
-static KURD_t make_identify_kurd(NVMe::command::complete_command_common cqe,
+static KURD_t make_identify_kurd(NVMe::command_result_t r,
                                   uint16_t fail_reason)
 {
     return empty_kurd;
@@ -24,8 +24,7 @@ static KURD_t do_identify(NVMe_Controller* ctrl,
     cmd.fiedls.DPTR1  = buf_pa;
     cmd.dwords[10]    = cns;
 
-    uint64_t enc = ctrl->synchronized_cmd_submit(0, cmd);
-    ctrl->release_cmd(0, enc >> 16);
+    ctrl->cmd_submit_and_process(0, cmd);
     return empty_kurd;
 }
 
@@ -49,9 +48,8 @@ KURD_t NVMe_Controller::identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa, KURD_
     return do_identify(this, nsid, 0x08, buf_pa, kurd);  // CNS 08h
 }
 
-KURD_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,
-                                                     phyaddr_t buf_pa,
-                                                     KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,
+                                                                     phyaddr_t buf_pa)
 {
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::admin_opcode::IDENTIFY;
@@ -61,12 +59,5 @@ KURD_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,
     cmd.dwords[10]    = 0x14 | (uint32_t(cntid) << 16);  // CNS 14h + CNTID
     cmd.dwords[11]    = 0;  // reserved for CNS 14h
 
-    uint64_t enc = synchronized_cmd_submit(0, cmd);
-    uint16_t cid = enc >> 16;
-    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
-    release_cmd(0, cid);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return empty_kurd;
-    }
-    return empty_kurd;
+    return cmd_submit_and_process(0, cmd);
 }

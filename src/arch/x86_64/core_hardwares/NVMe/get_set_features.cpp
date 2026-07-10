@@ -7,35 +7,31 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 
-static KURD_t make_set_kurd(NVMe::command::complete_command_common cqe)
+static KURD_t make_set_kurd(NVMe::command_result_t r)
 {
     return empty_kurd;
 }
 
-static KURD_t make_get_kurd(NVMe::command::complete_command_common cqe,
+static KURD_t make_get_kurd(NVMe::command_result_t r,
                              uint32_t cqe_dword0)
 {
     return empty_kurd;
 }
 
-NVMe::command::complete_command_common
-NVMe_Controller::get_features_cmd(uint8_t fid, uint8_t sel, KURD_t& kurd)
+NVMe::command_result_t
+NVMe_Controller::get_features_cmd(uint8_t fid, uint8_t sel)
 {
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::admin_opcode::GET_FEATURES;
     cmd.fiedls.nsid   = 0;
     cmd.dwords[10]    = fid | (uint32_t(sel) << 8);
 
-    uint64_t enc = synchronized_cmd_submit(0, cmd);
-    uint16_t cid = enc >> 16;
-    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
-    release_cmd(0, cid);
-    return cqe;
+    return cmd_submit_and_process(0, cmd);
 }
 
-NVMe::command::complete_command_common
+NVMe::command_result_t
 NVMe_Controller::set_features_cmd(uint8_t fid, uint32_t cdw11,
-                                   phyaddr_t buf_pa, KURD_t& kurd)
+                                   phyaddr_t buf_pa)
 {
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::admin_opcode::SET_FEATURES;
@@ -44,11 +40,7 @@ NVMe_Controller::set_features_cmd(uint8_t fid, uint32_t cdw11,
     cmd.dwords[11]    = cdw11;
     cmd.fiedls.DPTR1  = buf_pa;
 
-    uint64_t enc = synchronized_cmd_submit(0, cmd);
-    uint16_t cid = enc >> 16;
-    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
-    release_cmd(0, cid);
-    return cqe;
+    return cmd_submit_and_process(0, cmd);
 }
 
 // ============================================================
@@ -56,13 +48,13 @@ NVMe_Controller::set_features_cmd(uint8_t fid, uint32_t cdw11,
 // ============================================================
 KURD_t NVMe_Controller::get_features_num_queues(KURD_t& kurd)
 {
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         get_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
-                         NVMe::features::GET_SEL_CURRENT, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_get_kurd(cqe, 0);
+                         NVMe::features::GET_SEL_CURRENT);
+    if (NVMe::status::is_error(r.fields.status)) {
+        return make_get_kurd(r, 0);
     }
-    return make_get_kurd(cqe, cqe.dwords[0]);
+    return make_get_kurd(r, r.dwords[0]);
 }
 
 KURD_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr,
@@ -72,11 +64,11 @@ KURD_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr,
     cdw11.nsqr = nsqr;
     cdw11.ncqr = ncqr;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         set_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
-                         cdw11.raw, 0, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_set_kurd(cqe);
+                         cdw11.raw, 0);
+    if (NVMe::status::is_error(r.fields.status)) {
+        return make_set_kurd(r);
     }
     return empty_kurd;
 }
@@ -86,10 +78,10 @@ KURD_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr,
 // ============================================================
 KURD_t NVMe_Controller::get_features_int_coalescing(KURD_t& kurd)
 {
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         get_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
-                         NVMe::features::GET_SEL_CURRENT, kurd);
-    return make_get_kurd(cqe, cqe.dwords[0]);
+                         NVMe::features::GET_SEL_CURRENT);
+    return make_get_kurd(r, r.dwords[0]);
 }
 
 KURD_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time,
@@ -99,11 +91,11 @@ KURD_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time,
     cdw11.thr  = thr;
     cdw11.time = time;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         set_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
-                         cdw11.raw, 0, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_set_kurd(cqe);
+                         cdw11.raw, 0);
+    if (NVMe::status::is_error(r.fields.status)) {
+        return make_set_kurd(r);
     }
     return empty_kurd;
 }
@@ -113,10 +105,10 @@ KURD_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time,
 // ============================================================
 KURD_t NVMe_Controller::get_features_int_vector_config(KURD_t& kurd)
 {
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         get_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
-                         NVMe::features::GET_SEL_CURRENT, kurd);
-    return make_get_kurd(cqe, cqe.dwords[0]);
+                         NVMe::features::GET_SEL_CURRENT);
+    return make_get_kurd(r, r.dwords[0]);
 }
 
 KURD_t NVMe_Controller::set_features_int_vector_config(uint16_t iv,
@@ -126,11 +118,11 @@ KURD_t NVMe_Controller::set_features_int_vector_config(uint16_t iv,
     cdw11.iv = iv;
     cdw11.cd = 0;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         set_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
-                         cdw11.raw, 0, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_set_kurd(cqe);
+                         cdw11.raw, 0);
+    if (NVMe::status::is_error(r.fields.status)) {
+        return make_set_kurd(r);
     }
     return empty_kurd;
 }
@@ -140,10 +132,10 @@ KURD_t NVMe_Controller::set_features_int_vector_config(uint16_t iv,
 // ============================================================
 KURD_t NVMe_Controller::get_features_async_event_config(KURD_t& kurd)
 {
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         get_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
-                         NVMe::features::GET_SEL_CURRENT, kurd);
-    return make_get_kurd(cqe, cqe.dwords[0]);
+                         NVMe::features::GET_SEL_CURRENT);
+    return make_get_kurd(r, r.dwords[0]);
 }
 
 KURD_t NVMe_Controller::set_features_async_event_config(
@@ -156,11 +148,11 @@ KURD_t NVMe_Controller::set_features_async_event_config(
     cdw11.fw  = fw;
     cdw11.tel = tel;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         set_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
-                         cdw11.raw, 0, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
-        return make_set_kurd(cqe);
+                         cdw11.raw, 0);
+    if (NVMe::status::is_error(r.fields.status)) {
+        return make_set_kurd(r);
     }
     return empty_kurd;
 }
@@ -170,10 +162,10 @@ KURD_t NVMe_Controller::set_features_async_event_config(
 // ============================================================
 KURD_t NVMe_Controller::get_features_hctm(KURD_t& kurd)
 {
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         get_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
-                         NVMe::features::GET_SEL_CURRENT, kurd);
-    return make_get_kurd(cqe, cqe.dwords[0]);
+                         NVMe::features::GET_SEL_CURRENT);
+    return make_get_kurd(r, r.dwords[0]);
 }
 
 KURD_t NVMe_Controller::set_features_hctm(uint16_t tmt2, uint16_t tmt1,
@@ -183,10 +175,10 @@ KURD_t NVMe_Controller::set_features_hctm(uint16_t tmt2, uint16_t tmt1,
     cdw11.tmt2 = tmt2;
     cdw11.tmt1 = tmt1;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         set_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
-                         cdw11.raw, 0, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
+                         cdw11.raw, 0);
+    if (NVMe::status::is_error(r.fields.status)) {
         return empty_kurd;
     }
     return empty_kurd;

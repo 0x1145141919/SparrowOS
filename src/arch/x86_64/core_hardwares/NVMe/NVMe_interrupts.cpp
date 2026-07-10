@@ -13,19 +13,23 @@
  *
  *    sq_lock    (sq_complex::sq_lock)
  *         │
- *         ├ 保护：flying_slots、tail_idx、block_tokens[]、complete_commands_bank[]
- *         ├ 提交路径(synchronized_cmd_submit)持有
- *         ├ 清理路径(spinlock_interrupt_about_guard → sq_lock)持有
- *         ├ 中断路径在 cq_wq_lock 下嵌套 sq_lock 写 block_tokens
+ *         ├ 保护：flying_slots、tail_idx、complete_commands_bank[]
+ *         ├ 提交路径(asynchronized_cmd_submit)持有
+ *         ├ 清理路径(release_cmd → sq_lock)持有
  *         └ 中断路径不会先拿 sq_lock→再拿 cq_wq_lock（禁止逆向）
  *
  * 路径拆解：
  *
- *   [提交] synchronized_cmd_submit
- *     sq_lock → flying_slots.set + sq_ring[cid] + block_tokens[cid]
+ *   [提交] asynchronized_cmd_submit
+ *     sq_lock → flying_slots.set + sq_ring[cid] + complete_commands_bank[cid].cmd_spcify = entry_block_token
  *             → sq_lock.unlock()
- *     block_if_equal(cq.block_queue_id, &block_tokens[cid], entry_block_token)
- *     返回编码 res|cid<<16
+ *     sq_dorbell_write(qid, sq.tail_idx)
+ *     返回 cid
+ *
+ *   [等待/释放] cmd_submit_and_process
+ *     block_if_equal(cq.block_queue_id, &complete_commands_bank[cid].cmd_spcify, entry_block_token)
+ *     release_cmd(qid,cid) → sq_lock → 清 flying_slots + 边界检查
+ *     返回 command_result_t
  *
  *   [释放] release_cmd
  *     sq_lock → 清 flying_slots + 边界检查
@@ -33,14 +37,14 @@
  *   [中断] cq_interrupt_handler
  *     spinlock_interrupt_about_guard(cq_wq_lock)
  *       读 CQ ring
- *       对每完成：写 complete_commands_bank[] + block_tokens[]（无需 sq_lock）
+ *       对每完成：写 complete_commands_bank[]（无需 sq_lock）
  *       pop_all()  → 放入 batch
  *     cq_wq_lock.unlock()
  *     bq_flush_pending(batch, false)
  *     写 doorbell
  *
  *   [清理]（超时后同上提交路径后半段）
- *     spinlock_interrupt_about_guard(sq_lock) → 清 flying_slots + 读结果
+ *     spinlock_interrupt_about_guard(sq_lock) → 读结果（不 release，flying_slot 保留用于排查）
  *
  * ═══════════════════════════════════════════════════════════════════════ */
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
@@ -62,7 +66,7 @@ NVMe::command_result_t NVMe_Controller::cmd_submit_and_process(uint16_t qid, NVM
         
         r.fields.timeout_bit=1;
     }else{
-        r=sq.complete_commands_bank[cid];
+        ksystemramcpy(&sq.complete_commands_bank[cid],&r,16);
         release_cmd(qid,cid);
         r.fields.timeout_bit=false;
         
@@ -88,7 +92,7 @@ uint16_t NVMe_Controller::asynchronized_cmd_submit(uint16_t qid, NVMe::command::
         sq.flying_slots[cid] = true;
         sq_ring[cid] = cmd;
         sq_ring[cid].fiedls.cid = cid;
-        sq.complete_commands_bank->fields.cmd_spcify = NVMe::entry_block_token;
+        sq.complete_commands_bank[cid].fields.cmd_spcify = NVMe::entry_block_token;
         sq.tail_idx = (sq.tail_idx + 1) % sq.num_of_entries;
     }
 

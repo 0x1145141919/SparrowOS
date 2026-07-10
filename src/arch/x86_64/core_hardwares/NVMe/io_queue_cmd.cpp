@@ -16,7 +16,7 @@ extern uint32_t logical_processor_count;
 static constexpr uint32_t CQ_ENTRY_SIZE = 16;
 static constexpr uint32_t SQ_ENTRY_SIZE = 64;
 
-static KURD_t make_queue_kurd(NVMe::command::complete_command_common cqe,
+static KURD_t make_queue_kurd(NVMe::command_result_t r,
                                uint8_t event_code)
 {
     return empty_kurd;
@@ -25,10 +25,10 @@ static KURD_t make_queue_kurd(NVMe::command::complete_command_common cqe,
 // ============================================================
 // queue_mgmt_cmd：底层 Admin 命令发送（Create/Delete）
 // ============================================================
-NVMe::command::complete_command_common
+NVMe::command_result_t
 NVMe_Controller::queue_mgmt_cmd(uint8_t opcode, uint16_t qid,
                                  uint16_t qsize, uint32_t cdw11,
-                                 phyaddr_t prp1, KURD_t& kurd)
+                                 phyaddr_t prp1)
 {
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = opcode;
@@ -41,11 +41,7 @@ NVMe_Controller::queue_mgmt_cmd(uint8_t opcode, uint16_t qid,
         cmd.fiedls.DPTR1 = prp1;
     }
 
-    uint64_t enc = synchronized_cmd_submit(0, cmd);
-    uint16_t cid = enc >> 16;
-    NVMe::command::complete_command_common cqe = sqs[0].complete_commands_bank[cid];
-    release_cmd(0, cid);
-    return cqe;
+    return cmd_submit_and_process(0, cmd);
 }
 
 // ============================================================
@@ -94,10 +90,10 @@ KURD_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
     cdw11.ien  = ien ? 1 : 0;
     cdw11.iv   = qid;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::CREATE_IO_COMPLETION_QUEUE,
-                        qid, qsize, cdw11.raw, cq_ring_pa, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
+                        qid, qsize, cdw11.raw, cq_ring_pa);
+    if (NVMe::status::is_error(r.fields.status)) {
         // 失败回滚
         msix_vec_free(qid);
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
@@ -119,7 +115,7 @@ KURD_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
 // create_io_sq：完整创建 I/O Submission Queue
 //
 // 1. 分配 ring buffer
-// 2. 构造 sq_bitmap / block_tokens
+// 2. 构造 sq_bitmap
 // 3. 发送 Create I/O SQ 命令
 // 4. 失败 → 回滚释放所有资源
 // ============================================================
@@ -147,7 +143,6 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
     sqs[qid].num_of_entries = qsize;
     sqs[qid].belonged_cqid  = cqid;
     sqs[qid].tail_idx       = 0;
-    sqs[qid].block_tokens[0] = ~0ull;
 
     // ---- 4. 发送 Create 命令 ----
     NVMe::io_queue::create_sq_cdw11_t cdw11;
@@ -156,10 +151,10 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
     cdw11.qprio = qprio;
     cdw11.cqid  = cqid;
 
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::CREATE_IO_SUBMISSION_QUEUE,
-                        qid, qsize, cdw11.raw, sq_ring_pa, kurd);
-    if (NVMe::status::is_error(cqe.fields.status)) {
+                        qid, qsize, cdw11.raw, sq_ring_pa);
+    if (NVMe::status::is_error(r.fields.status)) {
         // 失败回滚（内嵌数据无需释放，只回滚外部资源）
         __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
         sqs[qid] = sq_complex{};  // zero
@@ -181,7 +176,7 @@ KURD_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
 //
 // 1. 逐 bit 轮询等待释放（每 bit 500ms）
 // 2. 发送 Delete I/O SQ 命令
-// 3. 释放 ring / bitmap / block_tokens
+// 3. 释放 ring / bitmap
 // ============================================================
 KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
 {
@@ -209,10 +204,10 @@ KURD_t NVMe_Controller::delete_io_sq(uint16_t qid, KURD_t& kurd)
     }
 
     // ---- 2. 发送 Delete 命令 ----
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::DELETE_IO_SUBMISSION_QUEUE,
-                        qid, 0, 0, 0, kurd);
-    bool admin_ok = !NVMe::status::is_error(cqe.fields.status);
+                        qid, 0, 0, 0);
+    bool admin_ok = !NVMe::status::is_error(r.fields.status);
 
     // ---- 3. 释放资源（内嵌数据无需释放，只释放外部 ring）----
     if (sqs[qid].sq_ring.vpn != 0) {
@@ -241,10 +236,10 @@ KURD_t NVMe_Controller::delete_io_cq(uint16_t qid, KURD_t& kurd)
         return empty_kurd;
 
     // ---- 1. 发送 Delete 命令 ----
-    NVMe::command::complete_command_common cqe =
+    NVMe::command_result_t r =
         queue_mgmt_cmd(NVMe::command::admin_opcode::DELETE_IO_COMPLETION_QUEUE,
-                        qid, 0, 0, 0, kurd);
-    bool admin_ok = !NVMe::status::is_error(cqe.fields.status);
+                        qid, 0, 0, 0);
+    bool admin_ok = !NVMe::status::is_error(r.fields.status);
 
     // ---- 2. 释放 ring ----
     if (cqs[qid].cq_ring.vpn != 0) {
