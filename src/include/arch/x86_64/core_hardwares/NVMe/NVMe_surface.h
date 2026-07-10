@@ -181,10 +181,10 @@ public:
     static KURD_t compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
     static KURD_t compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
     // Identify wrappers
-    KURD_t identify_ctrl(phyaddr_t buf_pa, KURD_t& kurd);
-    KURD_t identify_ns(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
-    KURD_t identify_ns_list(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
-    KURD_t identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd);
+    NVMe::command_result_t identify_ctrl(phyaddr_t buf_pa);
+    NVMe::command_result_t identify_ns(uint32_t nsid, phyaddr_t buf_pa);
+    NVMe::command_result_t identify_ns_list(uint32_t nsid, phyaddr_t buf_pa);
+    NVMe::command_result_t identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa);
     NVMe::command_result_t identify_primary_ctrl_caps(uint16_t cntid, phyaddr_t buf_pa);
 
     // AER methods
@@ -200,36 +200,36 @@ public:
         uint8_t fid, uint8_t sel);
     NVMe::command_result_t set_features_cmd(
         uint8_t fid, uint32_t cdw11, phyaddr_t buf_pa);
-    KURD_t get_features_num_queues(KURD_t& kurd);
-    KURD_t set_features_num_queues(uint16_t nsqr, uint16_t ncqr, KURD_t& kurd);
-    KURD_t get_features_int_coalescing(KURD_t& kurd);
-    KURD_t set_features_int_coalescing(uint8_t thr, uint8_t time, KURD_t& kurd);
-    KURD_t get_features_int_vector_config(KURD_t& kurd);
-    KURD_t set_features_int_vector_config(uint16_t iv, KURD_t& kurd);
-    KURD_t get_features_async_event_config(KURD_t& kurd);
-    KURD_t set_features_async_event_config(uint8_t sm, uint8_t err, uint8_t ns,
-                                            uint8_t fw, uint8_t tel, KURD_t& kurd);
-    KURD_t get_features_hctm(KURD_t& kurd);
-    KURD_t set_features_hctm(uint16_t tmt2, uint16_t tmt1, KURD_t& kurd);
+    NVMe::command_result_t get_features_num_queues();
+    NVMe::command_result_t set_features_num_queues(uint16_t nsqr, uint16_t ncqr);
+    NVMe::command_result_t get_features_int_coalescing();
+    NVMe::command_result_t set_features_int_coalescing(uint8_t thr, uint8_t time);
+    NVMe::command_result_t get_features_int_vector_config();
+    NVMe::command_result_t set_features_int_vector_config(uint16_t iv);
+    NVMe::command_result_t get_features_async_event_config();
+    NVMe::command_result_t set_features_async_event_config(uint8_t sm, uint8_t err, uint8_t ns,
+                                                            uint8_t fw, uint8_t tel);
+    NVMe::command_result_t get_features_hctm();
+    NVMe::command_result_t set_features_hctm(uint16_t tmt2, uint16_t tmt1);
 
     // IO Queue management
     NVMe::command_result_t queue_mgmt_cmd(
         uint8_t opcode, uint16_t qid, uint16_t qsize,
         uint32_t cdw11, phyaddr_t prp1);
-    KURD_t create_io_cq(uint16_t qid, uint16_t qsize, bool ien, KURD_t& kurd);
-    KURD_t create_io_sq(uint16_t qid, uint16_t qsize, uint16_t cqid,
-                         uint8_t qprio, KURD_t& kurd);
-    KURD_t delete_io_sq(uint16_t qid, KURD_t& kurd);
-    KURD_t delete_io_cq(uint16_t qid, KURD_t& kurd);
+    NVMe::command_result_t create_io_cq(uint16_t qid, uint16_t qsize, bool ien);
+    NVMe::command_result_t create_io_sq(uint16_t qid, uint16_t qsize, uint16_t cqid,
+                                         uint8_t qprio);
+    NVMe::command_result_t delete_io_sq(uint16_t qid);
+    NVMe::command_result_t delete_io_cq(uint16_t qid);
 
     // HMB 分配（second_stage_init 调用）
     // 从 Identify Controller HMPRE 读取推荐大小，启用到主控
-    KURD_t hmb_alloc(KURD_t& kurd);
+    NVMe::command_result_t hmb_alloc();
     // HMB 释放（offline 调用）
-    KURD_t hmb_free(KURD_t& kurd);
+    NVMe::command_result_t hmb_free();
 
     // I/O 队列释放（offline 调用）：先删所有 SQ，再删所有 CQ
-    KURD_t io_queue_free(KURD_t& kurd);
+    NVMe::command_result_t io_queue_free();
 
     // I/O 队列批量初始化
     // iosq_count = 要创建的 I/O SQ 数量（包含全部 SQID）
@@ -237,7 +237,7 @@ public:
     // iocq_count <= iosq_count <= cap.mqes
     // CQID [1, iocq_count], 每个绑定到 CPU (qid-1), 使用 MSI-X vector qid
     // SQID [1, iosq_count], round-robin 匹配到 CQ
-    KURD_t io_queue_init(uint16_t iosq_count, uint16_t iocq_count, KURD_t& kurd);
+    NVMe::command_result_t io_queue_init(uint16_t iosq_count, uint16_t iocq_count);
 
     // Poll thread
     void start_poll_thread(uint16_t qid, KURD_t& kurd);

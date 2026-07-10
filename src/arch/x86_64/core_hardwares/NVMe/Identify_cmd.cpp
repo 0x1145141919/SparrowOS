@@ -7,16 +7,9 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 
-static KURD_t make_identify_kurd(NVMe::command_result_t r,
-                                  uint16_t fail_reason)
-{
-    return empty_kurd;
-}
-
-static KURD_t do_identify(NVMe_Controller* ctrl,
-                           uint32_t nsid, uint32_t cns,
-                           phyaddr_t buf_pa,
-                           KURD_t& kurd)
+static NVMe::command_result_t do_identify(NVMe_Controller* ctrl,
+                                           uint32_t nsid, uint32_t cns,
+                                           phyaddr_t buf_pa)
 {
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::admin_opcode::IDENTIFY;
@@ -24,28 +17,27 @@ static KURD_t do_identify(NVMe_Controller* ctrl,
     cmd.fiedls.DPTR1  = buf_pa;
     cmd.dwords[10]    = cns;
 
-    ctrl->cmd_submit_and_process(0, cmd);
-    return empty_kurd;
+    return ctrl->cmd_submit_and_process(0, cmd);
 }
 
-KURD_t NVMe_Controller::identify_ctrl(phyaddr_t buf_pa, KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::identify_ctrl(phyaddr_t buf_pa)
 {
-    return do_identify(this, 0, 0x01, buf_pa, kurd);  // CNS 01h
+    return do_identify(this, 0, 0x01, buf_pa);  // CNS 01h
 }
 
-KURD_t NVMe_Controller::identify_ns(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::identify_ns(uint32_t nsid, phyaddr_t buf_pa)
 {
-    return do_identify(this, nsid, 0x00, buf_pa, kurd);  // CNS 00h
+    return do_identify(this, nsid, 0x00, buf_pa);  // CNS 00h
 }
 
-KURD_t NVMe_Controller::identify_ns_list(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::identify_ns_list(uint32_t nsid, phyaddr_t buf_pa)
 {
-    return do_identify(this, nsid, 0x02, buf_pa, kurd);  // CNS 02h
+    return do_identify(this, nsid, 0x02, buf_pa);  // CNS 02h
 }
 
-KURD_t NVMe_Controller::identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa, KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::identify_ns_indep(uint32_t nsid, phyaddr_t buf_pa)
 {
-    return do_identify(this, nsid, 0x08, buf_pa, kurd);  // CNS 08h
+    return do_identify(this, nsid, 0x08, buf_pa);  // CNS 08h
 }
 
 NVMe::command_result_t NVMe_Controller::identify_primary_ctrl_caps(uint16_t cntid,

@@ -7,17 +7,6 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 
-static KURD_t make_set_kurd(NVMe::command_result_t r)
-{
-    return empty_kurd;
-}
-
-static KURD_t make_get_kurd(NVMe::command_result_t r,
-                             uint32_t cqe_dword0)
-{
-    return empty_kurd;
-}
-
 NVMe::command_result_t
 NVMe_Controller::get_features_cmd(uint8_t fid, uint8_t sel)
 {
@@ -46,100 +35,71 @@ NVMe_Controller::set_features_cmd(uint8_t fid, uint32_t cdw11,
 // ============================================================
 // 便捷包装器：Number of Queues
 // ============================================================
-KURD_t NVMe_Controller::get_features_num_queues(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::get_features_num_queues()
 {
-    NVMe::command_result_t r =
-        get_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
-                         NVMe::features::GET_SEL_CURRENT);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return make_get_kurd(r, 0);
-    }
-    return make_get_kurd(r, r.dwords[0]);
+    return get_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
+                            NVMe::features::GET_SEL_CURRENT);
 }
 
-KURD_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr,
-                                                  KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::set_features_num_queues(uint16_t nsqr, uint16_t ncqr)
 {
     NVMe::features_detail::nq_cdw11_t cdw11;
     cdw11.nsqr = nsqr;
     cdw11.ncqr = ncqr;
 
-    NVMe::command_result_t r =
-        set_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
-                         cdw11.raw, 0);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return make_set_kurd(r);
-    }
-    return empty_kurd;
+    return set_features_cmd(NVMe::features::FID_NUMBER_OF_QUEUES,
+                            cdw11.raw, 0);
 }
 
 // ============================================================
 // 便捷包装器：Interrupt Coalescing
 // ============================================================
-KURD_t NVMe_Controller::get_features_int_coalescing(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::get_features_int_coalescing()
 {
-    NVMe::command_result_t r =
-        get_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
-                         NVMe::features::GET_SEL_CURRENT);
-    return make_get_kurd(r, r.dwords[0]);
+    return get_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
+                            NVMe::features::GET_SEL_CURRENT);
 }
 
-KURD_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time,
-                                                      KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::set_features_int_coalescing(uint8_t thr, uint8_t time)
 {
     NVMe::features_detail::int_coal_cdw11_t cdw11;
     cdw11.thr  = thr;
     cdw11.time = time;
 
-    NVMe::command_result_t r =
-        set_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
-                         cdw11.raw, 0);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return make_set_kurd(r);
-    }
-    return empty_kurd;
+    return set_features_cmd(NVMe::features::FID_INTERRUPT_COALESCING,
+                            cdw11.raw, 0);
 }
 
 // ============================================================
 // 便捷包装器：Interrupt Vector Config
 // ============================================================
-KURD_t NVMe_Controller::get_features_int_vector_config(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::get_features_int_vector_config()
 {
-    NVMe::command_result_t r =
-        get_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
-                         NVMe::features::GET_SEL_CURRENT);
-    return make_get_kurd(r, r.dwords[0]);
+    return get_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
+                            NVMe::features::GET_SEL_CURRENT);
 }
 
-KURD_t NVMe_Controller::set_features_int_vector_config(uint16_t iv,
-                                                         KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::set_features_int_vector_config(uint16_t iv)
 {
     NVMe::features_detail::iv_config_cdw11_t cdw11;
     cdw11.iv = iv;
     cdw11.cd = 0;
 
-    NVMe::command_result_t r =
-        set_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
-                         cdw11.raw, 0);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return make_set_kurd(r);
-    }
-    return empty_kurd;
+    return set_features_cmd(NVMe::features::FID_INTERRUPT_VECTOR_CONFIG,
+                            cdw11.raw, 0);
 }
 
 // ============================================================
 // 便捷包装器：Async Event Config
 // ============================================================
-KURD_t NVMe_Controller::get_features_async_event_config(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::get_features_async_event_config()
 {
-    NVMe::command_result_t r =
-        get_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
-                         NVMe::features::GET_SEL_CURRENT);
-    return make_get_kurd(r, r.dwords[0]);
+    return get_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
+                            NVMe::features::GET_SEL_CURRENT);
 }
 
-KURD_t NVMe_Controller::set_features_async_event_config(
-    uint8_t sm, uint8_t err, uint8_t ns, uint8_t fw, uint8_t tel, KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::set_features_async_event_config(
+    uint8_t sm, uint8_t err, uint8_t ns, uint8_t fw, uint8_t tel)
 {
     NVMe::features_detail::aer_cfg_cdw11_t cdw11;
     cdw11.sm  = sm;
@@ -148,38 +108,25 @@ KURD_t NVMe_Controller::set_features_async_event_config(
     cdw11.fw  = fw;
     cdw11.tel = tel;
 
-    NVMe::command_result_t r =
-        set_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
-                         cdw11.raw, 0);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return make_set_kurd(r);
-    }
-    return empty_kurd;
+    return set_features_cmd(NVMe::features::FID_ASYNC_EVENT_CONFIG,
+                            cdw11.raw, 0);
 }
 
 // ============================================================
 // 便捷包装器：Host Controller Thermal Management
 // ============================================================
-KURD_t NVMe_Controller::get_features_hctm(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::get_features_hctm()
 {
-    NVMe::command_result_t r =
-        get_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
-                         NVMe::features::GET_SEL_CURRENT);
-    return make_get_kurd(r, r.dwords[0]);
+    return get_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
+                            NVMe::features::GET_SEL_CURRENT);
 }
 
-KURD_t NVMe_Controller::set_features_hctm(uint16_t tmt2, uint16_t tmt1,
-                                            KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::set_features_hctm(uint16_t tmt2, uint16_t tmt1)
 {
     NVMe::features_detail::hctm_cdw11_t cdw11;
     cdw11.tmt2 = tmt2;
     cdw11.tmt1 = tmt1;
 
-    NVMe::command_result_t r =
-        set_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
-                         cdw11.raw, 0);
-    if (NVMe::status::is_error(r.fields.status)) {
-        return empty_kurd;
-    }
-    return empty_kurd;
+    return set_features_cmd(NVMe::features::FID_HOST_CTRL_THERMAL_MGMT,
+                            cdw11.raw, 0);
 }

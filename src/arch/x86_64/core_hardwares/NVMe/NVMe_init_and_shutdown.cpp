@@ -80,12 +80,13 @@ bool NVMe_Controller::wait_for_ready(head_regs_t* regs, bool target,
 // __wrapped_pgs_valloc 保证物理连续，HMB 只需一个 vm_interval 描述
 // 描述符列表在 Set Features 时临时构建在栈上（同步命令）
 // ============================================================
-KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::hmb_alloc()
 {
+    KURD_t kurd;
     uint32_t hmpre_4k = *(uint32_t*)(admin_buffer.vbase() + 0x110);
     if (hmpre_4k == 0) {
         bsp_kout << "[NVMe] HMB not recommended" << kendl;
-        return empty_kurd;
+        return NVMe::command_result_t{};
     }
 
     uint32_t page_count = hmpre_4k;
@@ -94,7 +95,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
         &kurd, page_count, page_state_t::kernel_pinned, 12);
     if (error_kurd(kurd) || !buf) {
         hmb_buffer = {};  // zero all fields
-        return kurd;
+        return NVMe::command_result_t{ .fields = { .status = NVMe::status::INTERNAL_ERROR } };
     }
     ksetmem_8(buf, 0, page_count * 4096);
 
@@ -103,7 +104,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
     if (error_kurd(kurd)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
-        return kurd;
+        return NVMe::command_result_t{ .fields = { .status = NVMe::status::INTERNAL_ERROR } };
     }
 
     uint32_t cc = head_regs->controller_configuration;
@@ -142,7 +143,7 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
     if (NVMe::status::is_error(r.fields.status)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
-        return kurd;
+        return r;
     }
 
     hmb_buffer.vpn  = reinterpret_cast<vaddr_t>(buf) >> 12;
@@ -152,16 +153,16 @@ KURD_t NVMe_Controller::hmb_alloc(KURD_t& kurd)
 
     bsp_kout << "[NVMe] HMB enabled: " << (uint32_t)page_count
              << " pages (" << (uint32_t)mps_units << " MPS units)" << kendl;
-    return empty_kurd;
+    return NVMe::command_result_t{};
 }
 
 // ============================================================
 // hmb_free：在 offline 中释放 HMB
 // ============================================================
-KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
+NVMe::command_result_t NVMe_Controller::hmb_free()
 {
     if (hmb_buffer.vbase() == 0)
-        return empty_kurd;
+        return NVMe::command_result_t{};
 
     NVMe::features_detail::hmb_cdw11_t dis{};
     dis.ehm = 0;
@@ -172,7 +173,7 @@ KURD_t NVMe_Controller::hmb_free(KURD_t& kurd)
     hmb_buffer = {};
 
     bsp_kout << "[NVMe] HMB freed" << kendl;
-    return empty_kurd;
+    return NVMe::command_result_t{};
 }
 NVMe_Controller::NVMe_Controller(vaddr_t ecam) : ecam(ecam)
 {
@@ -279,8 +280,8 @@ KURD_t NVMe_Controller::second_stage_init()
         bsp_kout << "[NVMe] msix_vec_alloc for admin vector failed" << kendl;
         return kurd;
     }
-    kurd = identify_ctrl(admin_buffer.pbase(), kurd);
-    if (error_kurd(kurd)) return empty_kurd;
+    { NVMe::command_result_t r = identify_ctrl(admin_buffer.pbase());
+    if (NVMe::status::is_error(r.fields.status)) return empty_kurd; }
 
     bsp_kout << "[NVMe] VID=0x";
     bsp_kout.shift_hex();
@@ -291,13 +292,13 @@ KURD_t NVMe_Controller::second_stage_init()
     bsp_kout << kendl;
 
     // ---- 9. I/O 队列 + HMB 初始化 ----
-    io_queue_init(sq_count-1,cq_count-1,kurd);
-    if (error_kurd(kurd)) return kurd;
+    { NVMe::command_result_t r = io_queue_init(sq_count-1,cq_count-1);
+    if (NVMe::status::is_error(r.fields.status)) return kurd; }
 
-    kurd = hmb_alloc(kurd);
-    if (error_kurd(kurd)) {
+    { NVMe::command_result_t r = hmb_alloc();
+    if (NVMe::status::is_error(r.fields.status)) {
         bsp_kout << "[NVMe] hmb_alloc failed, continuing" << kendl;
-    }
+    } }
 
     // ---- 10. Identify Namespaces ----
     uint32_t nn = id_ctrl->nn;
@@ -310,8 +311,8 @@ KURD_t NVMe_Controller::second_stage_init()
         // admin_buffer.pbase 在 pre_init 中已固定，无需重复查询
 
         bsp_kout << "[NVMe] identify_ns ns=" << (uint32_t)ns << kendl;
-        kurd = identify_ns(ns, admin_buffer.pbase(), kurd);
-        if (error_kurd(kurd)) {
+        NVMe::command_result_t r_ns = identify_ns(ns, admin_buffer.pbase());
+        if (NVMe::status::is_error(r_ns.fields.status)) {
             bsp_kout << "[NVMe] ns=" << (uint32_t)ns << " failed, skip" << kendl;
             continue;
         }
@@ -552,10 +553,10 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
 
     KURD_t kurd = empty_kurd;
     // Free IO queues（先删所有 SQ，再删所有 CQ，需要 Admin 队列活着）
-    io_queue_free(kurd);
+    io_queue_free();
 
     // Free HMB（通过 Admin 命令取消，再释放页面）
-    hmb_free(kurd);
+    hmb_free();
 
     // ---- 通知控制器关机，等待完成 ----
     NVMe::controler_ctrl_t ctrl{ .value = head_regs->controller_configuration };
