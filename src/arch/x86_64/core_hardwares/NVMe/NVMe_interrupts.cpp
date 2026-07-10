@@ -63,13 +63,11 @@ NVMe::command_result_t NVMe_Controller::cmd_submit_and_process(uint16_t qid, NVM
     uint64_t res= block_if_equal(cq.block_queue_id,&sq.complete_commands_bank[cid].fields.cmd_spcify,NVMe::entry_block_token);
     NVMe::command_result_t r;
     if(res&2){
-        
-        r.fields.timeout_bit=1;
+        r.fields.result_type_t = NVMe::command_result_types::timeout;
     }else{
         ksystemramcpy(&sq.complete_commands_bank[cid],&r,16);
         release_cmd(qid,cid);
-        r.fields.timeout_bit=false;
-        
+        r.fields.result_type_t = NVMe::command_result_types::command_executed;
     }
     return r;
 }

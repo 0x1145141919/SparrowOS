@@ -86,12 +86,18 @@ namespace NVMe {
         
         
     };
+    namespace command_result_types{
+        constexpr uint8_t command_executed=0;
+        constexpr uint8_t timeout=1;
+        constexpr uint8_t not_success_kurd=2;
+
+    }
     union command_result_t {
         struct {
                 uint64_t cmd_spcify;
-                uint16_t free_to_use[3];
-                uint16_t timeout_bit : 1;
-                uint16_t status : 15;
+                uint64_t result_type_t:4;
+                uint64_t reserved:45;
+                uint64_t status : 15;
             } __attribute__((packed)) fields;
             static_assert(sizeof(fields) == 16, "not 8 bytes");
         uint32_t dwords[4];

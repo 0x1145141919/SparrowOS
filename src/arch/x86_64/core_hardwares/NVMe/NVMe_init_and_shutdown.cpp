@@ -95,7 +95,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
         &kurd, page_count, page_state_t::kernel_pinned, 12);
     if (error_kurd(kurd) || !buf) {
         hmb_buffer = {};  // zero all fields
-        return NVMe::command_result_t{ .fields = { .status = NVMe::status::INTERNAL_ERROR } };
+        return NVMe::command_result_t{ .fields = { .result_type_t = NVMe::command_result_types::not_success_kurd } };
     }
     ksetmem_8(buf, 0, page_count * 4096);
 
@@ -104,7 +104,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
     if (error_kurd(kurd)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
-        return NVMe::command_result_t{ .fields = { .status = NVMe::status::INTERNAL_ERROR } };
+        return NVMe::command_result_t{ .fields = { .result_type_t = NVMe::command_result_types::not_success_kurd } };
     }
 
     uint32_t cc = head_regs->controller_configuration;
@@ -140,7 +140,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
     __sync_synchronize();
 
     NVMe::command_result_t r = cmd_submit_and_process(0, cmd);
-    if (NVMe::status::is_error(r.fields.status)) {
+    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
         return r;
@@ -281,7 +281,7 @@ KURD_t NVMe_Controller::second_stage_init()
         return kurd;
     }
     { NVMe::command_result_t r = identify_ctrl(admin_buffer.pbase());
-    if (NVMe::status::is_error(r.fields.status)) return empty_kurd; }
+    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) return empty_kurd; }
 
     bsp_kout << "[NVMe] VID=0x";
     bsp_kout.shift_hex();
@@ -293,10 +293,10 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // ---- 9. I/O 队列 + HMB 初始化 ----
     { NVMe::command_result_t r = io_queue_init(sq_count-1,cq_count-1);
-    if (NVMe::status::is_error(r.fields.status)) return kurd; }
+    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) return kurd; }
 
     { NVMe::command_result_t r = hmb_alloc();
-    if (NVMe::status::is_error(r.fields.status)) {
+    if (r.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         bsp_kout << "[NVMe] hmb_alloc failed, continuing" << kendl;
     } }
 
@@ -312,7 +312,7 @@ KURD_t NVMe_Controller::second_stage_init()
 
         bsp_kout << "[NVMe] identify_ns ns=" << (uint32_t)ns << kendl;
         NVMe::command_result_t r_ns = identify_ns(ns, admin_buffer.pbase());
-        if (NVMe::status::is_error(r_ns.fields.status)) {
+        if (r_ns.fields.result_type_t != NVMe::command_result_types::command_executed || NVMe::status::is_error(r_ns.fields.status)) {
             bsp_kout << "[NVMe] ns=" << (uint32_t)ns << " failed, skip" << kendl;
             continue;
         }
