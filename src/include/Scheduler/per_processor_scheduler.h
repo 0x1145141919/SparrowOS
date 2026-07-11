@@ -346,8 +346,9 @@ class alignas(64) per_processor_scheduler {
     friend task;
     friend class task_pool;
     bool is_the_idle_task(task*t);
-    static void placed_init();//以后这个调度器塞入每个CPU的gs_complex_t里面内嵌
+    void placed_init();
 };
+extern per_processor_scheduler* global_schedulers;
 per_processor_scheduler* get_self_scheduler();
 per_processor_scheduler* get_other_scheduler(uint32_t pid);
 constexpr uint32_t INVALID_NODE_INDEX=~0;

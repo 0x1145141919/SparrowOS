@@ -1,4 +1,5 @@
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "Scheduler/per_processor_scheduler.h"
 #include "memory/kpoolmemmgr.h"
 #include "memory/all_pages_arr.h"
 #include "memory/FreePagesAllocator.h"
@@ -420,10 +421,9 @@ task_state_t task::get_state()
 }
 void per_processor_scheduler::placed_init()
 {
-    gs_complex_t* gs_complex=(gs_complex_t*)gs_offsetptr_dumper(0);
-    per_processor_scheduler& scheduler=gs_complex->scheduler;
-    task& t=scheduler.idle;
+    task& t=this->idle;
     task::idle_specified_constructor(&t);
+    gs_complex_t* gs_complex=(gs_complex_t*)gs_offsetptr_dumper(0);
     per_processor_hardware_stack_t* stacks_ptr=gs_complex->stacks_ptr;
     t.priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&common_idle;
     t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
@@ -433,11 +433,12 @@ void per_processor_scheduler::placed_init()
     t.priv_ctx.core_ctx.idtctx.iret.rsp=t.priv_stack_base+(t.priv_stack_pages<<12)-64;
     t.priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
     t.choose=task::ctx_choose::priv;
-
 }
+per_processor_scheduler* global_schedulers = nullptr;
+
 per_processor_scheduler *get_self_scheduler()
 {
-    return (per_processor_scheduler*)gs_offsetptr_dumper(offsetof(gs_complex_t, scheduler));
+    return (per_processor_scheduler*)read_gs_u64(PROCESSOR_SCHEDULER_GS_INDEX);
 }
 void task::atomic_load()//只是忠实地根据翻到的牌子运行,不对任何状态机进行改变(因为需要task锁)
 {
@@ -511,8 +512,7 @@ uint64_t zombie_observe(uint64_t tid, zombie_observe_results_t *result)
 }
 per_processor_scheduler *get_other_scheduler(uint32_t pid)
 {
-    gs_complex_t*base=(gs_complex_t*)conjucnt_GSs.vbase();
-    return &base[pid].scheduler;
+    return &global_schedulers[pid];
 }
 bool task::resurrect()
 {

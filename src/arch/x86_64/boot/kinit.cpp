@@ -12,6 +12,7 @@
 #include "memory/kpoolmemmgr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/AddresSpace.h"
+#include "memory/all_pages_arr.h"
 #include "memory/phyaddr_accessor.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
@@ -26,6 +27,7 @@
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/core_hardwares/DMAR.h"
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
@@ -308,7 +310,25 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
     }
     asm volatile("sti");   
     //中断接管工作
-    //new(global_schedulers) per_processor_scheduler;
+    size_t sched_bytes = sizeof(per_processor_scheduler) * logical_processor_count;
+    size_t sched_pages = (sched_bytes + 4095) / 4096;
+    KURD_t alloc_kurd;
+    global_schedulers = (per_processor_scheduler*)__wrapped_pgs_valloc(
+        &alloc_kurd, sched_pages, page_state_t::kernel_pinned, 12);
+    if (!global_schedulers || error_kurd(alloc_kurd)) {
+        panic_info_inshort inshort = {
+            .is_bug = true, .is_policy = false,
+            .is_hw_fault = false, .is_mem_corruption = false,
+            .is_escalated = false
+        };
+        Panic::panic(default_panic_behaviors_flags,
+            "global_schedulers alloc failed", nullptr, &inshort, alloc_kurd);
+    }
+    for (uint32_t i = 0; i < logical_processor_count; i++) {
+        new (&global_schedulers[i]) per_processor_scheduler();
+        global_schedulers[i].placed_init();
+    }
+    gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
     dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
@@ -326,7 +346,7 @@ extern "C" void ap_init()
     if(fred_support_catch_bit){
         fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
     }
-    //new(global_schedulers+fast_get_processor_id()) per_processor_scheduler;
+    gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
     init_finish_checkpoint.success_word=~query_x2apicid();
     asm volatile("sfence");
     ap_final_work();

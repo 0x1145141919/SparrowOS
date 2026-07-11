@@ -1,7 +1,6 @@
 #pragma once
 #include <stdint.h>
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
-#include "Scheduler/per_processor_scheduler.h"
 // ============================================================================
 // GS 复合体 — per-processor 元数据 + 硬件栈 统一区域
 // ============================================================================
@@ -49,7 +48,6 @@ struct  alignas(4096) gs_complex_t {
     x64_gdtentry        gdt[6];
     TSSDescriptorEntry  tss_descriptor;
     TSSentry            tss;
-    per_processor_scheduler scheduler;  // 每处理器调度器实例
     // ── FPU/SIMD 暂存区（64B 对齐，满足 XSAVE64/XRSTOR64 要求） ──────────
     alignas(64) uint8_t fpu_area[XSAVE_SIZE_MAX];
     alignas(64) __uint128_t local_ipi_complex;
