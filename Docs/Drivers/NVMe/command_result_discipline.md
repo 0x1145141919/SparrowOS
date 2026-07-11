@@ -114,22 +114,6 @@ if (r.fields.result_type != NVMe::command_result_types::command_executed ||
 }
 ```
 
----
-
-## 当前违反点
-
-以下生产站点使用 aggregate init 绕过 `cmd_spcify` 赋值，导致内存子系统的 KURD 丢失：
-
-| 文件 | 行号 | 问题 |
-|------|------|------|
-| `NVMe_init_and_shutdown.cpp` | 98 | `hmb_alloc()` valloc 失败，KURD 未编码 |
-| `NVMe_init_and_shutdown.cpp` | 107 | `hmb_alloc()` 地址翻译失败，KURD 未编码 |
-| `io_queue_cmd.cpp` | 207 | `delete_io_sq()` drain timeout，KURD 未编码 |
-
-修复方向：上述 site 应使用 `NVMe_result_construtor_wrong_kurd(kurd)` 替代 aggregate init。
-
----
-
 ## 角色边界
 
 | 角色 | 职责 |
