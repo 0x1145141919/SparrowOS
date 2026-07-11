@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <abi/os_error_definitions.h>
 
 namespace NVMe {
     constexpr uint64_t entry_block_token = ~0ull;
@@ -102,6 +103,13 @@ namespace NVMe {
             static_assert(sizeof(fields) == 16, "not 8 bytes");
         uint32_t dwords[4];
     };
+    inline command_result_t make_not_success_kurd(KURD_t kurd)
+    {
+        command_result_t r;
+        r.fields.result_type = command_result_types::not_success_kurd;
+        r.fields.cmd_spcify = kurd_get_raw(kurd);
+        return r;
+    }
     namespace status {
         constexpr uint16_t SUCCESSFUL_COMPLETION = 0x00;
         constexpr uint16_t INVALID_COMMAND_OPCODE = 0x01;

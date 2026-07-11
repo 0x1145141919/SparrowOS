@@ -95,7 +95,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
         &kurd, page_count, page_state_t::kernel_pinned, 12);
     if (error_kurd(kurd) || !buf) {
         hmb_buffer = {};  // zero all fields
-        return NVMe::command_result_t{ .fields = { .result_type = NVMe::command_result_types::not_success_kurd } };
+        return NVMe::make_not_success_kurd(kurd);
     }
     ksetmem_8(buf, 0, page_count * 4096);
 
@@ -104,7 +104,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
     if (error_kurd(kurd)) {
         __wrapped_pgs_vfree(buf, page_count);
         hmb_buffer = {};
-        return NVMe::command_result_t{ .fields = { .result_type = NVMe::command_result_types::not_success_kurd } };
+        return NVMe::make_not_success_kurd(kurd);
     }
 
     uint32_t cc = head_regs->controller_configuration;
@@ -522,6 +522,8 @@ KURD_t NVMe_Controller::pre_init()
                 admin_buffer.ppn  = buf_pa >> 12;
                 admin_buffer.npages   = 4;
                 admin_buffer.access = KSPACE_RW_ACCESS;
+            }else{
+                return kurd2;
             }
         }
     }
