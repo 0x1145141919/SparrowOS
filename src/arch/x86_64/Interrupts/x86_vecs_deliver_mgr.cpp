@@ -18,6 +18,7 @@ bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复
 logical_idt template_idt[256];
 IDTEntry global_idt[256];
 soft_interrupt_func_t soft_interrupt_functions[256];
+extern "C" void user_abi_cpp_enter(x64_standard_context_v2 *frame);
 extern void template_idt_apply_region(uint8_t from_vec, uint8_t to_vec);
 extern uint32_t logical_processor_count;
 extern vm_interval conjucnt_GSs;
@@ -218,8 +219,6 @@ void vec_demux::real_init()
     extern void kthread_call_cpp_enter(x64_standard_context_v2 *frame);
     extern void asm_panic_cpp_enter(x64_standard_context_v2 *frame);
     extern void suprious_interrupt_cpp_enter(x64_standard_context_v2 *frame);
-    extern void user_abi_cpp_enter(x64_standard_context_v2 *frame);
-
     soft_interrupt_functions[x86_softinterrupt_abi::ASM_PANIC]    = &asm_panic_cpp_enter;
     soft_interrupt_functions[x86_softinterrupt_abi::KTHREAD_CALL] = &kthread_call_cpp_enter;
     soft_interrupt_functions[x86_softinterrupt_abi::USER_ABI_ENTER] = &user_abi_cpp_enter;
@@ -689,13 +688,13 @@ static bool ipi_wait_lo(volatile __uint128_t* slot,uint64_t deadline_us)
 }
 
 /* ===================================================================
- * ret_ipi_send — 返回型 IPI
+ * returnable_ipi_send — 返回型 IPI
  * ===================================================================
  * 抢占目标 slot → 发送 IPI_RETURNABLE → 轮询结果（10ms 超时）
  * 返回值: hi64=fn(arg) 返回值, lo64=结果码
  *   1=成功, 2=抢占失败(BUSY), 3=超时, 4=目标不存在
  */
-__uint128_t ret_ipi_send(ipi_package_t *package)
+__uint128_t returnable_ipi_send(ipi_package_t *package)
 {
     gs_complex_t* complex = resolve_target(package->id, package->is_apicid);
     if (!complex)

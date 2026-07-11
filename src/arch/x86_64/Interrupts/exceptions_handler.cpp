@@ -149,26 +149,31 @@ void invalid_opcode_cpp_enter(x64_standard_context_v2 *frame)
     }
 }
 
-void double_fault_cpp_enter(x64_standard_context_v2 *frame)
+extern "C" void double_fault_cpp_enter(x64_errcode_exception_frame *frame)
 {
-    double_fault_handler(frame, frame->core_ctx.idtctx.num.errocode);
+    double_fault_handler((x64_standard_context_v2*)frame, frame->errcode);
 }
 
-void invalid_tss_cpp_enter(x64_standard_context_v2 *frame)
+extern "C" void invalid_tss_cpp_enter(x64_errcode_exception_frame *frame)
 {
-    invalid_tss_handler(frame, frame->core_ctx.idtctx.num.errocode);
+    invalid_tss_handler((x64_standard_context_v2*)frame, frame->errcode);
 }
 
-void general_protection_cpp_enter(x64_standard_context_v2 *frame)
+extern "C" void general_protection_cpp_enter(x64_errcode_exception_frame *frame)
 {
-    general_protection_handler(frame, frame->core_ctx.idtctx.num.errocode);
+    general_protection_handler((x64_standard_context_v2*)frame, frame->errcode);
 }
 
-void page_fault_cpp_enter(x64_standard_context_v2 *frame)
+extern "C" void page_fault_cpp_enter(x64_errcode_exception_frame *frame)
 {
     vaddr_t linear_addr;
     asm volatile("mov %%cr2, %0" : "=r"(linear_addr));
-    page_fault_handler(frame, frame->core_ctx.idtctx.num.errocode, linear_addr);
+    page_fault_handler((x64_standard_context_v2*)frame, frame->errcode, linear_addr);
+}
+
+extern "C" void user_abi_cpp_enter(x64_standard_context_v2 *frame)
+{
+    (void)frame;
 }
 
 void machine_check_cpp_enter(x64_standard_context_v2 *frame)
