@@ -375,6 +375,29 @@ void kthread_call_cpp_enter(x64_standard_context_v2 *frame)
         }
     }
 }
+ckurd kthread_init(task *t, kthread_creating_package *p)
+{
+    t->priv_ctx.core_ctx.idtctx.iret.cs = K_cs_idx << 3;
+    t->priv_ctx.core_ctx.idtctx.iret.ss = K_ds_ss_idx << 3;
+    t->priv_ctx.core_ctx.idtctx.iret.rflags = INIT_DEFAULT_RFLAGS;
+    t->priv_ctx.rdi = (uint64_t)p->func_raw;
+    t->priv_ctx.rsi = p->args[0];
+    t->priv_ctx.rdx = p->args[1];
+    t->priv_ctx.rcx = p->args[2];
+    t->priv_ctx.r8  = p->args[3];
+    t->priv_ctx.r9  = p->args[4];
+    KURD_t kurd;
+    if (!t->priv_stack_base) {
+        t->priv_stack_base = stack_alloc(&kurd, DEFAULT_PRIVSTACK_PGS_COUNT);
+        if (error_kurd(kurd)) return kurd_get_raw(kurd);
+        t->priv_stack_pages = DEFAULT_PRIVSTACK_PGS_COUNT;
+    }
+    t->priv_ctx.core_ctx.idtctx.iret.rsp = t->priv_stack_base + (t->priv_stack_pages << 12) - 64;
+    t->priv_ctx.core_ctx.idtctx.iret.rip = (uint64_t)&allkthread_true_enter;
+    t->choose = task::ctx_choose::priv;
+    return ckurd();
+}
+
 uint64_t creat_kthread(kthread_creating_package *p,KURD_t*kurd)
 {
     task* t=task::basic_constructor();
@@ -408,33 +431,4 @@ ckurd release_kthread(uint64_t tid)
     if(error_kurd(k))return kurd_get_raw(k);
     task_pool::release(tid);
     return kurd_get_raw(success);
-}
-void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
-{
-    if (!clamp || clamp->batch_count == 0) return;
-
-    // 编码: bits[0]=1 (阻塞过), bits[1]=is_timeout
-    uint8_t rax_enc = 0b01 | (is_timeout ? 0b10 : 0b00);
-
-    // Phase 1: task_lock → 写返回值编码 + set_ready
-    for (uint32_t i = 0; i < clamp->batch_count; ++i) {
-        task* t = clamp->arr[i];
-        if (!t) continue;
-        reentrant_spinlock_guard gt(t->task_lock);
-        t->priv_ctx.rax = rax_enc;
-        t->set_ready();
-        t->on_queue_bit=false;
-        t->task_event_shift(task::event_type_t::offline);
-    }
-
-    // Phase 2: 逐个 insert_ready_task
-    for (uint32_t i = 0; i < clamp->batch_count; ++i) {
-        task* t = clamp->arr[i];
-        if (!t) continue;
-        per_processor_scheduler* target = get_other_scheduler(t->belonged_processor_id);
-        reentrant_spinlock_guard gs(target->sched_lock);
-        KURD_t kurd = target->insert_ready_task(t, false);
-        if (error_kurd(kurd))
-            panic_with_kurd(kurd);
-    }
 }

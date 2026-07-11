@@ -9,8 +9,10 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 #include "Scheduler/kthread_abi.h"
+#include "Scheduler/per_processor_scheduler.h"
 #include "Scheduler/bq_system.h"
 #include "util/rb_map.h"
+#include "panic.h"
 
 rb_map<bq_id_t,block_queue*>*container;
 spinrwlock_cpp_t container_lock;
@@ -183,6 +185,40 @@ void block_queue::pop_all(blocked_tasks_clamps_t* batch)
 task::event_type_t block_queue::get_queue_event()
 {
     return this->queue_event;
+}
+
+void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
+{
+    if (!clamp || clamp->batch_count == 0) return;
+
+    uint8_t rax_enc = 0b01 | (is_timeout ? 0b10 : 0b00);
+
+    for (uint32_t i = 0; i < clamp->batch_count; ++i) {
+        task* t = clamp->arr[i];
+        if (!t) continue;
+        reentrant_spinlock_guard gt(t->task_lock);
+        t->priv_ctx.rax = rax_enc;
+        t->set_ready();
+        t->on_queue_bit = false;
+        t->task_event_shift(task::event_type_t::offline);
+    }
+
+    for (uint32_t i = 0; i < clamp->batch_count; ++i) {
+        task* t = clamp->arr[i];
+        if (!t) continue;
+        per_processor_scheduler* target = get_other_scheduler(t->belonged_processor_id);
+        reentrant_spinlock_guard gs(target->sched_lock);
+        KURD_t kurd = target->insert_ready_task(t, false);
+        if (error_kurd(kurd)) {
+            panic_info_inshort inshort = {
+                .is_bug = true, .is_policy = true,
+                .is_hw_fault = false, .is_mem_corruption = false,
+                .is_escalated = false
+            };
+            Panic::panic(default_panic_behaviors_flags,
+                nullptr, nullptr, &inshort, kurd);
+        }
+    }
 }
 
 // ── BQ 超时扫描线程 ──────────────────────────────────────────

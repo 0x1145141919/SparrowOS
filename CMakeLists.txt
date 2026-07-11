@@ -145,6 +145,8 @@ add_executable(kernel.elf
     src/scheduler/per_processor_scheduler.cpp
     src/scheduler/kthread_interfaces.cpp
     src/scheduler/bq_system.cpp
+    src/scheduler/task_pool.cpp
+    src/scheduler/task.cpp
     src/arch/x86_64/exec_env_detect.cpp   
     src/scheduler/yield.asm
     $<TARGET_OBJECTS:i8042_module>
