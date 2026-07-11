@@ -9,6 +9,7 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 
 #include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/bq_system.h"
 #include "util/rb_map.h"
 
 rb_map<bq_id_t,block_queue*>*container;
@@ -234,7 +235,7 @@ void* bq_timeout_sweeper(void*)
                 if(clamps.is_timeout_mov_early||clamps.is_queue_empty)
                     break;
                 ksetmem_8(&clamps, 0, sizeof(clamps));
-            }
+                }
                 
             }
         }

@@ -19,6 +19,7 @@
  * ========================================================================== */
 
 #include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/bq_system.h"
 #include "panic.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
@@ -325,6 +326,7 @@ void block_if_equal_cppenter(x64_standard_context_v2 *context)
             blocked_task->set_blocked();
             blocked_task->task_event_shift(qevt);
             blocked_task->on_queue_bit = true;
+            blocked_task->min_wakeup_stamp = ktime::get_microsecond_stamp() + 5000000;
             should_block=true;
             }
             waite_queue->push_tail(blocked_task);//这里面会使用task锁保护一下事件切换历程

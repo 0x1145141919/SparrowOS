@@ -5,6 +5,7 @@
 #include <arch/x86_64/PCIe/base.h>
 #include <memory/AddresSpace.h>
 #include <Scheduler/per_processor_scheduler.h>
+#include <Scheduler/bq_system.h>
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 #include <arch/x86_64/Interrupt_system/Interrupt.h>
 struct NVMe_device_private {

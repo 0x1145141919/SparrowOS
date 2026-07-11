@@ -1,5 +1,6 @@
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "Scheduler/per_processor_scheduler.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "memory/kpoolmemmgr.h"
 #include "memory/all_pages_arr.h"
 #include "memory/FreePagesAllocator.h"

@@ -2,7 +2,8 @@
 #include <stdint.h> 
 #include <sys/io.h>
 #include "util/OS_utils.h"
-#include <Scheduler/per_processor_scheduler.h>
+#include <Scheduler/bq_system.h>
+#include <Scheduler/kthread_abi.h>
 namespace i8042_regs{
     constexpr uint8_t STATUS_OUT_BUFF_MASK = 0x01;
     constexpr uint8_t STATUS_IN_BUFF_MASK = 0x02;
