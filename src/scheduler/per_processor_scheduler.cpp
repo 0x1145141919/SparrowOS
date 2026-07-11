@@ -267,8 +267,8 @@ void per_processor_scheduler::placed_init()
     t.priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&common_idle;
     t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
     t.priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;
-    t.priv_stack_base=(vaddr_t)stacks_ptr->stack_ist4;
-    t.priv_stack_pages=sizeof(((per_processor_hardware_stack_t*)0)->stack_ist4)>>12;
+    t.priv_stack_base=(vaddr_t)stacks_ptr->stack_idle_task;
+    t.priv_stack_pages=sizeof(((per_processor_hardware_stack_t*)0)->stack_idle_task)>>12;
     t.priv_ctx.core_ctx.idtctx.iret.rsp=t.priv_stack_base+(t.priv_stack_pages<<12)-64;
     t.priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
     t.choose=task::ctx_choose::priv;

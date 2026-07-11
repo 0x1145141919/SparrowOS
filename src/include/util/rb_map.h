@@ -70,6 +70,15 @@ public:
         return m_tree.contains(probe);
     }
 
+    // ── 迭代器（透传底层 RBTree）──
+    using iterator       = typename Ktemplats::RBTree<kv_entry, kv_compare>::iterator;
+    using const_iterator = typename Ktemplats::RBTree<kv_entry, kv_compare>::const_iterator;
+
+    iterator begin()       { return m_tree.begin(); }
+    iterator end()         { return m_tree.end(); }
+    const_iterator begin() const { return m_tree.begin(); }
+    const_iterator end()   const { return m_tree.end(); }
+
     // ── 容量 ──
     size_t size() const {
         return m_tree.size();

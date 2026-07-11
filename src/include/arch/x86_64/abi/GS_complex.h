@@ -81,9 +81,9 @@ struct __attribute__((packed)) per_processor_hardware_stack_t {
     uint8_t stack_ist3[NMI_STACKSIZE];
 
     uint8_t guard5[4096];
+    // idle task 栈（非 IST，仅作为每个 CPU 的 idle 任务私有栈）
 
-    // IST4 — Breakpoint / Debug 栈
-    uint8_t stack_ist4[IDLE_TASK_STACKSIZE];
+    uint8_t stack_idle_task[IDLE_TASK_STACKSIZE];
 };
 
 // ── 栈偏移常数（基于 offsetof，编译器保证精确） ──────────────────────────
@@ -91,7 +91,7 @@ constexpr uint64_t RSP0_BASE_OFF = offsetof(per_processor_hardware_stack_t, stac
 constexpr uint64_t IST1_BASE_OFF = offsetof(per_processor_hardware_stack_t, stack_ist1);
 constexpr uint64_t IST2_BASE_OFF = offsetof(per_processor_hardware_stack_t, stack_ist2);
 constexpr uint64_t IST3_BASE_OFF = offsetof(per_processor_hardware_stack_t, stack_ist3);
-constexpr uint64_t IST4_BASE_OFF = offsetof(per_processor_hardware_stack_t, stack_ist4);
+constexpr uint64_t IDLE_TASK_STACK_BASE_OFF = offsetof(per_processor_hardware_stack_t, stack_idle_task);
 
 // 栈底 = 基址 + 大小 - 安全裕量 (0x40, red zone margin)
 constexpr uint64_t RED_ZONE         = 0x40;
@@ -99,7 +99,7 @@ constexpr uint64_t RSP0_BOTTOM_OFF  = RSP0_BASE_OFF + RSP0_STACKSIZE - RED_ZONE;
 constexpr uint64_t IST1_BOTTOM_OFF  = IST1_BASE_OFF + DF_STACKSIZE   - RED_ZONE;
 constexpr uint64_t IST2_BOTTOM_OFF  = IST2_BASE_OFF + MC_STACKSIZE   - RED_ZONE;
 constexpr uint64_t IST3_BOTTOM_OFF  = IST3_BASE_OFF + NMI_STACKSIZE  - RED_ZONE;
-constexpr uint64_t IST4_BOTTOM_OFF  = IST4_BASE_OFF + IDLE_TASK_STACKSIZE - RED_ZONE;
+constexpr uint64_t IDLE_TASK_STACK_BOTTOM_OFF = IDLE_TASK_STACK_BASE_OFF + IDLE_TASK_STACKSIZE - RED_ZONE;
 
 // ── 编译期校验 ───────────────────────────────────────────────────────────
 static_assert(sizeof(gs_complex_t::slots) == 256 * sizeof(uint64_t),

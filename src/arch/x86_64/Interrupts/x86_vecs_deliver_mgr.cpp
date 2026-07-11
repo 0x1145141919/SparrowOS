@@ -69,7 +69,7 @@ void cpu_froze(x64_standard_context_v2* ctx){
 /* ── 异常栈等级 ── */
 static constexpr uint8_t FRED_DB_STACK_LEVEL  = 1;   // #DB  专用栈 (原 IST1)
 static constexpr uint8_t FRED_NMI_STACK_LEVEL = 2;   // NMI  专用栈 (原 IST2)
-static constexpr uint8_t FRED_MC_STACK_LEVEL  = 2;   // #MC  共享 NMI 栈 (原 IST4)
+static constexpr uint8_t FRED_MC_STACK_LEVEL  = 2;   // #MC  共享 NMI 栈
 static constexpr uint8_t FRED_DF_STACK_LEVEL  = 3;   // #DF  最高级 (原 IST1)
 
 /* ── FRED_STKLVL: 编码单向量栈级到 MSR 位域 ── */
@@ -113,7 +113,7 @@ void vec_demux::early_init()
     template_idt[x86_exceptions::NMI].ist_index          = 3;
 
     template_idt[x86_exceptions::BREAKPOINT].handler     = &breakpoint_bare_enter;
-    template_idt[x86_exceptions::BREAKPOINT].ist_index   = 4;
+    template_idt[x86_exceptions::BREAKPOINT].ist_index   = 0;
     template_idt[x86_exceptions::BREAKPOINT].dpl         = 3;
 
     template_idt[x86_exceptions::OVERFLOW].handler       = &overflow_bare_enter;

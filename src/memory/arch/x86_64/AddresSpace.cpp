@@ -1300,7 +1300,7 @@ extern "C" void utlb_invalidate_ipis(uspace_tlb_shutdown_infopak* pak)
             ipi.is_apicid  = false;
             ipi.is_returnable = true;
 
-            __uint128_t result = ret_ipi_send(&ipi);
+            __uint128_t result = returnable_ipi_send(&ipi);
             uint64_t lo = (uint64_t)result;
 
             if (lo == 1 || lo == 3 || lo == 4) {

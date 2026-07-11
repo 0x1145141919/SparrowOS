@@ -264,7 +264,7 @@ void KspacePageTable::invalidate_seg()
 /* ===================================================================
  * remote_invalidate_seg — IPI v3 远端 TLB 失效执行函数
  * ===================================================================
- * 签名符合 ret_ipi_send/fly_ipi_send 要求的 uint64_t func(void* ptr)
+ * 签名符合 returnable_ipi_send/fly_ipi_send 要求的 uint64_t func(void* ptr)
  * 接收 seg_to_pages_info_pakage_t*，逐条目 invlpg，不依赖全局共享状态。
  * 运行在 IPI handler 上下文中（IF=0），无需 interrupt_guard。
  * 返回 0=成功, 1=无效包, 2=无效页大小

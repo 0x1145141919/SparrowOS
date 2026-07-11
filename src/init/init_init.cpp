@@ -599,9 +599,9 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
                        proc_pvir + IST3_BASE_OFF,
                        NMI_STACKSIZE},
                        KSPACE_RW_ACCESS);
-            // 映射 stack_ist4 (跳过 guard5)
-            kmmu->map({proc_pphy + IST4_BASE_OFF,
-                       proc_pvir + IST4_BASE_OFF,
+            // 映射 idle task 栈 (跳过 guard5)
+            kmmu->map({proc_pphy + IDLE_TASK_STACK_BASE_OFF,
+                       proc_pvir + IDLE_TASK_STACK_BASE_OFF,
                        IDLE_TASK_STACKSIZE},
                        KSPACE_RW_ACCESS);
 
@@ -707,7 +707,6 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
             cx->tss.ist[1] = st_va+IST1_BOTTOM_OFF;
             cx->tss.ist[2] = st_va+IST2_BOTTOM_OFF;
             cx->tss.ist[3] = st_va+IST3_BOTTOM_OFF;
-            cx->tss.ist[4] = st_va+IST4_BOTTOM_OFF;
             // stacks_ptr + slot[0]
             cx->stacks_ptr = st;
             cx->slots[PROCESSOR_RSP0_STACK_BTM_IDX] = cx->tss.rsp0 ;
@@ -728,13 +727,13 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         gs_complex_t* bsp = (gs_complex_t*)(uint64_t)iv->arch_info.conjunc_GSs.vbase();
         vaddr_t bsp_rsp0  = bsp->tss.rsp0;
         // 与 create_kthread 同款帧，区别：RDI=info_pbase, RFLAGS=KERNEL_INIT_RFLAGS
-        x64_standard_context ctx = {};
+        x64_standard_context_v2 ctx = {};
         ctx.rdi                     = info_pbase;
-        ctx.iret_complex.rip        = entry_vaddr;
-        ctx.iret_complex.cs         = K_cs_idx << 3;
-        ctx.iret_complex.rflags     = KERNEL_INIT_RFLAGS;
-        ctx.iret_complex.rsp        = bsp_rsp0;
-        ctx.iret_complex.ss         = K_ds_ss_idx << 3;
+        ctx.core_ctx.idtctx.iret.rip        = entry_vaddr;
+        ctx.core_ctx.idtctx.iret.cs         = K_cs_idx << 3;
+        ctx.core_ctx.idtctx.iret.rflags     = KERNEL_INIT_RFLAGS;
+        ctx.core_ctx.idtctx.iret.rsp        = bsp_rsp0;
+        ctx.core_ctx.idtctx.iret.ss         = K_ds_ss_idx << 3;
         bsp_kout << "[Phase4.5] init_jump_to_kernel: entry=" << (void*)(uint64_t)entry_vaddr
                  << " rsp=" << (void*)(uint64_t)bsp_rsp0
                  << " rdi=" << (void*)(uint64_t)info_pbase << kendl;
@@ -745,7 +744,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
 // ============================================================================
 // init — 主入口
 // ============================================================================
-extern "C" void init(BootInfoHeader* header) {
+extern "C" void init_main(BootInfoHeader* header) {
     if (init_io_and_heap(header) != 0) asm volatile("hlt");
 
     auto em = init_memory_early(header);

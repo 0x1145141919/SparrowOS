@@ -361,7 +361,7 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
             ipi.is_apicid   = false;
             ipi.is_returnable = true;
 
-            __uint128_t result = ret_ipi_send(&ipi);
+            __uint128_t result = returnable_ipi_send(&ipi);
             uint64_t ipi_status = (uint64_t)result;  // lo64 = IPI 状态
 
             if (ipi_status == 1) {

@@ -193,7 +193,7 @@ KURD_t kimg_affiliate_property_map1(){
             k = map_stack(IST1_BASE_OFF, DF_STACKSIZE,   "ist1"); if (error_kurd(k)) return k;
             k = map_stack(IST2_BASE_OFF, MC_STACKSIZE,   "ist2"); if (error_kurd(k)) return k;
             k = map_stack(IST3_BASE_OFF, NMI_STACKSIZE,  "ist3"); if (error_kurd(k)) return k;
-            k = map_stack(IST4_BASE_OFF, IDLE_TASK_STACKSIZE,"ist4"); if (error_kurd(k)) return k;
+            k = map_stack(IDLE_TASK_STACK_BASE_OFF, IDLE_TASK_STACKSIZE, "idle_task"); if (error_kurd(k)) return k;
         }
         bsp_kout << "[kimg_affiliate_property_map1] hw_stacks: " << logical_processor_count
                  << " processors, stride=" << stack_stride << kendl;

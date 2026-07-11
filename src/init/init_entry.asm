@@ -4,7 +4,7 @@ global bsp_init_gdt_descriptor
 global bsp_init_idtr
 global bsp_init_idt_entries
 extern __init_stack_end
-extern init
+extern init_main
 extern div_by_zero_bare_enter
 extern breakpoint_bare_enter
 extern nmi_bare_enter
@@ -130,6 +130,7 @@ init_jump_to_kernel:
     pop r14
     pop r15
     pop rbp
+    add rsp, 8
     iretq
 
 shift_kernel:
@@ -169,7 +170,7 @@ _init_entry:
     lidt [rax]
     mov rdi, r15
     lea rsp, [rel __init_stack_end]
-    call init
+    call init_main
 
 init_hang:
     hlt
