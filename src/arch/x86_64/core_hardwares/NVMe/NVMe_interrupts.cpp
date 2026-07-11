@@ -149,10 +149,19 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
             uint16_t sq_id  = entry.fields.sq_id;
             uint16_t cmd_id = entry.fields.cmd_id;
 
-            // 写入 CQE 结果 — 提交端的 block_if_equal 醒来后读取
-            {
-            spinlock_interrupt_about_guard g( sqs[sq_id].sq_lock);
-            sqs[sq_id].complete_commands_bank[cmd_id] = entry;
+            if (cmd_id >= AER_base_cid) {
+                uint8_t aer_type  = entry.fields.cmd_spcify & 0xFF;
+                uint32_t aer_info = entry.fields.cmd_spcify >> 8;
+                switch (aer_type) {
+                case 1: aer_handle_error(aer_info); break;
+                case 2: aer_handle_smart_health(aer_info); break;
+                case 3: aer_handle_notice(aer_info); break;
+                case 4: aer_handle_io_cmd_specific(aer_info); break;
+                case 5: aer_handle_one_shot(aer_info); break;
+                }
+            } else {
+                spinlock_interrupt_about_guard g(sqs[sq_id].sq_lock);
+                sqs[sq_id].complete_commands_bank[cmd_id] = entry;
             }
 
             cursor = (cursor + 1) % cq.num_of_entries;
@@ -188,15 +197,19 @@ void NVMe_Controller::cq_interrupt_handler(uint16_t qid)
 void NVMe_Controller::aer_submit(uint16_t aer_index, KURD_t& kurd)
 {
     uint16_t cid = AER_base_cid + aer_index;
-
-    // Build AER command
+    {
+    spinlock_interrupt_about_guard l(sqs[0].sq_lock);
+    // Build AER command.
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::admin_opcode::ASYNCHRONOUS_EVENT_REQUEST;
     cmd.fiedls.cid    = cid;
 
     auto* sq_ring = (NVMe::command::submit_command_common*)sqs[0].sq_ring.vbase();
-    sq_ring[cid] = cmd;
-    sq_ring[cid].fiedls.cid = cid;
+    uint16_t to_write_idx = sqs[0].tail_idx;
+    sqs[0].tail_idx = (sqs[0].tail_idx + 1) % sqs[0].num_of_entries;
+    sq_ring[to_write_idx]=cmd;
+    sq_ring[to_write_idx].fiedls.cid=cid;
+    }
 
     // Ring doorbell
     sq_dorbell_write(0, sqs[0].tail_idx);
