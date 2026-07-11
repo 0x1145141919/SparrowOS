@@ -3,7 +3,7 @@
 #include "memory/FreePagesAllocator.h"
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "util/kout.h"
-#include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/kthread_abi.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "panic.h"
 namespace {

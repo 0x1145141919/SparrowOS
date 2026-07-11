@@ -6,7 +6,7 @@
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
-#include <Scheduler/per_processor_scheduler.h>
+#include "Scheduler/kthread_abi.h"
 
 extern uint32_t logical_processor_count;
 

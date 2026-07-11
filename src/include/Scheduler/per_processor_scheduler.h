@@ -1,11 +1,8 @@
 #pragma once
 #include "Scheduler/task.h"
-#include "Scheduler/task_pool.h"
-#include "Scheduler/kthread_abi.h"
 #include "util/Ktemplats.h"
 #include "util/lock.h"
 
-class task_pool;
 
 class alignas(64) per_processor_scheduler {
 private:
@@ -42,7 +39,6 @@ public:
     void dts_gantt_disable();
     void dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
     friend task;
-    friend class task_pool;
     bool is_the_idle_task(task* t);
     void placed_init();
 };

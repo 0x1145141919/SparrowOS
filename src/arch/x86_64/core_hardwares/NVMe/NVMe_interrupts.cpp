@@ -52,6 +52,7 @@
 #include "arch/x86_64/core_hardwares/NVMe/io_queue_cmd.h"
 #include "arch/x86_64/core_hardwares/NVMe/get_set_features.h"
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
+#include "Scheduler/kthread_abi.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>

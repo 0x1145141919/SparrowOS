@@ -118,7 +118,6 @@
 %endmacro
 
 ; ========== IDT vectors 0–31: per-exception entries ==========
-
 global div_by_zero_bare_enter
 extern div_by_zero_cpp_enter
 div_by_zero_bare_enter:

@@ -1,13 +1,12 @@
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/PCIe/base.h"
 #include "arch/x86_64/PCIe/prased.h"
-#include "Scheduler/per_processor_scheduler.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "util/kshell.h"
 #include "util/kshell_commands.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
-
+#include "Scheduler/kthread_abi.h"
 using namespace kio;
 
 static KURD_t make_ok() {

@@ -14,7 +14,9 @@
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/mem_init.h"
 #include "util/rb_map.h"
-
+#include "Scheduler/task_pool.h"
+#include "Scheduler/bq_system.h"
+#include "Scheduler/kthread_abi.h"
 extern rb_map<bq_id_t, block_queue*>* container;
 extern spinrwlock_cpp_t container_lock;
 extern uint64_t next_will_alloc_qid;

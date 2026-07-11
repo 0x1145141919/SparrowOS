@@ -8,7 +8,7 @@
  * location: block_queue_system (Scheduler::block_queue_system)
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/kthread_abi.h"
 #include "Scheduler/bq_system.h"
 #include "util/rb_map.h"
 

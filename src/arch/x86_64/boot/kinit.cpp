@@ -35,6 +35,7 @@
 #include "arch/x86_64/boot.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "KImage_Introspection.h"
+#include "Scheduler/task_pool.h"
 #include "exec_env_detect.h"
 
 

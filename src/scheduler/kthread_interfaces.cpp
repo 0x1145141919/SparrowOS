@@ -19,7 +19,9 @@
  * ========================================================================== */
 
 #include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/kthread_abi.h"
 #include "Scheduler/bq_system.h"
+#include "Scheduler/task_pool.h"
 #include "panic.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"

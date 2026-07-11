@@ -2,7 +2,7 @@
 #include "arch/x86_64/core_hardwares/PortDriver.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
-#include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/kthread_abi.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include <sys/io.h>
 #include "exec_env_detect.h"

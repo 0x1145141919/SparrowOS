@@ -8,7 +8,7 @@
 #include <util/kout.h>
 #include <arch/x86_64/PCIe/base.h>
 #include <util/arch/x86-64/cpuid_intel.h>
-
+#include "Scheduler/kthread_abi.h"
 extern uint32_t logical_processor_count;
 
 NVMe_Controller::node* NVMe_Controller::node_array;

@@ -4,7 +4,7 @@
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "util/kptrace.h"
 #include "util/kout.h"
-#include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/kthread_abi.h"
 #include "memory/all_pages_arr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
