@@ -71,8 +71,9 @@ fred_pctx_load:
     ud2
 global allkthread_true_enter
 allkthread_true_enter:
-    push rbp
+    push rbp ;这一瞬间保证rsp%64==0
     mov rbp, rsp
+    add rsp, 8 ;必须加上这个保证rsp%16==0
     mov rax, rdi
     mov rdi, rsi
     mov rsi, rdx
