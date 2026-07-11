@@ -100,6 +100,7 @@ add_subdirectory(src/arch/x86_64/Processor)
 add_subdirectory(src/arch/x86_64/Interrupts)
 add_subdirectory(src/firmware)
 add_subdirectory(src/fs)
+add_subdirectory(src/scheduler)
 
 add_executable(symbols_dumper
     build_utils/ksymbols_dumper.cpp
@@ -142,13 +143,7 @@ add_executable(kernel.elf
     src/utils/textConsole.cpp
     src/memory/mem_kshell_commands.cpp
     src/arch/x86_64/Processor/early_bsp_resources.cpp
-    src/scheduler/per_processor_scheduler.cpp
-    src/scheduler/kthread_interfaces.cpp
-    src/scheduler/bq_system.cpp
-    src/scheduler/task_pool.cpp
-    src/scheduler/task.cpp
     src/arch/x86_64/exec_env_detect.cpp   
-    src/scheduler/yield.asm
     $<TARGET_OBJECTS:i8042_module>
     $<TARGET_OBJECTS:PCIe_module>
     $<TARGET_OBJECTS:x86_arch_module>
@@ -156,6 +151,7 @@ add_executable(kernel.elf
     $<TARGET_OBJECTS:Interrupts_module>
     $<TARGET_OBJECTS:firmware_module>
     $<TARGET_OBJECTS:Mem_module>
+    $<TARGET_OBJECTS:Scheduler_module>
     ${SRC_COMMON}
     src/tests/kthreads/key_board_listen.cpp
     $<TARGET_OBJECTS:NVMe_module>
