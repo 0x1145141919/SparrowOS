@@ -5,6 +5,7 @@
 #include <memory/phyaddr_accessor.h>
 #include <util/kout.h>
 #include <util/arch/x86-64/cpuid_intel.h>
+#include "Scheduler/per_processor_scheduler.h"
 
 // ============================================================
 // NVMe PCIe 类码
@@ -18,8 +19,6 @@ constexpr uint8_t  PCI_SUB_CLASS_NVM           = 0x08;
 struct nvme_init_thread_arg {
     uint32_t       node_index;
     NVMe_Controller* ctrl;
-    bool*          done_flag;    // 线程完成后置 true（非 volatile，通过 kthread_wait 保证可见性）
-    uint64_t*      result_ptr;   // 线程完成后存储 KURD_t 的低32位
 };
 
 // ============================================================
@@ -66,33 +65,29 @@ static uint32_t scan_pcie_nvme_count()
 // ============================================================
 // nvme_init_thread_entry: 内核线程入口，调用单控制器的 device_init
 // ============================================================
-static void* nvme_init_thread_entry(void* arg)
+static KURD_t nvme_init_thread_entry(void* arg)
 {
     auto* a = static_cast<nvme_init_thread_arg*>(arg);
-
-    if (a->ctrl) {
-        KURD_t r = NVMe_Controller::device_init(a->ctrl);
-        if (error_kurd(r)) {
-            bsp_kout << "[NVMe] node " << (uint32_t)a->node_index
-                     << ": init failed, reason=0x";
-            bsp_kout.shift_hex();
-            bsp_kout << r.reason;
-            bsp_kout.shift_dec();
-            bsp_kout << kendl;
-        } else {
-            bsp_kout << "[NVMe] node " << (uint32_t)a->node_index
-                     << ": init OK" << kendl;
-        }
-        // 将 KURD_t 的低32位写入 result_ptr 供主线程检查
-        if (a->result_ptr)
-            *a->result_ptr = (uint64_t)(
-                (uint32_t)r.result | ((uint32_t)r.reason << 16));
+    if (!a->ctrl) {
+        return KURD_t(result_code::FAIL, 0,
+            module_code::DEVICE, DEVICES_locs::NVMe,
+            DEVICES_locs::NVMe_events::Init,
+            level_code::ERROR, err_domain::CORE_MODULE);
     }
 
-    if (a->done_flag)
-        *a->done_flag = true;
-
-    return nullptr;
+    KURD_t r = NVMe_Controller::device_init(a->ctrl);
+    if (error_kurd(r)) {
+        bsp_kout << "[NVMe] node " << (uint32_t)a->node_index
+                 << ": init failed, reason=0x";
+        bsp_kout.shift_hex();
+        bsp_kout << r.reason;
+        bsp_kout.shift_dec();
+        bsp_kout << kendl;
+    } else {
+        bsp_kout << "[NVMe] node " << (uint32_t)a->node_index
+                 << ": init OK" << kendl;
+    }
+    return r;
 }
 
 // ============================================================
@@ -351,27 +346,28 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
     }
 
     // ---- 5. 并行初始化 ----
-    // 每个线程需要独立的内存存放参数 + 完成标记
     nvme_init_thread_arg* thread_args   = new nvme_init_thread_arg[nvme_count]();
-    uint64_t*             thread_results = new uint64_t[nvme_count]();
-    bool*                 done_flags     = new bool[nvme_count]();
     uint64_t*             tids           = new uint64_t[nvme_count]();
 
     uint32_t spawned = 0;
     for (uint32_t i = 0; i < nvme_count; i++) {
         thread_args[i].node_index  = i;
         thread_args[i].ctrl        = node_array[i].controller;
-        thread_args[i].done_flag   = &done_flags[i];
-        thread_args[i].result_ptr  = &thread_results[i];
-        done_flags[i]              = false;
 
         KURD_t kurd;
-        tids[i] = create_kthread(nvme_init_thread_entry,
-                                 &thread_args[i], &kurd);
+        kthread_creating_package pkg;
+        pkg.func_raw   = (uint64_t)nvme_init_thread_entry;
+        pkg.args[0]    = (uint64_t)&thread_args[i];
+        pkg.args[1]    = 0;
+        pkg.args[2]    = 0;
+        pkg.args[3]    = 0;
+        pkg.args[4]    = 0;
+        pkg.launch_pid = fast_get_processor_id();
+        tids[i] = creat_kthread(&pkg, &kurd);
         if (tids[i] == INVALID_TID || error_kurd(kurd)) {
             bsp_kout << "[NVMe] Failed to spawn init thread for node "
                      << (uint32_t)i << kendl;
-            done_flags[i] = true;  // 标记为已完成（未真正开始）
+            // 未真正启动，计入失败
         } else {
             spawned++;
         }
@@ -379,24 +375,38 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
 
     bsp_kout << "[NVMe] Spawned " << (uint32_t)spawned << " init thread(s)" << kendl;
 
-    // ---- 6. 等待所有线程完成 ----
-    for (uint32_t i = 0; i < nvme_count; i++) {
-        if (tids[i] != INVALID_TID) {
-            kthread_wait(tids[i]);
-        }
-    }
-
-    // ---- 7. 汇总 ----
+    // ---- 6. 等待所有线程完成并回收 ----
+    bool* init_ok = new bool[nvme_count]();
     uint32_t ok_count = 0;
     uint32_t fail_count = 0;
     for (uint32_t i = 0; i < nvme_count; i++) {
-        // thread_results[i] 低16位 = result, 次低16位 = reason
-        // result=0 → SUCCESS
-        uint32_t low = (uint32_t)(thread_results[i] & 0xFFFFFFFF);
-        if ((low & 0xFFFF) == 0) {
+        if (tids[i] == INVALID_TID) {
+            fail_count++;
+            continue;
+        }
+
+        zombie_observe_results_t z_result;
+        uint64_t raw;
+        do {
+            raw = zombie_observe(tids[i], &z_result);
+        } while (z_result == ZOMBIE_ALIVE);
+
+        if (z_result == ZOMBIE_TID_NOT_FOUND) {
+            fail_count++;
+            continue;
+        }
+
+        KURD_t thread_kurd = raw_analyze(raw);
+        if (!error_kurd(thread_kurd)) {
+            init_ok[i] = true;
             ok_count++;
         } else {
             fail_count++;
+        }
+
+        ckurd rel_result = release_kthread(tids[i]);
+        if (error_kurd(raw_analyze(rel_result))) {
+            bsp_kout << "[NVMe] release_kthread(" << tids[i] << ") failed" << kendl;
         }
     }
 
@@ -414,12 +424,17 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
                 node_array[i].pcie_dev  == TARGET_DEV &&
                 node_array[i].pcie_func == TARGET_FUNC)
             {
-                uint32_t result = (uint32_t)(thread_results[i] & 0xFFFFFFFF);
-                if ((result & 0xFFFF) == 0 && node_array[i].controller) {
+                if (init_ok[i] && node_array[i].controller) {
                     KURD_t spawn_kurd;
-                    uint64_t test_tid = create_kthread(
-                        nvme_iotest_thread_entry,
-                        node_array[i].controller, &spawn_kurd);
+                    kthread_creating_package test_pkg;
+                    test_pkg.func_raw   = (uint64_t)nvme_iotest_thread_entry;
+                    test_pkg.args[0]    = (uint64_t)node_array[i].controller;
+                    test_pkg.args[1]    = 0;
+                    test_pkg.args[2]    = 0;
+                    test_pkg.args[3]    = 0;
+                    test_pkg.args[4]    = 0;
+                    test_pkg.launch_pid = fast_get_processor_id();
+                    uint64_t test_tid = creat_kthread(&test_pkg, &spawn_kurd);
                     if (test_tid != INVALID_TID && !error_kurd(spawn_kurd)) {
                         bsp_kout << "[NVMe] I/O test thread spawned for 0:6:0" << kendl;
                     }
@@ -431,9 +446,8 @@ KURD_t NVMe_Controller::Init(uint64_t flags)
 
     // ---- 8. 清理临时资源 ----
     delete[] thread_args;
-    delete[] thread_results;
-    delete[] done_flags;
     delete[] tids;
+    delete[] init_ok;
 
     if (fail_count == nvme_count && ok_count == 0) {
         // 全部失败

@@ -165,8 +165,16 @@ void create_first_kthread(){
         }
     }
 
-    KURD_t kurd=KURD_t();
-    uint64_t kthread_ymir_tid=create_kthread(kthread_ymir,nullptr,&kurd);
+    kthread_creating_package pkg;
+    pkg.func_raw = (uint64_t)kthread_ymir;
+    pkg.args[0] = 0;
+    pkg.args[1] = 0;
+    pkg.args[2] = 0;
+    pkg.args[3] = 0;
+    pkg.args[4] = 0;
+    pkg.launch_pid = fast_get_processor_id();
+    KURD_t kurd = KURD_t();
+    uint64_t kthread_ymir_tid = creat_kthread(&pkg, &kurd);
     get_self_scheduler()->next_task_with_routine();
 }
 

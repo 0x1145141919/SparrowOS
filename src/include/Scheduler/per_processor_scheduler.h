@@ -351,14 +351,91 @@ class alignas(64) per_processor_scheduler {
 per_processor_scheduler* get_self_scheduler();
 per_processor_scheduler* get_other_scheduler(uint32_t pid);
 constexpr uint32_t INVALID_NODE_INDEX=~0;
+
+// ── kthread_creating_package ─────────────────────────────────
+//
+// 通过 creat_kthread 创建内核线程时的参数包。
+//
+// 字段说明:
+//   func_raw  — 线程入口函数地址（void* entry(void*) 风格均可）
+//   args[5]   — 最多 5 个参数，通过寄存器传递（rdi=args[0], rsi=args[1]…）
+//               实际调用时展开为 entry(args[0], args[1], args[2], args[3], args[4])
+//               一般只用 args[0]，其余填 0 即可。
+//   launch_pid— 目标处理器的 processor_id，线程将放入该处理器的 ready_queue。
+//               通常填 fast_get_processor_id() 表示当前 CPU。
+//
+// 执行流原理:
+//   creat_kthread → kthread_init → task_launch
+//                                              ↓
+//   1. basic_constructor 从 task_pool 分配 task（state=init）
+//   2. kthread_init  设置 priv_ctx 寄存器，使 RIP = &allkthread_true_enter
+//      寄存器布局:  rdi=func_raw, rsi=args[0], rdx=args[1], rcx=args[2],
+//                  r8=args[3], r9=args[4], RSP=priv_stack_base + pages*4096 - 64
+//      见 allkthread_true_enter 的 asm 实现:
+//          mov rax, rdi          ; rax = func_raw
+//          mov rdi, rsi          ; rdi = args[0] (成为 entry 的第一个实参)
+//          …寄存器一档向下串…
+//          call rax              ; 调用 entry(args[0], args[1]…)
+//          mov rdi, rax          ; entry 返回值 → exit 时的 will
+//          mov rax, KTHREAD_CALL_EXIT
+//          int kthread_call_ivec  ; 自动 kthread_exit，不会返回到 call 后面
+//          ud2
+//   3. task_launch(t, launch_pid) 将 task 从 init→ready，插入目标处理器的 ready_queue
+//   4. 调度器选中后执行 allkthread_true_enter → call entry
+//   5. entry 返回时自动触发 kthread_exit
+//
+// 因此调用者完全不需要关心 exit——函数返回后框架自动收尾。
+// 如果需要传递多个参数，填充 args[1..4] 即可，entry 签名为:
+//   void* entry(void* arg0, void* arg1, void* arg2, void* arg3, void* arg4);
+// 但通常只写 void* entry(void* arg) 也完全兼容。
+//
+// 栈管理:
+//   - kthread_init 自动分配 DEFAULT_PRIVSTACK_PGS_COUNT(4) 页作为栈
+//   - 栈顶下方 4K 为 guard page（未映射，触之即 #PF not-present）
+//   - release_kthread 时自动释放栈空间
+//
+// 使用示例:
+//   static void* my_thread(void* arg) {
+//       …
+//       return nullptr;
+//   }
+//
+//   KURD_t kurd;
+//   kthread_creating_package pkg;
+//   pkg.func_raw   = (uint64_t)my_thread;
+//   pkg.args[0]    = (uint64_t)some_arg;
+//   pkg.args[1..4] = 0;
+//   pkg.launch_pid = fast_get_processor_id();
+//   uint64_t tid = creat_kthread(&pkg, &kurd);
+//   // tid == INVALID_TID 表示失败
+//
 struct kthread_creating_package{
     uint64_t func_raw;
     uint64_t args[5];
     uint32_t launch_pid;
 };
+enum zombie_observe_results_t{
+    ZOMBIE_DEAD,
+    ZOMBIE_ALIVE,
+    ZOMBIE_TID_NOT_FOUND
+};
 extern "C"{
+    // kthread_init — 初始化 task 的内核线程上下文（priv_ctx）
+    // 在 task 上填充 priv_ctx 寄存器和栈指针，
+    // RIP = &allkthread_true_enter，使调度器 load 后从 asm 入口开始执行。
+    // 如果 task 尚无 priv_stack_base，自动分配 DEFAULT_PRIVSTACK_PGS_COUNT 页。
     ckurd kthread_init(task*t,kthread_creating_package*p);
-    KURD_t task_launch(task*t,uint32_t pid);//指定处理器上把对应的没有运行过（run_kthread积累为0的任务）从init转入ready后放入ready_queue
+
+    // task_launch — 将指定 task 投放到目标处理器的 ready_queue
+    // 状态机: init → ready
+    // 校验: 非 INVALID_TID、rip/rsp 在内核地址空间、上下文类型为 priv
+    // pid=processor_id（用 fast_get_processor_id() 获取当前 CPU）
+    KURD_t task_launch(task*t,uint32_t pid);
+
+    // creat_kthread — 创建并启动一个内核线程（一站式入口）
+    // 等价于: t=basic_constructor → kthread_init(t,p) → task_launch(t, p->launch_pid)
+    // 返回 tid（失败返回 INVALID_TID，kurd 给出具体原因）
+    // p 中的 launch_pid 决定线程在哪个 CPU 上运行。
     uint64_t creat_kthread(kthread_creating_package*p,KURD_t*kurd);
     [[noreturn]] void kthread_yield_true_enter(x64_standard_context_v2* context);
     void kthread_yield();
@@ -372,13 +449,14 @@ extern "C"{
     ckurd wakeup_thread(uint64_t tid, bool front_insert=false);
     uint64_t block_if_equal(bq_id_t qid, uint64_t* checker, uint64_t block_token);
     void block_if_equal_cppenter(x64_standard_context_v2* context);
+    uint64_t zombie_observe(uint64_t tid,zombie_observe_results_t* result);
     ckurd release_kthread(uint64_t tid);
     bq_id_t  bq_alloc(block_queue*q);                         // 分配一个新 block_queue，返回句柄,处于ready态
     ckurd bq_free(bq_id_t qid);               // 释放，返回 ckurd（KURD raw）
     //上面三个的返回值是唤醒个数
     void bq_flush_pending(blocked_tasks_clamps_t* clamp,bool is_timeout); // 处理 从block_queue里面弹出来的task的唤醒工作
     void common_idle();
-    char allkthread_true_enter;
+    extern char allkthread_true_enter;
     [[noreturn]] void resched(x64_standard_context_v2 *frame);
 }
 /**

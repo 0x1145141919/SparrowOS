@@ -293,7 +293,8 @@ void per_processor_scheduler::sched()
         case task::ctx_choose::vCPU :
         to_run->task_event_shift(task::event_type_t::run_vCPU);
         break;
-        default://非法类型panic
+        default:
+        break;
     }
     }
     ktime::heart_beat_alarm::set_clock_by_offset(20000);
@@ -487,6 +488,26 @@ void per_processor_scheduler::next_task_with_routine()
 
     // 调度
     sched();
+}
+uint64_t zombie_observe(uint64_t tid, zombie_observe_results_t *result)
+{
+    KURD_t kurd;
+    task*t=task_pool::get_by_tid(tid,kurd);
+    if(error_kurd((kurd))){
+        *result=ZOMBIE_TID_NOT_FOUND;
+        return INVALID_TID;
+    }
+    {
+        reentrant_spinlock_guard l(t->task_lock);
+        if(t->get_state()!=task_state_t::zombie){
+            *result=ZOMBIE_ALIVE;
+            return INVALID_TID;
+        }else{
+            *result=ZOMBIE_DEAD;
+            return t->priv_ctx.rdi;
+        }
+    }
+
 }
 per_processor_scheduler *get_other_scheduler(uint32_t pid)
 {

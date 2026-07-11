@@ -71,7 +71,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     msix_kurd = msix_vec_alloc(qid - 1, qid);
     if (error_kurd(msix_kurd)) {
         __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
-        return NVMe_result_construtor_wrong_kurd(msix_kurd);
+        return NVMe::make_not_success_kurd(msix_kurd);
     }
 
     // ---- 3. 预填 cqs[] 状态 ----

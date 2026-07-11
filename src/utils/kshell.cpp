@@ -2,7 +2,8 @@
 #include "util/kout.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
 #include "util/OS_utils.h"
-#include "util/kshell.h"
+#include "Scheduler/per_processor_scheduler.h"
+#include "util/arch/x86-64/cpuid_intel.h"
 
 using namespace kio;
 using namespace INFR_LOCATIONS::KSHELL_EVENTS::COMMON_FAIL_REASONS;
@@ -347,7 +348,15 @@ KURD_t kshell_framework_t::Init() {
     KURD_t kurd=initial_commands_regist();
     if(error_kurd(kurd))return kurd;
     m_initialized = true;
-    uint64_t tid=create_kthread(kshell_thread_main, nullptr,&kurd);
+    kthread_creating_package pkg;
+    pkg.func_raw = (uint64_t)kshell_thread_main;
+    pkg.args[0] = 0;
+    pkg.args[1] = 0;
+    pkg.args[2] = 0;
+    pkg.args[3] = 0;
+    pkg.args[4] = 0;
+    pkg.launch_pid = fast_get_processor_id();
+    uint64_t tid = creat_kthread(&pkg, &kurd);
     return success;
 }
 

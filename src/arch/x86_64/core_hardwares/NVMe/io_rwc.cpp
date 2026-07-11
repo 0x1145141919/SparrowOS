@@ -35,7 +35,8 @@ static KURD_t read_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE,
+        module_code::DEVICE, DEVICES_locs::NVMe,
+        DEVICES_locs::NVMe_events::Read,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -83,10 +84,7 @@ KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interva
     // ---- 2. 零长度检查 ----
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;
@@ -177,7 +175,8 @@ static KURD_t read_advance_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE,
+        module_code::DEVICE, DEVICES_locs::NVMe,
+        DEVICES_locs::NVMe_events::Read,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -228,10 +227,7 @@ KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_inte
     // ---- 3. 零长度检查 ----
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(
-            result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;
@@ -318,7 +314,8 @@ static KURD_t write_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE,
+        module_code::DEVICE, DEVICES_locs::NVMe,
+        DEVICES_locs::NVMe_events::Write,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -326,7 +323,8 @@ static KURD_t cmp_param_error(uint16_t reason)
 {
     return KURD_t(
         result_code::FAIL, reason,
-        module_code::DEVICE,
+        module_code::DEVICE, DEVICES_locs::NVMe,
+        DEVICES_locs::NVMe_events::cmp,
         level_code::ERROR, err_domain::CORE_MODULE);
 }
 
@@ -354,9 +352,7 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interv
     // ---- 2. 零长度检查 ----
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;
@@ -444,9 +440,7 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_int
     // ---- 3. 零长度 ----
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;
@@ -533,9 +527,7 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t inte
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;
@@ -612,9 +604,7 @@ KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_i
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
-        return KURD_t(result_code::SUCCESS, 0,
-            module_code::DEVICE,
-            level_code::INFO, err_domain::CORE_MODULE);
+        return empty_kurd;
     }
 
     uint32_t sector_size = dev->sector_size;

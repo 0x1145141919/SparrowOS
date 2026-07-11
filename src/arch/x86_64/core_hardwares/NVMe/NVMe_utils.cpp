@@ -82,8 +82,6 @@ KURD_t NVMe_Controller::msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec)
     if(msix_vec == 0){
         ADmin_queue_belonged_processor=processor_id;
         ADmin_queue_vec=vec;
-    }else{
-        IO_CQ_vecs[processor_id]=vec;
     }
 
     // ── 用 tran_get_x2apic_id 通过 GS slot 获取目标处理器的 x2APIC ID ──

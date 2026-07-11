@@ -1,6 +1,8 @@
 #include "arch/x86_64/core_hardwares/NVMe/NVMe_surface.h"
 #include "arch/x86_64/PCIe/base.h"
 #include "arch/x86_64/PCIe/prased.h"
+#include "Scheduler/per_processor_scheduler.h"
+#include "util/arch/x86-64/cpuid_intel.h"
 #include "util/kshell.h"
 #include "util/kshell_commands.h"
 #include "util/kout.h"
@@ -154,28 +156,41 @@ static KURD_t cmd_nvme_on(const line_t* line)
         bsp_kout.shift_dec();
         bsp_kout << " at " << (uint32_t)bus << ":" << (uint32_t)dev << ":" << (uint32_t)func << kendl;
 
-        // 启动初始化线程，kshell 不等待
-        KURD_t kurd;
-        uint64_t tid = create_kthread(
-            [](void* arg) -> void* {
-                auto* dev = (NVMe_Controller*)arg;
-                KURD_t r = NVMe_Controller::device_init(dev);
-                if (error_kurd(r)) {
-                    bsp_kout << "[NVMe] init failed: reason=0x";
-                    bsp_kout.shift_hex();
-                    bsp_kout << r.reason;
-                    bsp_kout.shift_dec();
-                    bsp_kout << kendl;
-                } else {
-                    bsp_kout << "[NVMe] init complete" << kendl;
-                }
-                return nullptr;
-            },
-            ctrl, &kurd);
+        // 启动初始化线程
+        kthread_creating_package pkg;
+        pkg.func_raw = (uint64_t) +[](void* arg) -> void* {
+            auto* dev = (NVMe_Controller*)arg;
+            KURD_t r = NVMe_Controller::device_init(dev);
+            if (error_kurd(r)) {
+                bsp_kout << "[NVMe] init failed: reason=0x";
+                bsp_kout.shift_hex();
+                bsp_kout << r.reason;
+                bsp_kout.shift_dec();
+                bsp_kout << kendl;
+            } else {
+                bsp_kout << "[NVMe] init complete" << kendl;
+            }
+            return nullptr;
+        };
+        pkg.args[0]    = (uint64_t)ctrl;
+        pkg.args[1]    = 0;
+        pkg.args[2]    = 0;
+        pkg.args[3]    = 0;
+        pkg.args[4]    = 0;
+        pkg.launch_pid = fast_get_processor_id();
 
+        KURD_t kurd;
+        uint64_t tid = creat_kthread(&pkg, &kurd);
         if (tid == INVALID_TID || error_kurd(kurd)) {
             bsp_kout << "[NVMe] Failed to spawn init thread" << kendl;
             NVMe_Controller::controllers_count--;
+        } else {
+            kthread_sleep(5000000);
+            zombie_observe_results_t zr;
+            zombie_observe(tid, &zr);
+            if (zr == ZOMBIE_DEAD) {
+                release_kthread(tid);
+            }
         }
     }
     
@@ -224,26 +239,39 @@ static KURD_t cmd_nvme_off(const line_t* line)
         bsp_kout.shift_dec();
         bsp_kout << kendl;
 
-        KURD_t kurd;
-        uint64_t tid = create_kthread(
-            [](void* arg) -> void* {
-                auto* dev = (NVMe_Controller*)arg;
-                KURD_t r = dev->offline(0);
-                if (error_kurd(r)) {
-                    bsp_kout << "[NVMe] offline failed: reason=0x";
-                    bsp_kout.shift_hex();
-                    bsp_kout << r.reason;
-                    bsp_kout.shift_dec();
-                    bsp_kout << kendl;
-                } else {
-                    bsp_kout << "[NVMe] offline complete" << kendl;
-                }
-                return nullptr;
-            },
-            ctrl, &kurd);
+        kthread_creating_package pkg;
+        pkg.func_raw = (uint64_t) +[](void* arg) -> void* {
+            auto* dev = (NVMe_Controller*)arg;
+            KURD_t r = dev->offline(0);
+            if (error_kurd(r)) {
+                bsp_kout << "[NVMe] offline failed: reason=0x";
+                bsp_kout.shift_hex();
+                bsp_kout << r.reason;
+                bsp_kout.shift_dec();
+                bsp_kout << kendl;
+            } else {
+                bsp_kout << "[NVMe] offline complete" << kendl;
+            }
+            return nullptr;
+        };
+        pkg.args[0]    = (uint64_t)ctrl;
+        pkg.args[1]    = 0;
+        pkg.args[2]    = 0;
+        pkg.args[3]    = 0;
+        pkg.args[4]    = 0;
+        pkg.launch_pid = fast_get_processor_id();
 
+        KURD_t kurd;
+        uint64_t tid = creat_kthread(&pkg, &kurd);
         if (tid == INVALID_TID || error_kurd(kurd)) {
             bsp_kout << "[NVMe] Failed to spawn offline thread" << kendl;
+        } else {
+            kthread_sleep(5000000);
+            zombie_observe_results_t zr;
+            zombie_observe(tid, &zr);
+            if (zr == ZOMBIE_DEAD) {
+                release_kthread(tid);
+            }
         }
     }
     return make_ok();

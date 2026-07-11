@@ -74,7 +74,7 @@ uint32_t ksymmanager::get_entry_count()
     return entry_count;
 }
 
-extern "C" void allthread_true_enter(void *(*entry)(void *), void *arg);
+extern "C" void allkthread_true_enter(void *(*entry)(void *), void *arg);
 
 static inline bool str_eq(const char* lhs, const char* rhs)
 {
@@ -103,7 +103,7 @@ bool kptrace_current_stack_has_kthread_entry()
     StackFrame* frame = static_cast<StackFrame*>(rbp_raw);
     constexpr int MAX_FRAMES = 128;
     constexpr uint64_t kNearRangeBytes = 256;
-    const uint64_t kthread_entry_addr = reinterpret_cast<uint64_t>(&allthread_true_enter);
+    const uint64_t kthread_entry_addr = reinterpret_cast<uint64_t>(&allkthread_true_enter);
 
     for(int i = 0; frame != nullptr && i < MAX_FRAMES; ++i){
         if((reinterpret_cast<uint64_t>(frame) & 0x7ull) != 0 || frame->rip == 0){
@@ -112,7 +112,7 @@ bool kptrace_current_stack_has_kthread_entry()
 
 #ifdef KERNEL_MODE
         symbol_entry* sym = ksymmanager::get_entry_near_addr(frame->rip);
-        if(sym != nullptr && str_eq(sym->name, "allthread_true_enter")){
+        if(sym != nullptr && str_eq(sym->name, "allkthread_true_enter")){
             return true;
         }
 #endif

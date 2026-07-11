@@ -71,6 +71,8 @@ fred_pctx_load:
     ud2
 global allkthread_true_enter
 allkthread_true_enter:
+    push rbp
+    mov rbp, rsp
     mov rax, rdi
     mov rdi, rsi
     mov rsi, rdx

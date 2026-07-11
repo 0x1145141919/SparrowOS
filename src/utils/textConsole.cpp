@@ -388,8 +388,16 @@ bool textconsole_GoP::RuntimeInitServiceThread()
         runtime_service_create_lock.unlock();
         return true;
     }
-    KURD_t kurd=KURD_t();
-    runtime_service_tid=create_kthread(textconsole_GoP::RuntimeServiceThreadMain,nullptr,&kurd);
+    kthread_creating_package pkg;
+    pkg.func_raw = (uint64_t)textconsole_GoP::RuntimeServiceThreadMain;
+    pkg.args[0] = 0;
+    pkg.args[1] = 0;
+    pkg.args[2] = 0;
+    pkg.args[3] = 0;
+    pkg.args[4] = 0;
+    pkg.launch_pid = fast_get_processor_id();
+    KURD_t kurd = KURD_t();
+    runtime_service_tid = creat_kthread(&pkg, &kurd);
     runtime_service_create_lock.unlock();
     return true;
 }
