@@ -258,12 +258,10 @@ KURD_t per_processor_scheduler::insert_ready_task(task *task_ptr, bool front)
     }
     return success;
 }
-void per_processor_scheduler::placed_init()
+void per_processor_scheduler::placed_init(per_processor_hardware_stack_t* stacks_ptr)
 {
     task& t=this->idle;
     task::idle_specified_constructor(&t);
-    gs_complex_t* gs_complex=(gs_complex_t*)gs_offsetptr_dumper(0);
-    per_processor_hardware_stack_t* stacks_ptr=gs_complex->stacks_ptr;
     t.priv_ctx.core_ctx.idtctx.iret.rip=(uint64_t)&common_idle;
     t.priv_ctx.core_ctx.idtctx.iret.cs=K_cs_idx<<3;
     t.priv_ctx.core_ctx.idtctx.iret.ss=K_ds_ss_idx<<3;

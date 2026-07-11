@@ -3,6 +3,7 @@
 #include "util/Ktemplats.h"
 #include "util/lock.h"
 
+struct per_processor_hardware_stack_t;
 
 class alignas(64) per_processor_scheduler {
 private:
@@ -40,7 +41,7 @@ public:
     void dts_gantt_write(task* to_run, uint8_t reason, uint8_t io_urgency);
     friend task;
     bool is_the_idle_task(task* t);
-    void placed_init();
+    void placed_init(per_processor_hardware_stack_t* stacks_ptr);
 };
 
 extern per_processor_scheduler* global_schedulers;

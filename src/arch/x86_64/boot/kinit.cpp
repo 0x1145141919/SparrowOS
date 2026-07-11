@@ -28,6 +28,7 @@
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/core_hardwares/DMAR.h"
 #include "arch/x86_64/core_hardwares/ioapic.h"
 #include "arch/x86_64/core_hardwares/i8042.h"
@@ -319,7 +320,8 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
     }
     for (uint32_t i = 0; i < logical_processor_count; i++) {
         new (&global_schedulers[i]) per_processor_scheduler();
-        global_schedulers[i].placed_init();
+        gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + i * GS_COMPLEX_STRIDE);
+        global_schedulers[i].placed_init(cx->stacks_ptr);
     }
     gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
 
