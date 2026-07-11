@@ -34,6 +34,10 @@ constexpr uint16_t DEFAULT_ADMIN_QUEUE_ENTRIES = 64;
 constexpr uint32_t SQ_ENTRY_SIZE = 64;
 constexpr uint32_t CQ_ENTRY_SIZE = 16;
 
+static KURD_t wrong_kurd()
+{
+    return set_result_fail_and_error_level(KURD_t());
+}
 
 static KURD_t alloc_contiguous_pages(KURD_t* kurd_out,
                                      void** va_out,
@@ -203,7 +207,7 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // 硬性要求：cap.mqes 必须 ≥ I/O 队列数
     if (cap.field.mqes < sq_count - 1)
-        return empty_kurd;
+        return wrong_kurd();
     if (to == 0) to = 10;
 
     // ---- 2. CC.EN = 0, 配置 ----
@@ -214,7 +218,7 @@ KURD_t NVMe_Controller::second_stage_init()
     ctrl.field.CSS     = 0;
     head_regs->controller_configuration = ctrl.value;
     if (!wait_for_ready(head_regs, false, to))
-        return empty_kurd;
+        return wrong_kurd();
 
     KURD_t kurd = empty_kurd;
 
@@ -245,7 +249,7 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // Clear INTMC bits before enabling
     if (!wait_for_ready(head_regs, true, to))
-        return empty_kurd;
+        return wrong_kurd();
 
     // Clear interrupt mask set
     head_regs->interrupt_mask_set = 0;
@@ -270,7 +274,7 @@ KURD_t NVMe_Controller::second_stage_init()
     // 使用 pre_init 中分配的 admin_buffer（1 页，4096 字节）
     if (admin_buffer.vpn == 0) {
         bsp_kout << "[NVMe] admin_buffer not allocated" << kendl;
-        return kurd;
+        return wrong_kurd();
     }
     bsp_kout << "[NVMe] identify_ctrl..." << kendl;
     NVMe::identify_ctrl_t* id_ctrl = reinterpret_cast<NVMe::identify_ctrl_t*>(admin_buffer.vbase());
@@ -281,7 +285,12 @@ KURD_t NVMe_Controller::second_stage_init()
         return kurd;
     }
     { NVMe::command_result_t r = identify_ctrl(admin_buffer.pbase());
-    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) return empty_kurd; }
+    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type == NVMe::command_result_types::not_success_kurd)
+            return raw_analyze(r.fields.cmd_spcify);
+        bsp_kout << "[NVMe] identify_ctrl failed" << kendl;
+        return wrong_kurd();
+    } }
 
     bsp_kout << "[NVMe] VID=0x";
     bsp_kout.shift_hex();
@@ -293,11 +302,21 @@ KURD_t NVMe_Controller::second_stage_init()
 
     // ---- 9. I/O 队列 + HMB 初始化 ----
     { NVMe::command_result_t r = io_queue_init(sq_count-1,cq_count-1);
-    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) return kurd; }
+    if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
+        if (r.fields.result_type == NVMe::command_result_types::not_success_kurd)
+            return raw_analyze(r.fields.cmd_spcify);
+        bsp_kout << "[NVMe] io_queue_init failed" << kendl;
+        return wrong_kurd();
+    } }
 
     { NVMe::command_result_t r = hmb_alloc();
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
-        bsp_kout << "[NVMe] hmb_alloc failed, continuing" << kendl;
+        if (r.fields.result_type == NVMe::command_result_types::not_success_kurd) {
+            KURD_t kurd_reason = raw_analyze(r.fields.cmd_spcify);
+            bsp_kout << "[NVMe] hmb_alloc failed (KURD), continuing" << kendl;
+        } else {
+            bsp_kout << "[NVMe] hmb_alloc failed, continuing" << kendl;
+        }
     } }
 
     // ---- 10. Identify Namespaces ----
@@ -313,8 +332,10 @@ KURD_t NVMe_Controller::second_stage_init()
         bsp_kout << "[NVMe] identify_ns ns=" << (uint32_t)ns << kendl;
         NVMe::command_result_t r_ns = identify_ns(ns, admin_buffer.pbase());
         if (r_ns.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r_ns.fields.status)) {
-            bsp_kout << "[NVMe] ns=" << (uint32_t)ns << " failed, skip" << kendl;
-            continue;
+            bsp_kout << "[NVMe] ns=" << (uint32_t)ns << " failed" << kendl;
+            if (r_ns.fields.result_type == NVMe::command_result_types::not_success_kurd)
+                return raw_analyze(r_ns.fields.cmd_spcify);
+            return wrong_kurd();
         }
 
         NVMe::identify_ns_nvm_t* ns_id = reinterpret_cast<NVMe::identify_ns_nvm_t*>(admin_buffer.vbase());
