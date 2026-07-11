@@ -272,7 +272,7 @@ uint8_t vec_demux::alloc_vec(interrupt_token_t* token,
         
         for (; vec <= 255; vec++) {
             if(!fred_support_catch_bit)if (soft_interrupt_functions[vec] != nullptr) continue;
-            if (vec >= ipi_vecs::IPI_HALT && vec <= SUPRIOUS_INTERRUPT) continue;
+            if (vec >= ipi_vecs::IPI_RESCHED && vec <= SUPRIOUS_INTERRUPT) continue;
             if (slice[vec].func == nullptr) break;
         }
         if (vec > 255) {
