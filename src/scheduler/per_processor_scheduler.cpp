@@ -132,46 +132,39 @@ KURD_t per_processor_scheduler::default_fatal()
 }
 void per_processor_scheduler::sleep_tasks_wake()
 {
-    constexpr  uint8_t arr_len_max = 16;
-    int arr_len = 0;
-    task* arr[arr_len_max];
-    ksetmem_8(arr,0,arr_len_max);
-    Ktemplats::list_doubly<task*> to_run_list;
-    KURD_t kurd;
-    miusecond_time_stamp_t current_stamp=ktime::get_microsecond_stamp();
-    {
-        reentrant_spinlock_guard g(this->sched_lock);
-        while(true)
+    while (true) {
+        constexpr uint8_t BATCH_MAX = 64;
+        task* batch[BATCH_MAX];
+        uint8_t batch_count = 0;
+        KURD_t kurd;
+        miusecond_time_stamp_t current_stamp = ktime::get_microsecond_stamp();
+
         {
-        task**candidate=this->sleep_queue.front();
-        if(candidate==nullptr){
-            break;
+            reentrant_spinlock_guard g(this->sched_lock);
+            while (batch_count < BATCH_MAX) {
+                task** candidate = this->sleep_queue.front();
+                if (!candidate) break;
+                task* candidate_task = *candidate;
+                if (candidate_task->min_wakeup_stamp > current_stamp) break;
+                this->sleep_queue.pop_front();
+                batch[batch_count++] = candidate_task;
+            }
         }
-        task*candidate_task=*candidate;
-        if(candidate_task->min_wakeup_stamp<=current_stamp){
-            this->sleep_queue.pop_front();
-            to_run_list.push_back(candidate_task);
-        }else{
-            break;
+        if (batch_count == 0) break;
+
+        for (uint8_t i = 0; i < batch_count; i++) {
+            reentrant_spinlock_guard g(batch[i]->task_lock);
+            batch[i]->on_queue_bit = false;
+            batch[i]->set_ready();
         }
-        }
-    }
-    if(to_run_list.empty())return;
-    for(auto it=to_run_list.begin();it!=to_run_list.end();++it){
-        task*candidate=*it;
+
         {
-            reentrant_spinlock_guard g(candidate->task_lock);
-            candidate->on_queue_bit = false;
-            candidate->set_ready();
-        }
-    }
-    {
-        reentrant_spinlock_guard g(this->sched_lock);
-        while(!to_run_list.empty()){
-            task*candidate=to_run_list.pop_front_value();
-            kurd=this->insert_ready_task(candidate);
-            if(error_kurd(kurd)){
-                panic_with_kurd(kurd);
+            reentrant_spinlock_guard g(this->sched_lock);
+            for (uint8_t i = 0; i < batch_count; i++) {
+                kurd = this->insert_ready_task(batch[i]);
+                if (error_kurd(kurd)) {
+                    panic_with_kurd(kurd);
+                }
             }
         }
     }
@@ -206,7 +199,7 @@ void per_processor_scheduler::sched()
         return &this->idle;
     }();
     {
-    reentrant_spinlock_guard(to_run->task_lock);
+    reentrant_spinlock_guard g1(to_run->task_lock);
     to_run->set_running();
     to_run->belonged_processor_id=fast_get_processor_id();
     gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
