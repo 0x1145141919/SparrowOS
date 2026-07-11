@@ -32,6 +32,7 @@ task* task_pool::get_by_tid(uint64_t tid, KURD_t& kurd)
 
 task* task_pool::spawn()
 {
+    spinrwlock_interrupt_about_write_guard l(lock);
     task tmp;
     tmp.tid = g_next_tid.add_ka(1);
     m_tree.insert(tmp);
