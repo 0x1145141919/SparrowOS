@@ -300,17 +300,9 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
     x2apic_core_init();
     ktime::heart_beat_alarm::processor_regist();
     bsp_kout<<now<<"BSP online"<<kendl;
-    gAnalyzer=new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
-    bsp_init_kurd=ap_init_one_by_one();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug"<<kendl;
-    }    
-    Status=task_pool::Init();
-    if(Status){
-        bsp_kout<<"task_pool::Init Failed"<<kendl;return;
-    }
-    asm volatile("sti");   
-    //中断接管工作
+    gAnalyzer = new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
+
+    // 调度器数组必须在 AP 启动前就绪（AP 在 ap_init 中写 GS slot 5）
     size_t sched_bytes = sizeof(per_processor_scheduler) * logical_processor_count;
     size_t sched_pages = (sched_bytes + 4095) / 4096;
     KURD_t alloc_kurd;
@@ -330,6 +322,17 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
         global_schedulers[i].placed_init();
     }
     gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
+
+    bsp_init_kurd = ap_init_one_by_one();
+    if (error_kurd(bsp_init_kurd)) {
+        bsp_kout << "x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug" << kendl;
+    }
+    Status = task_pool::Init();
+    if (Status) {
+        bsp_kout << "task_pool::Init Failed" << kendl; return;
+    }
+    asm volatile("sti");
+    //中断接管工作
     dmar::Init((dmar::acpi::DMAR_head*)gAcpiVaddrSapceMgr.get_acpi_table("DMAR"));
     main_router=new ioapic_driver(gAnalyzer->io_apic_list->front());
     i8042_interrupt_enable();
