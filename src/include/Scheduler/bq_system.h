@@ -26,3 +26,5 @@ public:
     void pop_timeouts(blocked_tasks_clamps_t* batch);
     void pop_all(blocked_tasks_clamps_t* batch);
 };
+
+void bq_system_init();

@@ -14,9 +14,16 @@
 #include "util/rb_map.h"
 #include "panic.h"
 
-rb_map<bq_id_t,block_queue*>*container;
+rb_map<bq_id_t,block_queue*> container;
 spinrwlock_cpp_t container_lock;
 uint64_t next_will_alloc_qid;
+
+void bq_system_init()
+{
+    new (&container) rb_map<bq_id_t, block_queue*>();
+    new (&container_lock) spinrwlock_cpp_t();
+    next_will_alloc_qid = 0;
+}
 
 // ── block_queue_system location 模板 helpers ──
 namespace {
@@ -61,7 +68,7 @@ KURD_t block_queue::push_tail(task *t)
     {
         reentrant_spinlock_guard g(t->task_lock);
         t->task_event_shift(this->queue_event);
-        t->on_queue_bit = true;
+        t->on_blockers_queue_bit = true;
     }*/ //错误的写法,这些状态改变，应该在一个临界区，也就是外部的
     inner_queue.push_back(t);
     return success;
@@ -71,7 +78,7 @@ bq_id_t bq_alloc(block_queue*q)
     interrupt_guard g;
     spinrwlock_interrupt_about_write_guard l(container_lock);
     {
-        bool res= container->insert(next_will_alloc_qid,q);
+        bool res= container.insert(next_will_alloc_qid,q);
         if(res){
             bq_id_t id_get= next_will_alloc_qid;
             ++next_will_alloc_qid;
@@ -89,12 +96,12 @@ ckurd bq_free(bq_id_t qid)
 
     interrupt_guard g;
     spinrwlock_interrupt_about_write_guard l(container_lock);
-    class block_queue**queue = container->find(qid);
+    class block_queue**queue = container.find(qid);
     if (queue == nullptr) {
         fail.reason = ev::bq_free_results::FAIL_REASONS::QUEUE_NOT_FOUND;
         return kurd_get_raw(fail);
     }
-    bool res = container->remove(qid);
+    bool res = container.remove(qid);
     if (res) {
         return kurd_get_raw(success);
     } else {
@@ -199,7 +206,7 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
         reentrant_spinlock_guard gt(t->task_lock);
         t->priv_ctx.rax = rax_enc;
         t->set_ready();
-        t->on_queue_bit = false;
+        t->on_blockers_queue_bit = false;
         t->task_event_shift(task::event_type_t::offline);
     }
 
@@ -232,7 +239,7 @@ void* bq_timeout_sweeper(void*)
         {
             interrupt_guard gi;
             spinrwlock_interrupt_about_read_guard lc(container_lock);
-            for (auto it = container->begin(); it != container->end(); ++it)
+            for (auto it = container.begin(); it != container.end(); ++it)
                 count++;
         }
         if (count == 0) continue;
@@ -245,7 +252,7 @@ void* bq_timeout_sweeper(void*)
         {
             interrupt_guard gi;
             spinrwlock_interrupt_about_read_guard lc(container_lock);
-            for (auto it = container->begin(); it != container->end() && filled < count; ++it)
+            for (auto it = container.begin(); it != container.end() && filled < count; ++it)
                 ids[filled++] = (*it).key;
         }
 
@@ -256,7 +263,7 @@ void* bq_timeout_sweeper(void*)
             {
                 interrupt_guard gi;
                 spinrwlock_interrupt_about_read_guard lc(container_lock);
-                block_queue** p = container->find(ids[i]);
+                block_queue** p = container.find(ids[i]);
                 if (!p) continue;  // 已被 bq_free
                 q = *p;
             }
