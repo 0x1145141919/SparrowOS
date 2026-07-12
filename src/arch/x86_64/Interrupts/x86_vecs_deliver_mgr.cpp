@@ -14,6 +14,7 @@
 #include "ktime.h"
 #include "util/lock.h"
 #include "exec_env_detect.h"
+#include "arch/x86_64/intel_processor_trace.h"
 bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复器 置函数)中bsp测量是否支持fred,若支持则此bit置1,并且ap直接根据这个bit决定是否初始化fred。
 logical_idt template_idt[256];
 IDTEntry global_idt[256];
@@ -502,6 +503,8 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
             return;
         }
         case ipi_vecs::IPI_HALT:{
+            if (global_pt_blackboxes)
+                disable_blackbox(&global_pt_blackboxes[pid]);
             asm volatile("cli;hlt");
             __builtin_unreachable();
         }
@@ -566,6 +569,8 @@ void fred_vec_demux_hw_dispatch(x64_standard_context_v2* frame, uint8_t vec)
             return;
         }
     case ipi_vecs::IPI_HALT: {
+        if (global_pt_blackboxes)
+            disable_blackbox(&global_pt_blackboxes[pid]);
         asm volatile("cli;hlt");
         __builtin_unreachable();
     }

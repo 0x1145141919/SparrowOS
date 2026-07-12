@@ -10,6 +10,7 @@
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/init_memory_info.h"
+#include "arch/x86_64/intel_processor_trace.h"
 #ifdef USER_MODE
 #include <unistd.h>
 #endif 
@@ -99,11 +100,20 @@ Panic::~Panic()
 //第四步是allow_broadcast控制下对于非空message，context进行打印，kurd甩给kout分析
 //最后停机
 extern "C" void resources_shift();
-spinlock_cpp_t panic_lock;
+atomic_scalar_t<uint32_t> panic_winner{0};
 #ifdef KERNEL_MODE
 void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
 {
-    panic_lock.lock();
+    uint32_t prev = panic_winner.add_ka(1);
+
+    if (global_pt_blackboxes)
+        disable_blackbox(&global_pt_blackboxes[fast_get_processor_id()]);
+
+    if (prev != 0) {
+        asm volatile("cli;hlt");
+        __builtin_unreachable();
+    }
+
     if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
         broadcast_halt();
     }
