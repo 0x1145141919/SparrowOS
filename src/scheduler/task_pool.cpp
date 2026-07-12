@@ -2,13 +2,16 @@
 #include "Scheduler/per_processor_scheduler.h"
 #include "abi/os_error_definitions.h"
 
-u64ka g_next_tid{0};
+u64ka g_next_tid;
 
 spinrwlock_cpp_t task_pool::lock;
 Ktemplats::RBTree<task, task_tid_compare> task_pool::m_tree;
 
 int task_pool::Init()
 {
+    new (&lock) spinrwlock_cpp_t();
+    new (&m_tree) Ktemplats::RBTree<task, task_tid_compare>();
+    new (&g_next_tid) u64ka();
     return OS_SUCCESS;
 }
 
