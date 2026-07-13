@@ -38,7 +38,7 @@ void kout::__print_result_code(KURD_t value)
 {
     switch (value.result) {
         case result_code::SUCCESS: *this << "[result:SUCCESS]"; break;
-        case result_code::SUCCESS_BUT_SIDE_EFFECT: *this << "[result:SUCCESS_BUT_SIDE_EFFECT]"; break;
+        case result_code::SUCCESS_BUT_SIDE_AFFECTS: *this << "[result:SUCCESS_BUT_SIDE_AFFECTS]"; break;
         case result_code::PARTIAL_SUCCESS: *this << "[result:PARTIAL_SUCCESS]"; break;
         case result_code::FAIL: *this << "[result:FAIL]"; break;
         case result_code::RETRY: *this << "[result:RETRY]"; break;

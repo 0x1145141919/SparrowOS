@@ -139,9 +139,10 @@ namespace MEMMODULE_LOCATIONS{
         namespace invalidate_tlb_results {
             namespace FAIL_REASONS {
                 constexpr uint16_t SHARED_INFO_PACKAGE_NOT_INITILAIZED = 0x100;
+                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY            = 0x101;
             }
             namespace FATAL_REASONS {
-                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY            = 0x100;
+                constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE       = 0x100;
             }
         }
         namespace build_indentity_map_only_on_gKERNELSPACE_results {

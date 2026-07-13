@@ -248,8 +248,8 @@ void kio::kout::__print_result_code(KURD_t value)
         case result_code::SUCCESS:
             raw_puts_and_count("[result:SUCCESS]", sizeof("[result:SUCCESS]") - 1);
             break;
-        case result_code::SUCCESS_BUT_SIDE_EFFECT:
-            raw_puts_and_count("[result:SUCCESS_BUT_SIDE_EFFECT]", sizeof("[result:SUCCESS_BUT_SIDE_EFFECT]") - 1);
+        case result_code::SUCCESS_BUT_SIDE_AFFECTS:
+            raw_puts_and_count("[result:SUCCESS_BUT_SIDE_AFFECTS]", sizeof("[result:SUCCESS_BUT_SIDE_AFFECTS]") - 1);
             break;
         case result_code::PARTIAL_SUCCESS:
             raw_puts_and_count("[result:PARTIAL_SUCCESS]", sizeof("[result:PARTIAL_SUCCESS]") - 1);

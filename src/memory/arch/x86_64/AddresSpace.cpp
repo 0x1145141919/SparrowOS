@@ -14,6 +14,7 @@
 #include "panic.h"
 extern uint32_t logical_processor_count;
 AddressSpace*gKernelSpace;
+using namespace MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS;
 KURD_t AddressSpace::default_kurd()
 {
     return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCATIONS::LOCATION_CODE_ADDRESSPACE,0,0,err_domain::CORE_MODULE);
@@ -42,13 +43,13 @@ KURD_t AddressSpace::invalidate_tlb_of_VM_desc(VM_DESC desc, tlb_invalidate_flag
     KURD_t success=default_success();
    KURD_t fail=default_fail();
    KURD_t fatal=default_fatal();
-   success.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INVALIDATE_TLB;
-   fail.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INVALIDATE_TLB;
-   fatal.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INVALIDATE_TLB;
+   success.event_code=EVENT_CODE_INVALIDATE_TLB;
+   fail.event_code=EVENT_CODE_INVALIDATE_TLB;
+   fatal.event_code=EVENT_CODE_INVALIDATE_TLB;
     seg_to_pages_info_pakage_t info_package;
     int stauts=vm_interval_to_pages_info(info_package,desc);
     if(stauts){
-        fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+        fail.reason=COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
         return fail;
     }
     auto x64_invalidate_tlb=[flags](vaddr_t vaddr){
@@ -95,7 +96,7 @@ KURD_t AddressSpace::invalidate_tlb_of_VM_desc(VM_DESC desc, tlb_invalidate_flag
             }
             default:
             {
-                fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::invalidate_tlb_results::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
+                fatal.reason=COMMON_FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
                 return fatal;
             }   
         }
@@ -155,9 +156,9 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
    KURD_t success=default_success();
    KURD_t fail=default_fail();
    KURD_t fatal=default_fatal();
-   success.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
-   fail.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
-   fatal.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
+   success.event_code=EVENT_CODE_ENABLE_VMENTRY;
+   fail.event_code=EVENT_CODE_ENABLE_VMENTRY;
+   fatal.event_code=EVENT_CODE_ENABLE_VMENTRY;
     vaddr_t curr_vaddr = interval.vbase();
     phyaddr_t curr_paddr = interval.pbase();
     vaddr_t end_vaddr = interval.vbase() + interval.byte_cnt();
@@ -174,7 +175,7 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         curr_vaddr%_4KB_SIZE||
         end_vaddr%_4KB_SIZE
     ){
-    fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+    fail.reason=COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
     return fail;}
     pgaccess desc_access=interval.access;
     cache_table_idx_struct_t atompages_cache_table_idx=cache_strategy_to_idx(desc_access.cache_strategy);
@@ -477,7 +478,7 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             uint64_t psize = entry.page_size_in_byte;
             if(psize==0) goto page_size_invalid;
             if((entry.vbase % psize) != 0 || (entry.phybase % psize) != 0){
-                fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+                fail.reason=COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
                 goto bad_vmentry_unlock;
             }
             switch(entry.page_size_in_byte){
@@ -542,27 +543,27 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         occupyied_size+=(end_vaddr - curr_vaddr);
         goto success;
     }else{
-        fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
+        fail.reason=COMMON_FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
     }
 
     
     success:
 
     if(is_reach_va_bottom){
-        success.result=result_code::SUCCESS_BUT_SIDE_EFFECT;
-        success.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::SUCCESS_BUT_SIDE_AFFECTS::REASON_CODE_MAP_LOW_16K;
+        success.result=result_code::SUCCESS_BUT_SIDE_AFFECTS;
+        success.reason=enable_vmentry_results::SUCCESS_BUT_SIDE_AFFECTS::REASON_CODE_MAP_LOW_16K;
     }
     return success;
     page_size_invalid:
 
-    fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
+    fatal.reason=COMMON_FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
     return fatal;
     bad_vmentry_unlock:
 
     return fail;
     sub_step_invalid:
 
-    fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::enable_vmentry_results::FATAL_REASONS::REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE;
+    fatal.reason=COMMON_FATAL_REASONS::REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE;
     pages_runout_chech:
 
     return pages_alloc_event_kurd;
@@ -580,15 +581,15 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
     KURD_t success=default_success();
     KURD_t fail=default_fail();
     KURD_t fatal=default_fatal();
-    success.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
-    fail.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
-    fatal.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
+    success.event_code=EVENT_CODE_DISABLE_VMENTRY;
+    fail.event_code=EVENT_CODE_DISABLE_VMENTRY;
+    fatal.event_code=EVENT_CODE_DISABLE_VMENTRY;
     vaddr_t end_vaddr = interval.vbase() + interval.byte_cnt();
     if(
         interval.vbase()>=end_vaddr||
         end_vaddr>(pglv_4_or_5?PAGE_LV4_USERSPACE_SIZE:PAGE_LV5_USERSPACE_SIZE)||
         interval.pbase()<16*_4KB_SIZE
-    ){fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+    ){fail.reason=COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
     return fail;}
     uint64_t currunt_roottb_phyaddr=0;
     asm volatile("mov %%cr3, %0" : "=r"(currunt_roottb_phyaddr));
@@ -869,7 +870,7 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     int status;
     pages_clear_error_status clear_status;
     if (status != OS_SUCCESS) {
-        fail.reason = MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+        fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
         return fail;
     }
     if (pglv_4_or_5 == PAGE_TBALE_LV::LV_4) {
@@ -882,7 +883,7 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
                 uint64_t psize = entry.page_size_in_byte;
                 if (psize == 0) goto page_size_invalid;
                 if ((entry.vbase % psize) != 0 || (entry.phybase % psize) != 0) {
-                    fail.reason = MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+                    fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
                     goto bad_vmentry_unlock;
                 }
                 switch (entry.page_size_in_byte) {
@@ -928,7 +929,7 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
                 uint64_t psize = entry.page_size_in_byte;
                 if (psize == 0) goto page_size_invalid;
                 if ((entry.vbase % psize) != 0 || (entry.phybase % psize) != 0) {
-                    fail.reason = MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+                    fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
                     goto bad_vmentry_unlock;
                 }
                 switch (entry.page_size_in_byte) {
@@ -975,14 +976,14 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
         //tod:广播所有核心重新
         goto success;
     } else {
-        fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
+        fail.reason=COMMON_FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
         return fail;
     }
 
 success:
     return success;
 page_size_invalid:
-    fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
+    fatal.reason=COMMON_FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
     return fatal;
 bad_vmentry_unlock:
     return fail;
@@ -990,16 +991,16 @@ sub_step_invalid:
     switch (clear_status)
     {
     case pages_clear_error_status::TRY_TO_CLEAR_UNPRESENT_PAGE:
-        fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FATAL_REASONS::REASON_CODE_TRY_TO_CLEAR_UNPRESENT_PAGE;
+        fatal.reason=disable_vmentry_results::FATAL_REASONS::REASON_CODE_TRY_TO_CLEAR_UNPRESENT_PAGE;
         break;
     case pages_clear_error_status::TRY_TO_GET_SUB_PAGE_OF_HUGE_PAGE:
-        fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FATAL_REASONS::REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE;
+        fatal.reason=COMMON_FATAL_REASONS::REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE;
         break;
     case pages_clear_error_status::CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY:
-        fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FATAL_REASONS::REASON_CODE_CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
+        fatal.reason=disable_vmentry_results::FATAL_REASONS::REASON_CODE_CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
         break;
     default:
-    fatal.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::disable_vmentry_results::FATAL_REASONS::REASON_CODE_OTHER_PAGES_SET_FATAL;
+    fatal.reason=disable_vmentry_results::FATAL_REASONS::REASON_CODE_OTHER_PAGES_SET_FATAL;
     }
     return fatal;
 }
@@ -1014,9 +1015,9 @@ phyaddr_t AddressSpace::vaddr_to_paddr(vaddr_t vaddr,KURD_t& kurd)
     KURD_t success=default_success();
    KURD_t fail=default_fail();
    KURD_t fatal=default_fatal();
-   success.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_TRAN_TO_PHY;
-   fail.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_TRAN_TO_PHY;
-   fatal.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_TRAN_TO_PHY;
+   success.event_code=EVENT_CODE_TRAN_TO_PHY;
+   fail.event_code=EVENT_CODE_TRAN_TO_PHY;
+   fatal.event_code=EVENT_CODE_TRAN_TO_PHY;
     if(pglv_4_or_5 == PAGE_TBALE_LV::LV_4){
         if(pml4_idx>255)goto not_allowd;// 高一半是内核空间,这里无权限访问
         
@@ -1048,16 +1049,16 @@ phyaddr_t AddressSpace::vaddr_to_paddr(vaddr_t vaddr,KURD_t& kurd)
         pte.raw = pte_raw;
         goto pte_end;
     }else{
-        fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::tran_to_phy_results::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
+        fail.reason=COMMON_FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
     kurd=fail;
     return 0;
     }
     not_allowd:
-    fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::tran_to_phy_results::FAIL_REASONS::REASON_CODE_NOT_ALLOW_KSPACE_VA;
+    fail.reason=tran_to_phy_results::FAIL_REASONS::REASON_CODE_NOT_ALLOW_KSPACE_VA;
     kurd=fail;
     return 0;
     entry_not_presnt:
-    fail.reason=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::tran_to_phy_results::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
+    fail.reason=tran_to_phy_results::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
     kurd=fail;
     return 0;
     pdpte_end:
@@ -1115,7 +1116,7 @@ KURD_t AddressSpace::second_stage_init()
     occupyied_size=0;
     ksetmem_8(tlb_holding_bitmap,0,sizeof(tlb_holding_bitmap));
     KURD_t success=default_success();
-    success.event_code=MEMMODULE_LOCATIONS::ADDRESSPACE_EVENTS::EVENT_CODE_INIT;
+    success.event_code=EVENT_CODE_INIT;
     return success;
 }
 void shift_addresSpace(AddressSpace *new_address_space)

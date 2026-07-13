@@ -108,7 +108,7 @@ namespace module_code {
 }
 namespace result_code {
     constexpr uint16_t SUCCESS = 0;
-    constexpr uint16_t SUCCESS_BUT_SIDE_EFFECT = 1;
+    constexpr uint16_t SUCCESS_BUT_SIDE_AFFECTS = 1;
     constexpr uint16_t PARTIAL_SUCCESS = 2;
     constexpr uint16_t FAIL = 8;
     constexpr uint16_t RETRY = 9;

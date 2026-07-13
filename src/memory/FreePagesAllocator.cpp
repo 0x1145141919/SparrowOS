@@ -484,7 +484,7 @@ phyaddr_t FreePagesAllocator::alloc
 
     if (size == 0) {
         kurd = fail;
-        kurd.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_INVALID_SIZE;
+        kurd.reason = FAIL_REASONS::FAIL_REASON_CODE_INVALID_SIZE;
         if (stat_ptr) {
             stat_ptr->alloc_fail++;
         }
@@ -493,7 +493,7 @@ phyaddr_t FreePagesAllocator::alloc
     }
     if (params.numa != 0) {
         kurd = fail;
-        kurd.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_NUMA_NOT_SUPPORTED;
+        kurd.reason = FAIL_REASONS::FAIL_REASON_CODE_NUMA_NOT_SUPPORTED;
         if (stat_ptr) {
             stat_ptr->alloc_fail++;
         }
@@ -502,7 +502,7 @@ phyaddr_t FreePagesAllocator::alloc
     }
     if (BCBS == nullptr || BCB_count == 0) {
         kurd = fail;
-        kurd.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_NO_AVALIABLE_BCB;
+        kurd.reason = FAIL_REASONS::FAIL_REASON_CODE_NO_AVALIABLE_BCB;
         if (stat_ptr) {
             stat_ptr->alloc_fail++;
         }
@@ -608,7 +608,7 @@ phyaddr_t FreePagesAllocator::alloc
 
         if (permanent_fail_count >= BCB_count) {
             kurd = fail;
-            kurd.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_NO_AVALIABLE_BCB;
+            kurd.reason = FAIL_REASONS::FAIL_REASON_CODE_NO_AVALIABLE_BCB;
             if (stat_ptr) {
                 stat_ptr->alloc_fail++;
             }
@@ -627,7 +627,7 @@ phyaddr_t FreePagesAllocator::alloc
 
         if (saw_busy_candidate) {
             kurd = retry;
-            kurd.reason = RETRY_REASONS_CODE::RETRY_REASON_CODE_TIME_OUT;
+            kurd.reason = RETRY_REASONS::RETRY_REASON_CODE_TIME_OUT;
             if (stat_ptr) {
                 stat_ptr->alloc_fail++;
             }
@@ -636,7 +636,7 @@ phyaddr_t FreePagesAllocator::alloc
         }
 
         kurd = retry;
-        kurd.reason = RETRY_REASONS_CODE::RETRY_REASON_CODE_TIME_OUT;
+        kurd.reason = RETRY_REASONS::RETRY_REASON_CODE_TIME_OUT;
         if (stat_ptr) {
             stat_ptr->alloc_fail++;
         }
@@ -663,7 +663,7 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::free_results;
     auto make_not_belong = [&]() -> KURD_t {
         KURD_t r = fail;
-        r.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_BASE_NOT_BELONG;
+        r.reason = FAIL_REASONS::FAIL_REASON_CODE_BASE_NOT_BELONG;
         return r;
     };
 
