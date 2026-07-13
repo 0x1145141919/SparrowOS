@@ -69,6 +69,14 @@ static inline KURD_t scheduler_default_kurd()
     return KURD_t(0, 0, module_code::SCHEDULER, Scheduler::SCHEDULER, 0, 0, err_domain::CORE_MODULE);
 }
 
+static inline KURD_t make_sched_set_state_fatal()
+{
+    KURD_t k = scheduler_default_kurd();
+    k.event_code = Scheduler::SCHEDULER_EVENTS::EVENT_CODE_SET_STATE;
+    k.reason = Scheduler::SCHEDULER_EVENTS::COMMON_FATAL_REASONS::STATE_TRANSITION_FAIL;
+    return set_fatal_result_level(k);
+}
+
 static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd)
 {
     panic_info_inshort inshort{
@@ -154,8 +162,9 @@ void per_processor_scheduler::sleep_tasks_wake()
 
         for (uint8_t i = 0; i < batch_count; i++) {
             reentrant_spinlock_guard g(batch[i]->task_lock);
-            batch[i]->on_queue_bit = false;
-            batch[i]->set_ready();
+            batch[i]->on_blockers_queue_bit = false;
+            if (!batch[i]->set_ready())
+                panic_with_kurd(make_sched_set_state_fatal());
         }
 
         {
@@ -177,8 +186,9 @@ void per_processor_scheduler::sched()
             if(this->ready_queue.size()){
                 task**candidate=this->ready_queue.front();
                 if(*candidate){
+                    task* popped = *candidate;
                     this->ready_queue.pop_front();
-                    return *candidate;
+                    return popped;
                 }
             }
         }
@@ -190,8 +200,9 @@ void per_processor_scheduler::sched()
                 if(other->ready_queue.size()){
                     task**candidate=other->ready_queue.front();
                     if(*candidate){
+                    task* popped = *candidate;
                     other->ready_queue.pop_front();
-                    return *candidate;
+                    return popped;
                     }
                 }
             }
@@ -200,7 +211,8 @@ void per_processor_scheduler::sched()
     }();
     {
     reentrant_spinlock_guard g1(to_run->task_lock);
-    to_run->set_running();
+    if (!to_run->set_running())
+        panic_with_kurd(make_sched_set_state_fatal());
     to_run->belonged_processor_id=fast_get_processor_id();
     gs_u64_write(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX,(uint64_t)to_run);
     switch(to_run->choose){
@@ -263,6 +275,8 @@ void per_processor_scheduler::placed_init(per_processor_hardware_stack_t* stacks
     t.priv_ctx.core_ctx.idtctx.iret.rsp=t.priv_stack_base+(t.priv_stack_pages<<12)-64;
     t.priv_ctx.core_ctx.idtctx.iret.rflags=INIT_DEFAULT_RFLAGS;
     t.choose=task::ctx_choose::priv;
+    if (!t.set_ready())
+        panic_with_kurd(make_sched_set_state_fatal());
 }
 per_processor_scheduler* global_schedulers = nullptr;
 

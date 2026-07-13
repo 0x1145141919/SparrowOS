@@ -263,6 +263,7 @@ KURD_t NVMe_Controller::second_stage_init()
         .vpn = reinterpret_cast<vaddr_t>(acq_va) >> 12, .ppn = acq_pa >> 12,
         .npages = acq_bytes >> 12, .access = KSPACE_RW_UC_ACCESS };
     cqs[0].num_of_entries = DEFAULT_ADMIN_QUEUE_ENTRIES;
+    cqs[0].block_queue_id = bq_alloc(&cqs[0].wait_queue);
 
     bsp_kout << "[NVMe] Controller CAP=";
     bsp_kout.shift_hex();
@@ -618,6 +619,9 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
                              cqs[0].cq_ring.npages);
         cqs[0].cq_ring.vpn = 0;
     }
+    bq_free(cqs[0].block_queue_id);
+    cqs[0].block_queue_id = 0;
+    msix_vec_free(0);
 
     // Free admin buffer
     if (admin_buffer.vpn != 0) {
@@ -627,10 +631,7 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
         admin_buffer.npages = 0;
     }
 
-    // Free MSI-X vectors + mask table entries
-    for (uint16_t v = 0; v < max_msix_vectors; v++) {
-        msix_vec_free(v);
-    }
+    // Mask all MSI-X table entries（向量已在 io_queue_free + 上一步释放完毕）
     if (msix_table) {
         for (uint32_t i = 0; i < max_msix_vectors; i++)
             msix_table[i].vector_control |= 1;

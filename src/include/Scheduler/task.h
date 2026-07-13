@@ -34,7 +34,7 @@ public:
         event_type_COUNT
     };
 
-    bool on_queue_bit = false;
+    bool on_blockers_queue_bit = false;
     uint32_t belonged_processor_id;
     reentrant_spinlock_cpp_t task_lock;
     miusecond_time_stamp_t min_wakeup_stamp;

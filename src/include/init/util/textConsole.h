@@ -42,6 +42,7 @@ public:
     static void PutChar(char ch);
     static void PutString(const char* s,uint64_t len);
     static void Clear();
+    static uint64_t FrameBufferBackendIndex() { return fb_backend_index; }
     
 private:
     static void render_glyph(int m, int n, unsigned char ch);
@@ -52,6 +53,7 @@ private:
     static uint32_t background_color;
     static bool ready;
     static uint16_t glyph_index[256];
+    static uint64_t fb_backend_index;
     static KURD_t default_kurd();
     static KURD_t default_success();
     static KURD_t default_fail();

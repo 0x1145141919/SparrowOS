@@ -140,7 +140,6 @@ private:
     KURD_t msix_vec_alloc(uint32_t processor_id, uint16_t msix_vec);
     KURD_t msix_vec_free(uint16_t msix_vec);
     void msix_enable(uint32_t x2apic_id, uint16_t msix_vec,uint8_t cpu_vec);
-    // AER
     static constexpr uint8_t AER_batch_size = 16;
     static constexpr uint16_t AER_base_cid = 0xf000;
     vm_interval admin_buffer;

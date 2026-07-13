@@ -8,6 +8,7 @@ struct blocked_tasks_clamps_t {
     bool is_queue_empty;
     bool is_timeout_mov_early;
     task* arr[64];
+    blocked_tasks_clamps_t();
 };
 
 class block_queue {

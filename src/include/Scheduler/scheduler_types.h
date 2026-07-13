@@ -10,12 +10,16 @@ namespace Scheduler {
     constexpr uint8_t BLOCK_QUEUE_SYSTEM = 4;
 
     namespace SCHEDULER_EVENTS {
+        namespace COMMON_FATAL_REASONS {
+            constexpr uint16_t STATE_TRANSITION_FAIL = 0;
+        }
         namespace COMMON_FAIL_REASONS {
             constexpr uint16_t NULL_TASK_PTR = 0;
             constexpr uint16_t BAD_TASK_TYPE = 1;
             constexpr uint16_t INSERT_FAIL   = 2;
         }
         constexpr uint8_t EVENT_CODE_INSERT_READY_TASK = 1;
+        constexpr uint8_t EVENT_CODE_SET_STATE         = 2;
         namespace insert_ready_task_results {}
     }
 
@@ -29,6 +33,7 @@ namespace Scheduler {
             constexpr uint16_t PRIVCTX_STACKPTR_OOR  = 1;
             constexpr uint16_t NOT_SUPPORTED_CTX     = 2;
             constexpr uint16_t NULL_RUNNING_TASK     = 3;
+            constexpr uint16_t STATE_TRANSITION_FAIL = 4;
         }
         constexpr uint8_t EVENT_CODE_KTHREAD_INIT        = 1;
         namespace kthread_init_results {}
@@ -64,6 +69,7 @@ namespace Scheduler {
                 constexpr uint16_t NULL_RUNNING_TASK = 2;
             }
         }
+        constexpr uint8_t EVENT_CODE_SET_STATE = 6;
     }
 
     namespace TASK_POOL_EVENTS {

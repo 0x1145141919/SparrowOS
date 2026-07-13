@@ -89,7 +89,6 @@ void task::task_event_shift(event_type_t new_event)
 task* task::basic_constructor()
 {
     task* t = task_pool::spawn();
-    ksetmem_8(t, 0, sizeof(task));
     t->task_state = task_state_t::init;
     t->current_event = event_type_t::init;
     t->current_event_start_stamp = ktime::get_microsecond_stamp();

@@ -105,6 +105,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
 
     // 检查count参数有效性
     if (count == 0) {
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -328,6 +329,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
 
     // 检查count参数有效性
     if (count == 0) {
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -428,6 +430,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_set(phyaddr_t phybase,
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
 
     if (count == 0){
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -477,6 +480,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -569,6 +573,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -624,6 +629,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
     fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
+        self_trace();
         fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }

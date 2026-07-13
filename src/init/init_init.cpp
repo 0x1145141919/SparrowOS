@@ -23,6 +23,7 @@
 #include "memory/memory_base.h"
 #include "init/init_phase_ctx.h"
 #include "init/init_heap_v3.h"
+#include "sys/io.h"
 void wrmsr_func(uint32_t offset, uint64_t value)
 {
     uint32_t value_high=(value>>32)&0xffffffff, value_low=value&0xffffffff; 
@@ -671,7 +672,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     bsp_kout << "[Phase4.5] CR3 <- 0x" << root << kendl;
     asm volatile("sfence");
     asm volatile("mov %0, %%cr3" :: "r"(root) : "memory");
-
+    
     // 4.5-4: 构建所有处理器的 GDT/TSS 到 GS 复合体（恒等映射，pbase == vbase）
     {
         vaddr_t gs_base  = iv->arch_info.conjunc_GSs.vbase();
@@ -713,14 +714,14 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         }
         bsp_kout << "[Phase4.5] prepare " << pcount << " GS complexes" << kendl;
     }
-
+    //outb(0xDB, 0x80);
     // 4.5-5: 加载 BSP 的 GDT + TSS（上一步已完全构建，此步仅 LGDT+LTR）
     {
         gs_complex_t* bsp_cx = (gs_complex_t*)(uint64_t)(iv->arch_info.conjunc_GSs.vbase());
         bsp_kout << "[Phase4.5] LGDT+LTR: complex @ 0x" << HEX << (uint64_t)bsp_cx << kendl;
         gs_complex_load_gdt_tss(bsp_cx);
     }
-
+    
     // 4.5-6: init_jump_to_kernel — 用 BSP 的 rsp0 栈构建 x64_standard_context 后跳入 kernel.elf
     {
         // kernel_entry_stack 已废弃，改用 BSP GS 复合体内嵌的 rsp0 栈
@@ -745,8 +746,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
 // init — 主入口
 // ============================================================================
 extern "C" void init_main(BootInfoHeader* header) {
-    if (init_io_and_heap(header) != 0) asm volatile("hlt");
-
+    if (init_io_and_heap(header) != 0) asm volatile("hlt");    
     auto em = init_memory_early(header);
     if (!em.xsdt_base && /* memory early 出错检测 */ 0) asm volatile("hlt");
     // 注意: init_memory_early 返回空 struct 时 xsdt_base=0 属于正常（ACPI 找不到），
@@ -758,7 +758,7 @@ extern "C" void init_main(BootInfoHeader* header) {
     kernel_mmu* kmmu = new kernel_mmu(arch_enums::x86_64_PGLV4);
     auto kl = phase_3a_load_kernel(kmmu, &em, header);
     auto iv = phase_3b(kl.kmmu, header, &em);
-
+    
     // Phase 4: 构造信息包
     uint64_t segcnt = 0;
     phymem_segment* pure_view = basic_allocator::get_pure_memory_view(&segcnt);

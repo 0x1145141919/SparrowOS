@@ -242,8 +242,7 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
     KURD_t enable_kurd = KspacePageTable::enable_VMentry(mapped);
     if (error_kurd(enable_kurd)) {
         (void)kspace_vm_table->remove(vbase);
-        fail.reason = FAIL_REASONS::REASON_CODE_ENABLE_VM_ENTRY_FAIL;
-        *kurd = fail;
+        *kurd = enable_kurd;
         return 0;
     }
     *kurd = success;

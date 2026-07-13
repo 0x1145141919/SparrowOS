@@ -2,11 +2,20 @@
 #include "init/util/kout.h"
 #include <sys/io.h>
 #define COM1_PORT 0x3F8
+static int uart_is_stuck = 0;  // 串口不通就不重试了
+
 void uart_write(const char* buf, uint64_t len)
 {
     if (!buf || len == 0) return;
+    if (uart_is_stuck) return;
     for (uint64_t i = 0; i < len; ++i) {
-        while ((inb(COM1_PORT + 5) & 0x20) == 0);
+        int timeout = 100000;
+        while ((inb(COM1_PORT + 5) & 0x20) == 0) {
+            if (--timeout == 0) {
+                uart_is_stuck = 1;
+                return;
+            }
+        }
         outb(buf[i], COM1_PORT);
     }
 }

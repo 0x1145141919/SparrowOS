@@ -232,58 +232,28 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
 // 每隔 ~5s 遍历所有 BQ，弹走超时任务
 void* bq_timeout_sweeper(void*)
 {
+    blocked_tasks_clamps_t clamps;
     while (true) {
-        kthread_sleep(5 * 1000 * 1000);  // 5s
-        // ── 第一遍：对在线 BQ 计数 ──
-        size_t count = 0;
         {
             interrupt_guard gi;
             spinrwlock_interrupt_about_read_guard lc(container_lock);
-            for (auto it = container.begin(); it != container.end(); ++it)
-                count++;
-        }
-        if (count == 0) continue;
-
-        // ── 分配快照数组 ──
-        bq_id_t* ids = new bq_id_t[count];
-
-        // ── 第二遍：填充 ──
-        size_t filled = 0;
-        {
-            interrupt_guard gi;
-            spinrwlock_interrupt_about_read_guard lc(container_lock);
-            for (auto it = container.begin(); it != container.end() && filled < count; ++it)
-                ids[filled++] = (*it).key;
-        }
-
-        // ── 逐个处理（每次拿容器锁查 ID） ──
-        blocked_tasks_clamps_t clamps;
-        for (size_t i = 0; i < filled; ++i) {
-            block_queue* q;
-            {
-                interrupt_guard gi;
-                spinrwlock_interrupt_about_read_guard lc(container_lock);
-                block_queue** p = container.find(ids[i]);
-                if (!p) continue;  // 已被 bq_free
-                q = *p;
-            }
-            {
-                interrupt_guard gi;
+            for (auto it = container.begin(); it != container.end(); ++it) {
+                block_queue* q = (*it).value;
                 spinlock_interrupt_about_guard gq(q->qlock);
-                while(true)
-                {q->pop_timeouts(&clamps);
-                if(clamps.batch_count==0)
-                    break;
-                bq_flush_pending(&clamps, true);
-                if(clamps.is_timeout_mov_early||clamps.is_queue_empty)
-                    break;
-                ksetmem_8(&clamps, 0, sizeof(clamps));
+                while (true) {
+                    ksetmem_8(&clamps, 0, sizeof(clamps));
+                    q->pop_timeouts(&clamps);
+                    if (clamps.batch_count == 0) break;
+                    bq_flush_pending(&clamps, true);
+                    if (clamps.is_timeout_mov_early || clamps.is_queue_empty) break;
                 }
-                
             }
         }
-
-        delete[] ids;
+        kthread_sleep(5 * 1000 * 1000);  // 5s
     }
     return nullptr;
+}
+blocked_tasks_clamps_t::blocked_tasks_clamps_t()
+{
+    ksetmem_8(this,0,sizeof(blocked_tasks_clamps_t));
 }

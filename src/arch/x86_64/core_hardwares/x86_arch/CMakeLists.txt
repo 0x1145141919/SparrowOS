@@ -9,6 +9,7 @@ set(x86_arch_SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/rtc.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/primitive_gop.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/x86_kshell_commands.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/pt_blackbox.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/device_interrupt_handlers_bare_enter.asm
 )
 

@@ -1,6 +1,7 @@
 #include "init/util/textConsole.h"
 #include "util/OS_utils.h"
 #include "16x32AsciiCharacterBitmapSet.h"
+#include "init/util/kout.h"
 
 TextViewport init_textconsole::view = {};
 TextCursor init_textconsole::cursor = {};
@@ -9,6 +10,12 @@ uint32_t init_textconsole::font_color = 0;
 uint32_t init_textconsole::background_color = 0;
 bool init_textconsole::ready = false;
 uint16_t init_textconsole::glyph_index[256] = {};
+uint64_t init_textconsole::fb_backend_index = ~0ULL;
+
+// kout backend wrapper: PutString → fb
+static void textconsole_write(const char* buf, uint64_t len) {
+    init_textconsole::PutString(buf, len);
+}
 
 KURD_t init_textconsole::default_kurd()
 {
@@ -125,6 +132,10 @@ KURD_t init_textconsole::Init(
 
     cursor = {0, 0};
     ready = true;
+
+    // 清屏：填充背景色 + 复位光标
+    Clear();
+
     return success;
 }
 

@@ -8,6 +8,7 @@
 #include "arch/x86_64/abi/pt_regs.h"
 #include "util/kptrace.h"
 #include "util/arch/x86-64/cpuid_intel.h"
+#include "sys/io.h"
 static void double_fault_handler(x64_standard_context_v2* frame,uint64_t errcode){
     panic_info_inshort inshort={
         .is_bug=1,
@@ -100,6 +101,7 @@ void div_by_zero_cpp_enter(x64_standard_context_v2 *frame)
 
 void debug_cpp_enter(x64_standard_context_v2 *frame)
 {
+    
 }
 
 void nmi_cpp_enter(x64_standard_context_v2 *frame)
@@ -109,6 +111,7 @@ void nmi_cpp_enter(x64_standard_context_v2 *frame)
 
 void breakpoint_cpp_enter(x64_standard_context_v2 *frame)
 {
+    outb(0xDB, 0x80);
 }
 
 void overflow_cpp_enter(x64_standard_context_v2 *frame)

@@ -30,7 +30,7 @@
 #include "util/kout.h"
 #include "util/rb_map.h"
 #include "memory/FreePagesAllocator.h"
-extern rb_map<bq_id_t, block_queue*>* container;
+extern rb_map<bq_id_t, block_queue*> container;
 extern spinrwlock_cpp_t container_lock;
 namespace {
 constexpr uint64_t kthread_yield_saved_stack_delta = 16 * sizeof(uint64_t);
@@ -52,6 +52,13 @@ static inline KURD_t make_kthreads_fatal(
     kurd.event_code = event_code;
     kurd.reason = reason;
     return set_fatal_result_level(kurd);
+}
+
+static inline KURD_t make_kthreads_set_state_fatal()
+{
+    return make_kthreads_fatal(
+        Scheduler::KTHREADS_EVENTS::EVENT_CODE_SET_STATE,
+        Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::STATE_TRANSITION_FAIL);
 }
 
 static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd,char*message=nullptr)
@@ -192,7 +199,8 @@ KURD_t task_launch(task *t, uint32_t pid)
     {
         reentrant_spinlock_guard g(yield_task->task_lock);
         kthread_common_save(context,true,yield_task);
-        yield_task->set_ready();
+        if (!yield_task->set_ready())
+            panic_with_kurd(context, make_kthreads_set_state_fatal());
     }
     if(!scheduler.is_the_idle_task(yield_task))
     {
@@ -211,7 +219,8 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
         if(!is_user_context){
             kthread_common_save(frame,true,interrupted_task);
         }
-        interrupted_task->set_ready();
+        if (!interrupted_task->set_ready())
+            panic_with_kurd(frame, make_kthreads_set_state_fatal());
     }
     if(!scheduler.is_the_idle_task(interrupted_task))
     {
@@ -227,7 +236,8 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     {
         reentrant_spinlock_guard g(exit_task->task_lock);
         kthread_common_save(context,true,exit_task);
-        exit_task->set_zombie();
+        if (!exit_task->set_zombie())
+            panic_with_kurd(context, make_kthreads_set_state_fatal());
     }
     scheduler.next_task_with_routine();
 }
@@ -238,7 +248,8 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     {
         reentrant_spinlock_guard g(blocked_task->task_lock);
         kthread_common_save(context,true,blocked_task);
-        blocked_task->set_blocked();
+        if (!blocked_task->set_blocked())
+            panic_with_kurd(context, make_kthreads_set_state_fatal());
     }
     scheduler.next_task_with_routine();
 }
@@ -264,11 +275,12 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         success.reason=ev::wakeup_thread_results::SUCCESS_REASONS::ALREADY_RUNNING_OR_WAKEUP;
         return kurd_get_raw(success);
     }else if(task_ptr->get_state()==task_state_t::blocked){
-        if(task_ptr->on_queue_bit){
+        if(task_ptr->on_blockers_queue_bit){
             fail.reason=ev::wakeup_thread_results::FAIL_REASONS::TASK_ON_BLOCK_QUEUE;
             return kurd_get_raw(fail);
         }
-        task_ptr->set_ready();
+        if (!task_ptr->set_ready())
+            panic_with_kurd(make_kthreads_set_state_fatal());
         {
             reentrant_spinlock_guard h(target_scheduler->sched_lock);
             kurd=target_scheduler->insert_ready_task(task_ptr, front_insert);
@@ -287,8 +299,9 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         reentrant_spinlock_guard g(sleeper_task->task_lock);
         kthread_common_save(context,true,sleeper_task);
         sleeper_task->min_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
-        sleeper_task->set_blocked();
-        sleeper_task->on_queue_bit = true;
+        if (!sleeper_task->set_blocked())
+            panic_with_kurd(context, make_kthreads_set_state_fatal());
+        sleeper_task->on_blockers_queue_bit = true;
         sleeper_task->task_event_shift( task::event_type_t::sleep);
         {
         reentrant_spinlock_guard h(scheduler->sched_lock);
@@ -307,7 +320,7 @@ void block_if_equal_cppenter(x64_standard_context_v2 *context)
     block_queue*waite_queue;
     {
         spinrwlock_interrupt_about_read_guard l(container_lock);
-        q=container->find(qid);
+        q=container.find(qid);
         if(q==nullptr){
             //rax里面放错误码
         }
@@ -325,9 +338,10 @@ void block_if_equal_cppenter(x64_standard_context_v2 *context)
             task::event_type_t qevt=waite_queue->get_queue_event();
             reentrant_spinlock_guard h(blocked_task->task_lock);
             kthread_common_save(context,true,blocked_task);
-            blocked_task->set_blocked();
+            if (!blocked_task->set_blocked())
+                panic_with_kurd(context, make_kthreads_set_state_fatal());
             blocked_task->task_event_shift(qevt);
-            blocked_task->on_queue_bit = true;
+            blocked_task->on_blockers_queue_bit = true;
             blocked_task->min_wakeup_stamp = ktime::get_microsecond_stamp() + 5000000;
             should_block=true;
             }

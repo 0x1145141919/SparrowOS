@@ -109,15 +109,8 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     if (global_pt_blackboxes)
         disable_blackbox(&global_pt_blackboxes[fast_get_processor_id()]);
 
-    if (prev != 0) {
-        asm volatile("cli;hlt");
-        __builtin_unreachable();
-    }
-
-    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
-        broadcast_halt();
-    }
-    will.kernel_final_state=GlobalKernelStatus;
+    if (prev == 0) {
+        will.kernel_final_state=GlobalKernelStatus;
     GlobalKernelStatus=kernel_state::PANIC;
     resources_shift();
     will.magic=panic_will_magic;
@@ -141,6 +134,14 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     }
     else_trace((void*)context->rbp);
     }
+    }else{
+
+    }
+
+    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
+        broadcast_halt();
+    }
+    
     asm volatile("cli");
     asm volatile("hlt");
 }

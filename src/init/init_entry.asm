@@ -142,6 +142,7 @@ shift_kernel:
     call rdx
 
 _init_entry:
+    cli
     mov rax, root_table
     mov cr3, rax
     lea rax, [rel bsp_init_gdt_descriptor]

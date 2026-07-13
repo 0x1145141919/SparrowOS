@@ -98,6 +98,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     }
 
     // ---- 5. 成功：记录 ring 信息 ----
+    cqs[qid].block_queue_id = bq_alloc(&cqs[qid].wait_queue);
     cqs[qid].cq_ring = {
         .vpn  = reinterpret_cast<vaddr_t>(cq_ring_va) >> 12,
         .ppn  = cq_ring_pa >> 12,
@@ -242,6 +243,9 @@ NVMe::command_result_t NVMe_Controller::delete_io_cq(uint16_t qid)
 
     // ---- 3. 释放 MSI-X 向量 ----
     msix_vec_free(qid);
+
+    // ---- 4. 释放 block queue ----
+    bq_free(cqs[qid].block_queue_id);
 
     cqs[qid] = cq_complex{};  // zero
 
