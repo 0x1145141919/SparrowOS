@@ -6,64 +6,62 @@
 #include "memory/memmodule_err_definitions.h"
 #include "abi/boot.h"
 typedef  uint64_t phyaddr_t;
-namespace MEMMODULE_LOCAIONS{
-    constexpr uint8_t LOCATION_CODE_TRANSPARNENT_PAGE=0x3;
-    namespace TRANSPARNENT_PAGE_EVENTS{
-        constexpr uint8_t EVENT_CODE_SPILT=0x1;
-        constexpr uint8_t EVENT_CODE_MERGE=0x2;
-        constexpr uint8_t EVENT_CODE_MERGE_FREE=0x3;
-        namespace SPILT_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER=1;
-                constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_SMALLER=2;
-                constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL=3;
-                constexpr uint16_t NOT_HEAD_PAGE=4;
-                constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE=5;
-            }
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t CONSISTENCY_VIOLATION=1;
-            }
+namespace MEMMODULE_LOCATIONS{
+    constexpr uint8_t LOCATION_CODE_TRANSPARENT_PAGE=0x03;
+    namespace TRANSPARENT_PAGE_EVENTS{
+        constexpr uint8_t EVENT_CODE_SPLIT=0x01;
+        constexpr uint8_t EVENT_CODE_MERGE=0x02;
+        constexpr uint8_t EVENT_CODE_MERGE_FREE=0x03;
+
+        namespace COMMON_FAIL_REASONS {}    // [0x00, 0x100)
+        namespace COMMON_FATAL_REASONS {}   // [0x00, 0x100)
+
+        namespace split_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER    = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_SMALLER = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL   = 0x102;
+            constexpr uint16_t NOT_HEAD_PAGE                            = 0x103;
+            constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE            = 0x104;
         }
-        namespace MERGE_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER=1;
-                constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_GREATER=2;
-                constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL=3;
-                constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE=4;
-                constexpr uint16_t FAIL_REASON_CODE_NOT_HEAD_PAGE=5;
-                constexpr uint16_t FAIL_REASON_CODE_ORDER_MISMATCH=6;
-                constexpr uint16_t FAIL_REASON_CODE_TYPE_MISMATCH=7;
-                constexpr uint16_t FAIL_REASON_CODE_TRANSPARENT_PAGE_INVALID=8;
-                constexpr uint16_t FAIL_REASON_CODE_HEAD_PTR_MISMATCH=9;
-                constexpr uint16_t FAIL_REASON_CODE_HUGE_ORDER_MISMATCH=10;
-                constexpr uint16_t NOT_HEAD_PAGE=11;
-            }
+        namespace split_results::FATAL_REASONS {
+            constexpr uint16_t CONSISTENCY_VIOLATION                    = 0x100;
         }
-        namespace MERGE_FREE_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER=1;
-                constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_GREATER=2;
-                constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL=3;
-                constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE=4;
-                constexpr uint16_t FAIL_REASON_CODE_NOT_HEAD_PAGE=5;
-                constexpr uint16_t FAIL_REASON_CODE_ORDER_MISMATCH=6;
-                constexpr uint16_t FAIL_REASON_CODE_NOT_FREE=7;
-                constexpr uint16_t FAIL_REASON_CODE_NOT_ALLOCATABLE=8;
-                constexpr uint16_t FAIL_REASON_CODE_REFCOUNT_NONZERO=9;
-                constexpr uint16_t FAIL_REASON_CODE_TRANSPARENT_PAGE_INVALID=10;
-                constexpr uint16_t FAIL_REASON_CODE_HEAD_PTR_MISMATCH=11;
-                constexpr uint16_t FAIL_REASON_CODE_HUGE_ORDER_MISMATCH=12;
-                constexpr uint16_t NOT_HEAD_PAGE=13;
-            }
+        namespace merge_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER    = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_GREATER = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL   = 0x102;
+            constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE            = 0x103;
+            constexpr uint16_t FAIL_REASON_CODE_NOT_HEAD_PAGE           = 0x104;
+            constexpr uint16_t FAIL_REASON_CODE_ORDER_MISMATCH          = 0x105;
+            constexpr uint16_t FAIL_REASON_CODE_TYPE_MISMATCH           = 0x106;
+            constexpr uint16_t FAIL_REASON_CODE_TRANSPARENT_PAGE_INVALID = 0x107;
+            constexpr uint16_t FAIL_REASON_CODE_HEAD_PTR_MISMATCH       = 0x108;
+            constexpr uint16_t FAIL_REASON_CODE_HUGE_ORDER_MISMATCH     = 0x109;
+        }
+        namespace merge_free_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_TARGET_ORDER    = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_TARGET_ORDER_NOT_GREATER = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_INDEX_ALIGN_TOO_SMALL   = 0x102;
+            constexpr uint16_t FAIL_REASON_CODE_OUT_OF_RANGE            = 0x103;
+            constexpr uint16_t FAIL_REASON_CODE_NOT_HEAD_PAGE           = 0x104;
+            constexpr uint16_t FAIL_REASON_CODE_ORDER_MISMATCH          = 0x105;
+            constexpr uint16_t FAIL_REASON_CODE_NOT_FREE                = 0x106;
+            constexpr uint16_t FAIL_REASON_CODE_NOT_ALLOCATABLE         = 0x107;
+            constexpr uint16_t FAIL_REASON_CODE_REFCOUNT_NONZERO        = 0x108;
+            constexpr uint16_t FAIL_REASON_CODE_TRANSPARENT_PAGE_INVALID = 0x109;
+            constexpr uint16_t FAIL_REASON_CODE_HEAD_PTR_MISMATCH       = 0x10A;
+            constexpr uint16_t FAIL_REASON_CODE_HUGE_ORDER_MISMATCH     = 0x10B;
         }
     };
-    constexpr uint8_t LOCATION_CODE_PAGES_ARR=0x4;
+    constexpr uint8_t LOCATION_CODE_PAGES_ARR=0x04;
     namespace PAGES_ARR_EVENTS{
-        constexpr uint8_t EVENT_CODE_SIMP_PAGES_SET=0x1;
-        namespace SIMP_PAGES_SET_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM=1;
-            }
+        constexpr uint8_t EVENT_CODE_SIMP_PAGES_SET=0x01;
+
+        namespace COMMON_FAIL_REASONS {}    // [0x00, 0x100)
+        namespace COMMON_FATAL_REASONS {}   // [0x00, 0x100)
+
+        namespace simp_pages_set_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM = 0x100;
         }
     };
 

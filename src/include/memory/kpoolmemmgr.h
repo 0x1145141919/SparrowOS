@@ -10,31 +10,35 @@ typedef uint64_t size_t;
 typedef uint64_t phyaddr_t;
 typedef uint64_t vaddr_t;
 
-namespace MEMMODULE_LOCAIONS {
+namespace MEMMODULE_LOCATIONS {
     // kpoolmemmgr 沿用 [4~7]
     constexpr uint8_t LOCATION_CODE_KPOOLMEMMGR = 4;
     namespace KPOOLMEMMGR_EVENTS {
         constexpr uint8_t EVENT_CODE_INIT = 0;
         constexpr uint8_t EVENT_CODE_ALLOC = 1;
-        namespace ALLOC_RESULTS::FAIL_RESONS {
-            constexpr uint16_t REASON_CODE_NO_AVALIABLE_MEM = 4;
-            constexpr uint16_t REASON_CODE_SIZE_IS_ZERO = 5;
-        }
         constexpr uint8_t EVENT_CODE_REALLOC = 2;
-        namespace REALLOC_RESULTS::FAIL_RESONS {
-            constexpr uint16_t REASON_CODE_DEMAND_SIZE_IS_ZERO = 4;
-            constexpr uint16_t REASON_CODE_PTR_NOT_IN_ANY_HEAP = 5;
-            constexpr uint16_t REASON_CODE_NO_AVALIABLE_MEM = 6;
-        }
         constexpr uint8_t EVENT_CODE_PER_PROCESSOR_HEAP_INIT = 3;
-        namespace PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS {
-            constexpr uint16_t REASON_CODE_ALREADY_ENABLED    = 1;
-            constexpr uint16_t REASON_CODE_BAD_PROCESSOR_COUNT = 2;
-            constexpr uint16_t REASON_CODE_NO_VADDR_SPACE     = 3;
-            constexpr uint16_t REASON_CODE_VM_ADD_FAIL        = 4;
-            constexpr uint16_t REASON_CODE_IDX_OUT_OF_RANGE   = 5;
-            constexpr uint16_t REASON_CODE_HEAP_ALREADY_EXISTS = 6;
-            constexpr uint16_t REASON_CODE_HEAP_NOT_EXIST     = 7;
+
+        namespace COMMON_FAIL_REASONS {}
+        namespace COMMON_FATAL_REASONS {}
+
+        namespace alloc_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_NO_AVALIABLE_MEM = 0x04;
+            constexpr uint16_t REASON_CODE_SIZE_IS_ZERO     = 0x05;
+        }
+        namespace realloc_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_DEMAND_SIZE_IS_ZERO  = 0x04;
+            constexpr uint16_t REASON_CODE_PTR_NOT_IN_ANY_HEAP  = 0x05;
+            constexpr uint16_t REASON_CODE_NO_AVALIABLE_MEM     = 0x06;
+        }
+        namespace per_processor_heap_init_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_ALREADY_ENABLED       = 0x01;
+            constexpr uint16_t REASON_CODE_BAD_PROCESSOR_COUNT   = 0x02;
+            constexpr uint16_t REASON_CODE_NO_VADDR_SPACE        = 0x03;
+            constexpr uint16_t REASON_CODE_VM_ADD_FAIL           = 0x04;
+            constexpr uint16_t REASON_CODE_IDX_OUT_OF_RANGE      = 0x05;
+            constexpr uint16_t REASON_CODE_HEAP_ALREADY_EXISTS   = 0x06;
+            constexpr uint16_t REASON_CODE_HEAP_NOT_EXIST        = 0x07;
         }
     }
     // HCB_v3 使用位置码 7
@@ -48,26 +52,23 @@ namespace MEMMODULE_LOCAIONS {
         constexpr uint8_t EVENT_CODE_INTERNAL_ALLOC = 5;
         constexpr uint8_t EVENT_CODE_INTERNAL_FREE = 6;
         constexpr uint8_t EVENT_CODE_CLEAR = 7;
-        namespace COMMON_FAIL_REASONS {//上界32
-            constexpr uint16_t REASON_CODE_BAD_ADDR = 0;//非内核地址，不满足16B对齐
-            constexpr uint16_t REASON_CODE_ADDR_NOT_THIS_HEAP = 1;
+        namespace COMMON_FAIL_REASONS { // 公共原因 [0x00, 0x100)
+            constexpr uint16_t REASON_CODE_BAD_ADDR          = 0x00;
+            constexpr uint16_t REASON_CODE_ADDR_NOT_THIS_HEAP = 0x01;
         }
-        namespace COMMON_FATAL_REASONS {//上界32
-            constexpr uint16_t REASON_CODE_METADATA_DESTROYED = 0;//非内核地址，不满足16B对齐
+        namespace COMMON_FATAL_REASONS { // 公共原因 [0x00, 0x100)
+            constexpr uint16_t REASON_CODE_METADATA_DESTROYED = 0x00;
         }
-        namespace INTERNAL_ALLOC_RESULTS {
-            namespace FAIL_RESONS
-            {
-                constexpr uint16_t REASON_CODE_NO_AVALIABLE_BUDDY = 32;
-            }
+        namespace internal_alloc_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_NO_AVALIABLE_BUDDY = 0x100;
         }
-        namespace ALLOC_RESULTS::FAIL_REASONS {
-            constexpr uint16_t REASON_CODE_SIZE_IS_ZERO       = 32;
-            constexpr uint16_t REASON_CODE_SIZE_TOO_LARGE     = 33;//大于等于2mb时报错
+        namespace alloc_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_SIZE_IS_ZERO       = 0x100;
+            constexpr uint16_t REASON_CODE_SIZE_TOO_LARGE     = 0x101;
         }
-        namespace FREE_RESULTS::FATAL_REASONS {
-            constexpr uint16_t DOUBLE_FREE_DETECT = 32;
-            constexpr uint16_t MERGE_BUT_ALREADY_FREE = 34;
+        namespace free_results::FATAL_REASONS {
+            constexpr uint16_t DOUBLE_FREE_DETECT       = 0x100;
+            constexpr uint16_t MERGE_BUT_ALREADY_FREE   = 0x102;
         }
     }
 }

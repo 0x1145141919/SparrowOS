@@ -14,176 +14,166 @@ constexpr uint16_t KERNEL_SPACE_PCID=0;
 extern bool pglv_4_or_5;//true代表4级页表，false代表5级页表,在KspacMapMgr.cpp存在
 
 int VM_vaddr_cmp(VM_DESC* a,VM_DESC* b);
-namespace MEMMODULE_LOCAIONS{
+namespace MEMMODULE_LOCATIONS{
     namespace ADDRESSPACE_EVENTS{
-        constexpr uint8_t EVENT_CODE_INIT=0x0;
-        constexpr uint8_t EVENT_CODE_ENABLE_VMENTRY=0x1;
-        constexpr uint8_t EVENT_CODE_DISABLE_VMENTRY=0x2;
-        constexpr uint8_t EVENT_CODE_TRAN_TO_PHY=0x3;
-        constexpr uint8_t EVENT_CODE_INVALIDATE_TLB=0x4;
-        constexpr uint8_t EVENT_CODE_BUILD_INDENTITY_MAP_ONLY_ON_gKERNELSPACE=0x5;
-        constexpr uint8_t EVENT_CODE_UNREGIST=0xff;
-        namespace ENABLE_VMENTRY_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_VMENTRY_congruence_vlidation=0x1;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY=0x3;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY_CANT_SPLIT=0x4;
-                constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING=0x100;
-                }
-            namespace FATAL_REASONS{
-                    constexpr uint16_t REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE=0x1;//AddressSpace的设计的能力有限，
-                    //只能根据喂进来的VM_DESC指定物理地址虚拟地址建立页表结构，
-                    //但是能够对已经确定的大页试图向下建立小页报错，这是种严重错误，
-                    //但是诱因可能是外部调用错误，地址段覆盖，所以这个不会内部panic,
-                    //但是调用者必须有意识，出现这个错误码可以考虑重开
-                    constexpr uint16_t REASON_CODE_PAGES_SET_FALT=0x2;
-                    constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE=0x4;
-                }
-            namespace SUCCESS_BUT_SIDE_AFFECTS{
-                constexpr uint16_t REASON_CODE_MAP_LOW_16K=0x1;
-            }            
+        constexpr uint8_t EVENT_CODE_INIT=0x00;
+        constexpr uint8_t EVENT_CODE_ENABLE_VMENTRY=0x01;
+        constexpr uint8_t EVENT_CODE_DISABLE_VMENTRY=0x02;
+        constexpr uint8_t EVENT_CODE_TRAN_TO_PHY=0x03;
+        constexpr uint8_t EVENT_CODE_INVALIDATE_TLB=0x04;
+        constexpr uint8_t EVENT_CODE_BUILD_INDENTITY_MAP_ONLY_ON_gKERNELSPACE=0x05;
+        constexpr uint8_t EVENT_CODE_UNREGIST=0xFF;
+
+        // 公共原因 [0x00, 0x100)
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_BAD_VMENTRY                 = 0x00;
+            constexpr uint16_t REASON_CODE_BAD_VMENTRY_CANT_SPLIT      = 0x01;
+            constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING      = 0x02;
         }
-        namespace TRAN_TO_PHY_RESULTS_CODE{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_NOT_ALLOW_KSPACE_VA=0x1;
-                constexpr uint16_t REASON_CODE_NOT_PRESENT_ENTRY=0x2;  
-                constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING=0x100;   
-                }
+        namespace COMMON_FATAL_REASONS {
+            constexpr uint16_t REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE = 0x00;
+            constexpr uint16_t REASON_CODE_PAGES_SET_FALT              = 0x01;
+            constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE           = 0x02;
         }
-        namespace DISABLE_VMENTRY_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_INVALID_PAGETABLE_ENTRY=0x1;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY_TRY_TO_MAP_LOW_MEM_WHO_NOT_gKernelSpace=0x2;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY=0x3;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY_CANT_SPLIT=0x4;
-                constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING=0x100;
-                    
-                }
-            namespace FATAL_REASONS{
-                    constexpr uint16_t REASON_CODE_TRY_TO_GET_SUB_PAGE_IN_ATOM_PAGE=0x1;//AddressSpace的设计的能力有限，
-                    //只能根据喂进来的VM_DESC指定物理地址虚拟地址建立页表结构，
-                    //但是能够对已经确定的大页试图向下建立小页报错，这是种严重错误，
-                    //但是诱因可能是外部调用错误，地址段覆盖，所以这个不会内部panic,
-                    //但是调用者必须有意识，出现这个错误码可以考虑重开
-                    constexpr uint16_t REASON_CODE_PAGES_SET_FALT=0x2;
-                    constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE=0x4;
-                    constexpr uint16_t REASON_CODE_TRY_TO_GET_SUB_PAGE_OF_NOT_PRESENT_PAGE=0x5;
-                    constexpr uint16_t REASON_CODE_TRY_TO_CLEAR_UNPRESENT_PAGE=0x6;
-                    constexpr uint16_t REASON_CODE_CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY=0x7;
-                    constexpr uint16_t REASON_CODE_OTHER_PAGES_SET_FATAL=0x8;
-                }   
-        }
-        namespace INVALIDATE_TLB_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY=0x1; 
+
+        namespace enable_vmentry_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_VMENTRY_congruence_vlidation = 0x100;
             }
-            namespace FATAL_REASONS{ 
-                constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE=0x4;
+            namespace FATAL_REASONS {
+                // 公共 FATAL 原因由 COMMON_FATAL_REASONS 提供
+            }
+            namespace SUCCESS_BUT_SIDE_AFFECTS {
+                constexpr uint16_t REASON_CODE_MAP_LOW_16K             = 0x100;
             }
         }
-        namespace BUILD_INDENTITY_MAP_ONLY_ON_gKERNELSPACE{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_NOT_gKERNELSPACE=1;
+        namespace disable_vmentry_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_INVALID_PAGETABLE_ENTRY            = 0x100;
+                constexpr uint16_t REASON_CODE_BAD_VMENTRY_TRY_TO_MAP_LOW_MEM_WHO_NOT_gKernelSpace = 0x101;
+            }
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_TRY_TO_GET_SUB_PAGE_OF_NOT_PRESENT_PAGE = 0x100;
+                constexpr uint16_t REASON_CODE_TRY_TO_CLEAR_UNPRESENT_PAGE        = 0x101;
+                constexpr uint16_t REASON_CODE_CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY = 0x102;
+                constexpr uint16_t REASON_CODE_OTHER_PAGES_SET_FATAL              = 0x103;
+            }
+        }
+        namespace tran_to_phy_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_NOT_ALLOW_KSPACE_VA     = 0x100;
+                constexpr uint16_t REASON_CODE_NOT_PRESENT_ENTRY       = 0x101;
+            }
+        }
+        namespace invalidate_tlb_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY            = 0x100;
+            }
+            namespace FATAL_REASONS {
+                // 公共 FATAL 原因由 COMMON_FATAL_REASONS 提供
+            }
+        }
+        namespace build_indentity_map_only_on_gKERNELSPACE_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_NOT_gKERNELSPACE        = 0x100;
             }
         }
     }
-    constexpr uint8_t LOCATION_CODE_KSPACE_MAP_MGR_VMENTRY_RBTREE=17;
+
+    constexpr uint8_t LOCATION_CODE_KSPACE_MAP_MGR_VMENTRY_RBTREE = 17;
     namespace KSPACE_MAPPER_EVENTS{
-        constexpr uint8_t EVENT_CODE_INIT=0x0;
-        namespace INIT_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t USER_TEST_KERNEL_IMAGE_SET_FAIL=0x1;
-                constexpr uint16_t USER_TEST_KERNEL_IMAGE_BAD_ELF_MAGIC=0x2;
-            }
+        constexpr uint8_t EVENT_CODE_INIT=0x00;
+        constexpr uint8_t EVENT_CODE_ENABLE_VMENTRY=0x01;
+        constexpr uint8_t EVENT_CODE_DISABLE_VMENTRY=0x02;
+        constexpr uint8_t EVENT_CODE_TRAN_TO_PHY_ENTRY=0x03;
+        constexpr uint8_t EVENT_CODE_INVALIDATE_TLB=0x04;
+        constexpr uint8_t EVENT_CODE_UNREGIST=0xFF;
+        constexpr uint8_t EVENT_CODE_PAGES_SET=0x05;
+        constexpr uint8_t EVENT_CODE_PAGES_CLEAR=0x06;
+        constexpr uint8_t EVENT_CODE_SEG_TO_INFO_PACKAGE=0x07;
+        constexpr uint8_t EVENT_CODE_VM_SEARCH_BY_ADDR=0x08;
+
+        // 公共原因 [0x00, 0x100)
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_BAD_VMENTRY                 = 0x00;
+            constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING      = 0x01;
+            constexpr uint16_t REASON_CODE_BAD_COUNT                   = 0x02;
+            constexpr uint16_t REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE = 0x03;
+            constexpr uint16_t REASON_CODE_BASE_NOT_ALIGNED            = 0x04;
         }
-        constexpr uint8_t EVENT_CODE_ENABLE_VMENTRY=0x1;
-        constexpr uint8_t EVENT_CODE_DISABLE_VMENTRY=0x2;
-        constexpr uint8_t EVENT_CODE_TRAN_TO_PHY_ENTRY=0x3;
-        namespace TRAN_TO_PHY_ENTRY_RESULTS_CODE{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_NOT_PRESENT_ENTRY=0x2;  
-                constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING=0x100;   
-            }
-            namespace FATAL_REASONS{
-                constexpr uint16_t REASON_CODE_UNREACHABLE_CODE=0x4;
-            }
-        }
-        constexpr uint8_t EVENT_CODE_INVALIDATE_TLB=0x4;
-        namespace INVALIDATE_TLB_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t SHARED_INFO_PACKAGE_NOT_INITILAIZED=0x1; 
-            }
-        }
-        constexpr uint8_t EVENT_CODE_UNREGIST=0xff;
-        namespace ENABLE_VMENTRY_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_VMENTRY_congruence_vlidation=0x1;
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY=0x3;
-                constexpr uint16_t REASON_CODE_NOT_SUPPORT_LV5_PAGING=0x100;
-                }
-            namespace FATAL_REASONS{
-                    constexpr uint16_t REASON_CODE_INVALIDE_PAGES_SIZE=0x1;//AddressSpace的设计的能力有限，
-                    
-                }            
+        namespace COMMON_FATAL_REASONS {
+            constexpr uint16_t REASON_CODE_INVALIDE_PAGES_SIZE         = 0x00;
         }
 
-        namespace DISABLE_VMENTRY_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_BAD_VMENTRY=0x3;
-                }
-            namespace FATAL_REASONS{
-                    constexpr uint16_t REASON_CODE_INVALIDE_PAGES_SIZE=0x1;//AddressSpace的设计的能力有限，
-                    constexpr uint16_t REASON_CODE_BROADCAST_TLB_SHUTDOWN_TIMEOUT=0x2;//AddressSpace的设计的能力有限，
-                    constexpr uint16_t REASON_CODE_INVALID_CONGRUENCE_LEVEL=0x3;
-                } 
-        }
-        namespace INVALIDATE_TLB_RESULTS{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY=0x1; 
-            }
-            namespace FATAL_REASONS{ 
-                constexpr uint16_t REASON_CODE_INVALID_PAGE_SIZE=0x4;
+        namespace init_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t USER_TEST_KERNEL_IMAGE_SET_FAIL     = 0x100;
+                constexpr uint16_t USER_TEST_KERNEL_IMAGE_BAD_ELF_MAGIC = 0x101;
             }
         }
-        namespace BUILD_INDENTITY_MAP_ONLY_ON_gKERNELSPACE{
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_NOT_gKERNELSPACE=1;
+        namespace enable_vmentry_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_VMENTRY_congruence_vlidation = 0x100;
+            }
+            namespace FATAL_REASONS {
+                // 公共 FATAL 原因由 COMMON_FATAL_REASONS 提供
             }
         }
-        constexpr uint8_t EVENT_CODE_PAGES_SET=0x5;
-        namespace PAGES_SET_RESULTS_CODE{ 
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_BAD_COUNT=0x1;
-                constexpr uint16_t REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE=0x2;
-                constexpr uint16_t REASON_CODE_BASE_NOT_ALIGNED=0x3;
+        namespace disable_vmentry_results {
+            namespace FAIL_REASONS {
+                // 公共 FAIL 原因由 COMMON_FAIL_REASONS 提供
             }
-            namespace FATAL_REASONS{
-                constexpr uint16_t REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB=0x1;
-                constexpr uint16_t REASON_CODE_HUGE_PDE_WHEN_GET_SUB=0x2;  
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_BROADCAST_TLB_SHUTDOWN_TIMEOUT = 0x100;
+                constexpr uint16_t REASON_CODE_INVALID_CONGRUENCE_LEVEL       = 0x101;
             }
         }
-        constexpr uint8_t EVENT_CODE_PAGES_CLEAR=0x6;
-        namespace PAGES_CLEAR_RESULTS_CODE{ 
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_BAD_COUNT=0x1;
-                constexpr uint16_t REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE=0x2;
-                constexpr uint16_t REASON_CODE_BASE_NOT_ALIGNED=0x3;
+        namespace tran_to_phy_entry_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_NOT_PRESENT_ENTRY       = 0x100;
             }
-            namespace FATAL_REASONS{
-                constexpr uint16_t REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST=0x1;
-                constexpr uint16_t REASON_CODE_HUGE_PDE_SUBTABLE_NOT_EXIST=0x2; 
-                constexpr uint16_t REASON_CODE_HUGE_PDPTE_UNTIMELY=0x3; 
-                constexpr uint16_t REASON_CODE_HUGE_PDPTE_NOT_EXIST=0x5;
-                constexpr uint16_t REASON_CODE_HUGE_PDE_UNTIMELY=0x4;
-                constexpr uint16_t REASON_CODE_HUGE_PDE_NOT_EXIST=0x6;
-
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_UNREACHABLE_CODE        = 0x100;
             }
         }
-        constexpr uint8_t EVENT_CODE_SEG_TO_INFO_PACKAGE=0x7;
-        constexpr uint8_t EVENT_CODE_VM_SEARCH_BY_ADDR=0x8;
-        namespace VM_SEARCH_BY_ADDR_RESULTS{ 
-            namespace FAIL_REASONS{
-                constexpr uint16_t REASON_CODE_NOT_FOUND=0x1;
+        namespace invalidate_tlb_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t SHARED_INFO_PACKAGE_NOT_INITILAIZED = 0x100;
+            }
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_BAD_VM_ENTRY            = 0x100;
+            }
+        }
+        namespace build_indentity_map_only_on_gKERNELSPACE_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_NOT_gKERNELSPACE        = 0x100;
+            }
+        }
+        namespace pages_set_results {
+            namespace FAIL_REASONS {
+                // 公共 FAIL 原因由 COMMON_FAIL_REASONS 提供
+            }
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB = 0x100;
+                constexpr uint16_t REASON_CODE_HUGE_PDE_WHEN_GET_SUB  = 0x101;
+            }
+        }
+        namespace pages_clear_results {
+            namespace FAIL_REASONS {
+                // 公共 FAIL 原因由 COMMON_FAIL_REASONS 提供
+            }
+            namespace FATAL_REASONS {
+                constexpr uint16_t REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST = 0x100;
+                constexpr uint16_t REASON_CODE_HUGE_PDE_SUBTABLE_NOT_EXIST  = 0x101;
+                constexpr uint16_t REASON_CODE_HUGE_PDPTE_UNTIMELY           = 0x102;
+                constexpr uint16_t REASON_CODE_HUGE_PDPTE_NOT_EXIST          = 0x103;
+                constexpr uint16_t REASON_CODE_HUGE_PDE_UNTIMELY             = 0x104;
+                constexpr uint16_t REASON_CODE_HUGE_PDE_NOT_EXIST            = 0x105;
+            }
+        }
+        namespace vm_search_by_addr_results {
+            namespace FAIL_REASONS {
+                constexpr uint16_t REASON_CODE_NOT_FOUND               = 0x100;
             }
         }
     }

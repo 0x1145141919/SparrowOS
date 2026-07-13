@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <abi/os_error_definitions.h>
-namespace MEMMODULE_LOCAIONS{
+namespace MEMMODULE_LOCATIONS{
         constexpr uint8_t INVALID=0;
         constexpr uint8_t LOCATION_CODE_BASE_MEMMGR=1;
         constexpr uint8_t LOCATION_CODE_PHYMEM_ACCESSOR=2;

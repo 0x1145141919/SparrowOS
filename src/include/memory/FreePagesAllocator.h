@@ -20,112 +20,100 @@ enum fpa_state_t : uint8_t {
     FPA_STATE_SEED,   // Init 完成，BCB 就绪，仅 interval_pollute 可用
     FPA_STATE_ACTIVE  // unlock() 后，alloc/free/interval_clean 可用
 };
-namespace MEMMODULE_LOCAIONS{
+namespace MEMMODULE_LOCATIONS{
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR=28;
     
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK=32;
+
     namespace FREEPAGES_ALLOCATOR{
         constexpr uint8_t EVENT_CODE_INIT= 0;
         constexpr uint8_t EVENT_CODE_INIT_SECOND_STAGE = 1;
         constexpr uint8_t EVENT_CODE_ALLOC = 2;
-        namespace INIT_RESULTS_CODE{
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t FAIL_NO_AVALIABLE_MEM= 1;
-                constexpr uint16_t FAIL_THREAD_COUNT_ZERO= 2;
-            }
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_BAD_PARAM_MATCH_THREAD_BUT_BAD_ZERO_CONEFFICIENCY= 1;
-            }
-
-        }
-        namespace ALLOC_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_SIZE = 1;
-                constexpr uint16_t FAIL_REASON_CODE_NUMA_NOT_SUPPORTED = 2;
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_CONSTRAIN = 3;
-                constexpr uint16_t FAIL_REASON_CODE_NO_MATCHED_BCB = 4;
-                constexpr uint16_t FAIL_REASON_CODE_NO_AVALIABLE_BCB = 5;
-            }
-            namespace RETRY_REASONS_CODE{
-                constexpr uint16_t RETRY_REASON_CODE_TIME_OUT = 1;
-            }
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t UNREACHABLE_CODE = 1;
-            }
-        }
         constexpr uint8_t EVENT_CODE_FREE = 3;
-        namespace FREE_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr  uint16_t FAIL_REASON_CODE_BASE_NOT_BELONG=1;
-            }
+
+        namespace COMMON_FAIL_REASONS { }     // [0x00, 0x100)
+        namespace COMMON_FATAL_REASONS { }    // [0x00, 0x100)
+        namespace COMMON_RETRY_REASONS { }    // [0x00, 0x100)
+
+        namespace init_results::FATAL_REASONS {
+            constexpr uint16_t FAIL_NO_AVALIABLE_MEM          = 0x100;
+            constexpr uint16_t FAIL_THREAD_COUNT_ZERO          = 0x101;
         }
-        namespace CALL_VIOLATION_RESULTS_CODE{
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t CALL_VIOLATION=1;
-            }
+        namespace init_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_BAD_PARAM_MATCH_THREAD_BUT_BAD_ZERO_CONEFFICIENCY = 0x100;
+        }
+        namespace alloc_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_SIZE     = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_NUMA_NOT_SUPPORTED = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_CONSTRAIN  = 0x102;
+            constexpr uint16_t FAIL_REASON_CODE_NO_MATCHED_BCB    = 0x103;
+            constexpr uint16_t FAIL_REASON_CODE_NO_AVALIABLE_BCB  = 0x104;
+        }
+        namespace alloc_results::RETRY_REASONS {
+            constexpr uint16_t RETRY_REASON_CODE_TIME_OUT        = 0x100;
+        }
+        namespace alloc_results::FATAL_REASONS {
+            constexpr uint16_t UNREACHABLE_CODE                  = 0x100;
+        }
+        namespace free_results::FAIL_REASONS {
+            constexpr  uint16_t FAIL_REASON_CODE_BASE_NOT_BELONG = 0x100;
+        }
+        namespace call_violation_results::FATAL_REASONS {
+            constexpr uint16_t CALL_VIOLATION                    = 0x100;
         }
     }
+
    namespace FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_EVENTS_CODES{ 
 
         constexpr uint8_t EVENT_CODE_INIT= 0;
         constexpr uint8_t EVENT_CODE_ALLOCATE_BUDY_WAY = 1;
-        namespace ALLOCATE_RESULTS_CODE{ 
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_ACQUIRE_SIZE_TO_BIG= 1;
-                constexpr uint16_t FAIL_REASON_CODE_NO_AVALIABLE_BUDDY= 2;
-            }
-        }
         constexpr uint8_t EVENT_CODE_CONANICO_FREE = 2;
-        namespace CONANICO_FREE_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_PAGE_INDEX= 1;
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER= 2;
-                constexpr uint16_t FAIL_REASON_CODE_COALESCING_FAILED= 3;
-                constexpr uint16_t FAIL_REASON_CODE_DOUBLE_FREE= 5;
-            }
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t BIN_TREE_CONSISTENCY_VIOLATION=1;
-            }
-        }
         constexpr uint8_t EVENT_CODE_SPLIT_PAGE = 3;
-        namespace SPLIT_PAGE_RESULTS_CODE{ 
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER= 1;
-                constexpr uint16_t FAIL_REASON_CODE_PAGE_NOT_FREE= 2;
-            }
-        }
         constexpr uint8_t EVENT_CODE_FLUSH_FREE_COUNT = 4;
-        namespace FLUSH_FREE_COUNT_RESULTS_CODE{
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t COSISTENCY_VIOLATION=1; 
-            }
-        }
         constexpr uint8_t EVENT_CODE_TOP_FOLD = 5;
         constexpr uint8_t EVENT_CODE_FREE_PAGES_FLUSH = 6;
-        namespace FREE_PAGES_FLUSH_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_ADDR_NOT_BELONG=1;
-            }
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t COSISTENCY_VIOLATION=1; 
-            }
-        }
         constexpr uint8_t EVENT_CODE_FREE=7;
-        namespace FREE_RESULTS_CODE{
-            namespace FAIL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_BASE_NOT_BELONG= 1;
-            }
-        }
         constexpr uint8_t EVENT_CODE_REPLAY_VALIDATE=8;
-        namespace REPLAY_VALIDATE_RESULTS_CODE{
-            namespace FATAL_REASONS_CODE{
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER=1;
-                constexpr uint16_t FAIL_REASON_CODE_INVALID_INDEX=2;
-                constexpr uint16_t FAIL_REASON_CODE_INTERNAL_CONFLICT=3;
-                constexpr uint16_t FAIL_REASON_CODE_PARENT_FREE_CHILD_USED=4;
-                constexpr uint16_t FAIL_REASON_CODE_PARENT_USED_CHILD_USED=5;
-                constexpr uint16_t FAIL_REASON_CODE_INTERNAL_BITMAP_MISSING=6;
-            }
+
+        namespace COMMON_FAIL_REASONS {}      // [0x00, 0x100)
+        namespace COMMON_FATAL_REASONS {}     // [0x00, 0x100)
+
+        namespace allocate_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_ACQUIRE_SIZE_TO_BIG = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_NO_AVALIABLE_BUDDY  = 0x101;
+        }
+        namespace conanico_free_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_PAGE_INDEX = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER      = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_COALESCING_FAILED  = 0x102;
+            constexpr uint16_t FAIL_REASON_CODE_DOUBLE_FREE        = 0x103;
+        }
+        namespace conanico_free_results::FATAL_REASONS {
+            constexpr uint16_t BIN_TREE_CONSISTENCY_VIOLATION      = 0x100;
+        }
+        namespace split_page_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER    = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_PAGE_NOT_FREE    = 0x101;
+        }
+        namespace flush_free_count_results::FATAL_REASONS {
+            constexpr uint16_t COSISTENCY_VIOLATION               = 0x100;
+        }
+        namespace free_pages_flush_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_ADDR_NOT_BELONG        = 0x100;
+        }
+        namespace free_pages_flush_results::FATAL_REASONS {
+            constexpr uint16_t COSISTENCY_VIOLATION               = 0x100;
+        }
+        namespace free_results::FAIL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_BASE_NOT_BELONG   = 0x100;
+        }
+        namespace replay_validate_results::FATAL_REASONS {
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_ORDER     = 0x100;
+            constexpr uint16_t FAIL_REASON_CODE_INVALID_INDEX     = 0x101;
+            constexpr uint16_t FAIL_REASON_CODE_INTERNAL_CONFLICT = 0x102;
+            constexpr uint16_t FAIL_REASON_CODE_PARENT_FREE_CHILD_USED = 0x103;
+            constexpr uint16_t FAIL_REASON_CODE_PARENT_USED_CHILD_USED = 0x104;
+            constexpr uint16_t FAIL_REASON_CODE_INTERNAL_BITMAP_MISSING = 0x105;
         }
     }
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR_BUDDY_CONTROL_BLOCK_BITMAP=33;
