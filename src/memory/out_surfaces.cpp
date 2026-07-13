@@ -19,37 +19,72 @@ extern "C" uint64_t remote_invalidate_seg(void* ptr);
 #include <unistd.h>
 #include <errno.h>
 #endif
-// 重载全局 new/delete 操作符
+// ── 模块错误树：LOCATION_CODE_OUT_SURFACES ──────────────────────
 namespace MEMMODULE_LOCAIONS{
-    namespace OUT_SRFACES_EVENTS{
-        uint8_t EVENT_CODE_PAGES_VALLOC=0;
-        uint8_t EVENT_CODE_PAGES_VFREE=1;
-        namespace PAGES_VFREE_RESULTS{
-            namespace FAIL_REASONS{
-                uint16_t REMOVE_VMENTRY_FAIL=1;
+    namespace OUT_SURFACES_EVENTS{
 
-            };
-        };
-        uint8_t EVENT_CODE_PAGES_ALLOC=2;
-        uint8_t EVENT_CODE_PAGES_FREE=3;
-        uint8_t EVENT_CODE_KEYWORD_NEW=4;
-        uint8_t EVENT_CODE_KEYWORD_DELETE=5;
-        uint8_t EVENT_CODE_DIRECT_MAP_PADDR=6;
-        namespace DIRECT_MAP_PADDR_RESULTS{
-            namespace FAIL_REASONS{
-                uint16_t REASON_CODE_BAD_INTERVAL=1;
-                uint16_t REASON_CODE_NO_AVALIABLE_VADDR_SPACE=2;
-                uint16_t REASON_CODE_INSERT_VM_DESC_FAIL=3;
-                uint16_t REASON_CODE_ENABLE_VM_ENTRY_FAIL=4;
-            };
-        };
-        uint8_t EVENT_CODE_DIRECT_UNMAP_PADDR=7;
-        namespace DIRECT_UNMAP_PADDR_RESULTS{
-            namespace FAIL_REASONS{
-                uint16_t REASON_CODE_REMOVE_VM_ENTRY_FAIL=1;
-            };
-        };
+        constexpr uint8_t EVENT_CODE_PAGES_VALLOC             = 0;
+        constexpr uint8_t EVENT_CODE_PAGES_VFREE              = 1;
+        constexpr uint8_t EVENT_CODE_PAGES_ALLOC              = 2;
+        // 3,4,5 reserved (unused)
+        constexpr uint8_t EVENT_CODE_DIRECT_MAP_PADDR         = 6;
+        constexpr uint8_t EVENT_CODE_DIRECT_UNMAP_PADDR       = 7;
+        constexpr uint8_t EVENT_CODE_PINTERVAL_ALLOC_AND_MAP  = 8;
+        constexpr uint8_t EVENT_CODE_BCAST_INVALIDATE_TLB     = 9;
+
+        // COMMON_FAIL_REASONS [0, 64)
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t BAD_INTERVAL           = 0;
+            constexpr uint16_t BAD_PARAM              = 1;
+            constexpr uint16_t VADDR_ALLOC_FAIL       = 2;
+            constexpr uint16_t INSERT_VM_DESC_FAIL    = 3;
+            constexpr uint16_t REMOVE_VM_DESC_FAIL    = 4;
+            constexpr uint16_t PHYS_ALLOC_FAIL        = 5;
+        }
+
+        // COMMON_FATAL_REASONS [0, 64)
+        namespace COMMON_FATAL_REASONS {
+            constexpr uint16_t TLB_SHOOTDOWN_TIMEOUT  = 0;
+        }
+
+        // 结果容器（私有原因 ≥ 64, 当前不需）
+        namespace DIRECT_MAP_PADDR_RESULTS {}
+        namespace DIRECT_UNMAP_PADDR_RESULTS {}
+        namespace PINTERVAL_ALLOC_AND_MAP_RESULTS {}
+        namespace BCAST_INVALIDATE_TLB_RESULTS {}
     }
+}
+
+// ── 位置级 KURD 模板函数 ────────────────────────────────────────
+namespace {
+static KURD_t out_surfaces_default_kurd()
+{
+    return KURD_t(0, 0, module_code::MEMORY,
+                  MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+                  0, 0, err_domain::CORE_MODULE);
+}
+
+static KURD_t out_surfaces_default_success()
+{
+    KURD_t k = out_surfaces_default_kurd();
+    k.result = result_code::SUCCESS;
+    k.level  = level_code::INFO;
+    return k;
+}
+
+static KURD_t out_surfaces_default_failure()
+{
+    KURD_t k = out_surfaces_default_kurd();
+    k = set_result_fail_and_error_level(k);
+    return k;
+}
+
+static KURD_t out_surfaces_default_fatal()
+{
+    KURD_t k = out_surfaces_default_kurd();
+    k = set_fatal_result_level(k);
+    return k;
+}
 }
 #ifdef USER_MODE
 namespace {
@@ -131,26 +166,14 @@ extern "C" int userspace_compatible_phymem_direct_map_disable()
 
 extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_MAP_PADDR_RESULTS;
-    KURD_t success=KURD_t(result_code::SUCCESS,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
-            level_code::INFO,
-            err_domain::CORE_MODULE
-        );
-    KURD_t fail=KURD_t(result_code::FAIL,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
-            level_code::ERROR,
-            err_domain::CORE_MODULE
-        );
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t success = out_surfaces_default_success();
+    KURD_t fail    = out_surfaces_default_failure();
+    success.event_code = EVENT_CODE_DIRECT_MAP_PADDR;
+    fail.event_code    = EVENT_CODE_DIRECT_MAP_PADDR;
 
     if (!interval.is_kernel_address() || interval.npages == 0) {
-        fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+        fail.reason = COMMON_FAIL_REASONS::BAD_INTERVAL;
         return fail;
     }
 
@@ -168,41 +191,28 @@ extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval)
     };
     int res = kspace_vm_table->insert(new_desc);
     if (res != OS_SUCCESS) {
-        fail.reason = FAIL_REASONS::REASON_CODE_INSERT_VM_DESC_FAIL;
+        fail.reason = COMMON_FAIL_REASONS::INSERT_VM_DESC_FAIL;
         return fail;
     }
     KURD_t enable_kurd = KspacePageTable::enable_VMentry(interval);
     if (error_kurd(enable_kurd)) {
         (void)kspace_vm_table->remove(interval.vbase());
-        fail.reason = FAIL_REASONS::REASON_CODE_ENABLE_VM_ENTRY_FAIL;
-        return fail;
+        return enable_kurd;
     }
     return success;
 }
 
 extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* kurd)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_MAP_PADDR_RESULTS;
-    KURD_t success=KURD_t(result_code::SUCCESS,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
-            level_code::INFO,
-            err_domain::CORE_MODULE
-        );
-    KURD_t fail=KURD_t(result_code::FAIL,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_MAP_PADDR,
-            level_code::ERROR,
-            err_domain::CORE_MODULE
-        );
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t success = out_surfaces_default_success();
+    KURD_t fail    = out_surfaces_default_failure();
+    success.event_code = EVENT_CODE_PINTERVAL_ALLOC_AND_MAP;
+    fail.event_code    = EVENT_CODE_PINTERVAL_ALLOC_AND_MAP;
 
     if (kurd == nullptr) return 0;
     if (interval.vpn != 0 || interval.ppn == 0 || interval.npages == 0) {
-        fail.reason = FAIL_REASONS::REASON_CODE_BAD_INTERVAL;
+        fail.reason = COMMON_FAIL_REASONS::BAD_INTERVAL;
         *kurd = fail;
         return 0;
     }
@@ -213,7 +223,7 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
     vaddr_t vbase = kspace_vm_table->alloc_available_space(
         interval.byte_cnt(), interval.pbase() % 0x40000000);
     if (vbase == 0) {
-        fail.reason = FAIL_REASONS::REASON_CODE_NO_AVALIABLE_VADDR_SPACE;
+        fail.reason = COMMON_FAIL_REASONS::VADDR_ALLOC_FAIL;
         *kurd = fail;
         return 0;
     }
@@ -235,7 +245,7 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
     };
     int res = kspace_vm_table->insert(new_desc);
     if (res != OS_SUCCESS) {
-        fail.reason = FAIL_REASONS::REASON_CODE_INSERT_VM_DESC_FAIL;
+        fail.reason = COMMON_FAIL_REASONS::INSERT_VM_DESC_FAIL;
         *kurd = fail;
         return 0;
     }
@@ -251,60 +261,44 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
 
 extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::DIRECT_UNMAP_PADDR_RESULTS;
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
     interrupt_guard g;
-    KURD_t success=KURD_t(result_code::SUCCESS,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
-            level_code::INFO,
-            err_domain::CORE_MODULE
-        );
-    KURD_t fail=KURD_t(result_code::FAIL,
-            0,
-            module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
-            level_code::ERROR,
-            err_domain::CORE_MODULE
-        );
+    KURD_t success = out_surfaces_default_success();
+    KURD_t fail    = out_surfaces_default_failure();
+    success.event_code = EVENT_CODE_DIRECT_UNMAP_PADDR;
+    fail.event_code    = EVENT_CODE_DIRECT_UNMAP_PADDR;
 
     if (!interval.is_kernel_address()) {
-        fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
+        fail.reason = COMMON_FAIL_REASONS::REMOVE_VM_DESC_FAIL;
         return fail;
     }
-    KURD_t status; 
+    KURD_t status;
     seg_to_pages_info_pakage_t pak;
     {
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
     int result = kspace_vm_table->remove(interval.vbase());
     if (result != 0) {
-        fail.reason = FAIL_REASONS::REASON_CODE_REMOVE_VM_ENTRY_FAIL;
+        fail.reason = COMMON_FAIL_REASONS::REMOVE_VM_DESC_FAIL;
         return fail;
     }
-    pak= KspacePageTable::disable_VMentry(interval,status);
+    pak = KspacePageTable::disable_VMentry(interval, status);
+    if (error_kurd(status))
+        return status;
     }
-    
-    status=broadcast_invalidate_tlb(&pak);
-    if (error_kurd(status)) return status;
+
+    KURD_t tlb_status = broadcast_invalidate_tlb(&pak);
+    if (error_kurd(tlb_status))
+        return tlb_status;
     return success;
 }
 KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
 {
-    KURD_t success = KURD_t(result_code::SUCCESS, 0,
-        module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
-        level_code::INFO,
-        err_domain::CORE_MODULE);
-    KURD_t fatal = KURD_t(result_code::FATAL, 0,
-        module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_DIRECT_UNMAP_PADDR,
-        level_code::FATAL,
-        err_domain::CORE_MODULE);
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t success = out_surfaces_default_success();
+    KURD_t fatal   = out_surfaces_default_fatal();
+    success.event_code = EVENT_CODE_BCAST_INVALIDATE_TLB;
+    fatal.event_code   = EVENT_CODE_BCAST_INVALIDATE_TLB;
 
     if (!pak)
         return success;
@@ -312,27 +306,22 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
     uint32_t self = fast_get_processor_id();
     uint32_t nproc = logical_processor_count;
 
-    // ── 本核直接执行 ──
     remote_invalidate_seg(pak);
 
     if (nproc <= 1)
         return success;
 
-    // ── 跟踪已完成的远端核 ──
-    // MAX_PROCESSORS_COUNT = 4096, 栈上 512B bitmap
     uint8_t done_bitmap[512];
     ksetmem_8(done_bitmap, 0, sizeof(done_bitmap));
 
-    // 本核视为已完成
     done_bitmap[self / 8] |= (1 << (self % 8));
     uint32_t confirmed = 1;
 
-    // ── 多核 TLB shootdown ────────────────────────────────────
-    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;  // 50ms
+    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
 
     while (confirmed < nproc) {
         if (ktime::get_microsecond_stamp() >= deadline) {
-            fatal.reason = 1;
+            fatal.reason = COMMON_FATAL_REASONS::TLB_SHOOTDOWN_TIMEOUT;
             panic_info_inshort inshort{
                 .is_bug = true, .is_policy = true,
                 .is_hw_fault = false, .is_mem_corruption = false,
@@ -347,7 +336,6 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
         bool made_progress = false;
 
         for (uint32_t pid = 0; pid < nproc; pid++) {
-            // 跳过已完成核
             uint32_t byte_idx = pid / 8;
             uint8_t  bit_mask = 1 << (pid % 8);
             if (done_bitmap[byte_idx] & bit_mask)
@@ -361,17 +349,15 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
             ipi.is_returnable = true;
 
             __uint128_t result = returnable_ipi_send(&ipi);
-            uint64_t ipi_status = (uint64_t)result;  // lo64 = IPI 状态
+            uint64_t ipi_status = (uint64_t)result;
 
             if (ipi_status == 1) {
                 done_bitmap[byte_idx] |= bit_mask;
                 confirmed++;
                 made_progress = true;
             }
-            // BUSY(2) / TIMEOUT(3) → 下轮重试
         }
 
-        // 无进展 → pause 短暂避让
         if (!made_progress) {
             for (int i = 0; i < 8; i++)
                 asm volatile("pause");
@@ -390,7 +376,7 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
                 OS_INVALID_PARAMETER,
                 module_code::MEMORY,
                 MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+                MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
                 level_code::ERROR,
                 err_domain::CORE_MODULE
             );
@@ -405,7 +391,7 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -415,54 +401,64 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
         MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
     return p;
 #else
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t fail = out_surfaces_default_failure();
+    fail.event_code = EVENT_CODE_PAGES_VALLOC;
+
     interrupt_guard g;
-    phyaddr_t result=FreePagesAllocator::alloc(
-        _4kbpgscount*0x1000,
+    phyaddr_t result = FreePagesAllocator::alloc(
+        _4kbpgscount * 0x1000,
         buddy_alloc_params{
-            .numa=0,
-            .try_lock_always_try=0,
-            .align_log2=alignment_log2
+            .numa = 0,
+            .try_lock_always_try = 0,
+            .align_log2 = alignment_log2
         },
         TYPE,
         *kurd_out
     );
-    if(result==FreePagesAllocator::INVALID_ALLOC_BASE||error_kurd(*kurd_out)){
-        //尝试用phymemspace_mgr::pages_linear_scan_and_alloc
-            return nullptr;
-    }
-    spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
-    vaddr_t vbase=kspace_vm_table->alloc_available_space(_4kbpgscount*0x1000,result%0x40000000);
-    if(vbase==0){
-        //回滚FreePagesAllocator::alloc
+    if (result == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(*kurd_out))
         return nullptr;
-    }
-    VM_DESC new_desc={
-        .start=vbase,
-        .end=vbase+_4kbpgscount*0x1000,
-        .map_type=VM_DESC::map_type_t::MAP_PHYSICAL,
-        .phys_start=result,
-        .access=KspacePageTable::PG_RW,
-        .committed_full=true,
-        .is_vaddr_alloced=true,
-    };
-    int res=kspace_vm_table->insert(new_desc);
-    if(res!=OS_SUCCESS){
-        return nullptr;
-    }
-    vm_interval interval={
-        .vpn=vbase>>12,
-        .ppn=result>>12,
-        .npages=_4kbpgscount,
-        .access=KspacePageTable::PG_RW
-    };
-    *kurd_out=KspacePageTable::enable_VMentry(interval);
 
+    spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
+    vaddr_t vbase = kspace_vm_table->alloc_available_space(
+        _4kbpgscount * 0x1000, result % 0x40000000);
+    if (vbase == 0) {
+        (void)FreePagesAllocator::free(result, _4kbpgscount * 0x1000);
+        fail.reason = COMMON_FAIL_REASONS::VADDR_ALLOC_FAIL;
+        *kurd_out = fail;
+        return nullptr;
+    }
+
+    VM_DESC new_desc = {
+        .start = vbase,
+        .end = vbase + _4kbpgscount * 0x1000,
+        .map_type = VM_DESC::map_type_t::MAP_PHYSICAL,
+        .phys_start = result,
+        .access = KspacePageTable::PG_RW,
+        .committed_full = true,
+        .is_vaddr_alloced = true,
+    };
+    int res = kspace_vm_table->insert(new_desc);
+    if (res != OS_SUCCESS) {
+        (void)FreePagesAllocator::free(result, _4kbpgscount * 0x1000);
+        fail.reason = COMMON_FAIL_REASONS::INSERT_VM_DESC_FAIL;
+        *kurd_out = fail;
+        return nullptr;
+    }
+
+    vm_interval interval = {
+        .vpn    = vbase >> 12,
+        .ppn    = result >> 12,
+        .npages = _4kbpgscount,
+        .access = KspacePageTable::PG_RW,
+    };
+    *kurd_out = KspacePageTable::enable_VMentry(interval);
     return (void*)vbase;
 #endif
 }
@@ -482,7 +478,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
                 OS_INVALID_PARAMETER,
                 module_code::MEMORY,
                 MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+                MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
                 level_code::ERROR,
                 err_domain::CORE_MODULE
             );
@@ -500,7 +496,7 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -513,17 +509,24 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
         MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
     // priv_stack_base = raw + 0x1000
     return reinterpret_cast<vaddr_t>(raw) + 0x1000;
 #else
-    interrupt_guard g;
-    if (_4kbpgscount == 0) return 0;
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t fail = out_surfaces_default_failure();
+    fail.event_code = EVENT_CODE_PAGES_ALLOC;
 
-    // 物理：只分配可用页，guard page 没有物理页（无映射，无需分配）
+    interrupt_guard g;
+    if (_4kbpgscount == 0) {
+        fail.reason = COMMON_FAIL_REASONS::BAD_PARAM;
+        *kurd_out = fail;
+        return 0;
+    }
+
     phyaddr_t phys_base = FreePagesAllocator::alloc(
         _4kbpgscount * 0x1000,
         buddy_alloc_params{
@@ -534,24 +537,22 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         page_state_t::kernel_pinned,
         *kurd_out
     );
-    if (phys_base == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(*kurd_out)) {
+    if (phys_base == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(*kurd_out))
         return phys_base;
-    }
 
     spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
 
-    // 虚拟空间：guard 1 页 + usable _4kbpgscount 页
     uint64_t total_virt_pages = _4kbpgscount + 1;
     vaddr_t vaddr = kspace_vm_table->alloc_available_space(
         total_virt_pages * 0x1000, phys_base % 0x40000000);
     if (vaddr == 0) {
-        // TODO: rollback FreePagesAllocator::alloc
+        (void)FreePagesAllocator::free(phys_base, _4kbpgscount * 0x1000);
+        fail.reason = COMMON_FAIL_REASONS::VADDR_ALLOC_FAIL;
+        *kurd_out = fail;
         return 0;
     }
 
-    // VM_DESC 覆盖整个虚拟区间（含 guard page 的坑位）
-    // [vaddr, vaddr+4K) 站着茅坑不拉屎——VM 已分配但无页表映射
-    vaddr_t base = vaddr + 0x1000;  // priv_stack_base
+    vaddr_t base = vaddr + 0x1000;
 
     VM_DESC new_desc = {
         .start = vaddr,
@@ -564,10 +565,12 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
     };
     int res = kspace_vm_table->insert(new_desc);
     if (res != OS_SUCCESS) {
+        (void)FreePagesAllocator::free(phys_base, _4kbpgscount * 0x1000);
+        fail.reason = COMMON_FAIL_REASONS::INSERT_VM_DESC_FAIL;
+        *kurd_out = fail;
         return 0;
     }
 
-    // 页表只映射可用部分，guard 页不写 PTE
     vm_interval interval = {
         .vpn    = base >> 12,
         .ppn    = phys_base >> 12,
@@ -575,18 +578,19 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         .access = KspacePageTable::PG_RW,
     };
     *kurd_out = KspacePageTable::enable_VMentry(interval);
-    return base;  // = priv_stack_base
+    return base;
 #endif
 }
 
-KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount){
+KURD_t __wrapped_pgs_vfree(void* vbase, uint64_t _4kbpgscount)
+{
 #ifdef USER_MODE
     if (vbase == nullptr || _4kbpgscount == 0) {
         return KURD_t(result_code::FAIL,
             OS_INVALID_PARAMETER,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -598,7 +602,7 @@ KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount){
             OS_MEMORY_FREE_FAULT,
             module_code::MEMORY,
             MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -607,56 +611,50 @@ KURD_t __wrapped_pgs_vfree(void*vbase,uint64_t _4kbpgscount){
     return KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
         MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
 #else
+    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    KURD_t fail = out_surfaces_default_failure();
+    fail.event_code = EVENT_CODE_PAGES_VFREE;
+
     interrupt_guard g;
-    phyaddr_t pbase=0;
-    KURD_t status=KspacePageTable::v_to_phyaddrtraslation((vaddr_t)vbase,pbase);
-    if(status.result!=result_code::SUCCESS){
+    phyaddr_t pbase = 0;
+    KURD_t status = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)vbase, pbase);
+    if (status.result != result_code::SUCCESS)
         return status;
-    }
-    status=FreePagesAllocator::free(pbase,_4kbpgscount*0x1000);
-    vm_interval interval={
-        .vpn=reinterpret_cast<vaddr_t>(vbase)>>12,
-        .ppn=pbase>>12,
-        .npages=_4kbpgscount,
-        .access=KspacePageTable::PG_RW
+
+    status = FreePagesAllocator::free(pbase, _4kbpgscount * 0x1000);
+
+    vm_interval interval = {
+        .vpn    = reinterpret_cast<vaddr_t>(vbase) >> 12,
+        .ppn    = pbase >> 12,
+        .npages = _4kbpgscount,
+        .access = KspacePageTable::PG_RW
     };
     seg_to_pages_info_pakage_t pak;
     {
         spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
         int result = kspace_vm_table->remove((vaddr_t)vbase);
         if (result != 0) {
-            return KURD_t(result_code::FAIL,
-                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::PAGES_VFREE_RESULTS::FAIL_REASONS::REMOVE_VMENTRY_FAIL,
-                module_code::MEMORY,
-                MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-                MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
-                level_code::ERROR,
-                err_domain::CORE_MODULE
-            );
+            fail.reason = COMMON_FAIL_REASONS::REMOVE_VM_DESC_FAIL;
+            return fail;
         }
         KURD_t inner_kurd;
         pak = KspacePageTable::disable_VMentry(interval, inner_kurd);
         if (error_kurd(inner_kurd))
             return inner_kurd;
-    }  // kspace_pagetable_modify_lock 已释放
+    }
 
-    // ── TLB shootdown（无锁）──
     KURD_t tlb_status = broadcast_invalidate_tlb(&pak);
     if (error_kurd(tlb_status))
         return tlb_status;
 
-    return KURD_t(result_code::SUCCESS, 0,
-        module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SRFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
-        level_code::INFO,
-        err_domain::CORE_MODULE
-    );
+    KURD_t success = out_surfaces_default_success();
+    success.event_code = EVENT_CODE_PAGES_VFREE;
+    return success;
 #endif
 }
 #ifdef KERNEL_MODE
