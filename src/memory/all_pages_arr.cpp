@@ -148,8 +148,8 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
         result_code::SUCCESS,
         0,
         module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_PAGES_ARR,
-        MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::EVENT_CODE_SIMP_PAGES_SET,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_PAGES_ARR,
+        MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::EVENT_CODE_SIMP_PAGES_SET,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
@@ -160,7 +160,7 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
     }
 
     if (mem_map == nullptr || mem_map_intervals == nullptr || mem_map_intervals_count == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+        fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
         return fail;
     }
 
@@ -184,7 +184,7 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
         break;
     }
     if (start_iv_idx == mem_map_intervals_count) {
-        fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+        fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
         return fail;
     }
 
@@ -196,12 +196,12 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
 
     while (remain > 0) {
         if (iv_idx >= mem_map_intervals_count) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
         const phyinterval_t& iv = mem_map_intervals[iv_idx];
         if (cursor < iv.base || page_off >= iv.numof4kbpgs) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
 
@@ -209,12 +209,12 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
         const uint64_t take = (remain < can_take) ? remain : can_take;
         remain -= take;
         if (take > (UINT64_MAX >> 12)) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
         const phyaddr_t add = static_cast<phyaddr_t>(take << 12);
         if (cursor + add < cursor) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
         cursor += add;
@@ -225,7 +225,7 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
         ++iv_idx;
         page_off = 0;
         if (iv_idx >= mem_map_intervals_count || cursor != mem_map_intervals[iv_idx].base) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
     }
@@ -240,7 +240,7 @@ KURD_t all_pages_arr::simp_pages_set(phyaddr_t phybase, uint64_t _4kbpgscount, p
         const uint64_t take = (remain < can_take) ? remain : can_take;
         const uint64_t mem_idx_base = iv.baseidx_in_memmap + page_off;
         if (mem_idx_base >= mem_map_entry_count || take > (mem_map_entry_count - mem_idx_base)) {
-            fail.reason = MEMMODULE_LOCAIONS::PAGES_ARR_EVENTS::SIMP_PAGES_SET_RESULTS_CODE::FAIL_REASONS_CODE::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
+            fail.reason = MEMMODULE_LOCATIONS::PAGES_ARR_EVENTS::simp_pages_set_results::FAIL_REASONS::FAIL_REASON_CODE_INTERVAL_NOT_IN_FREERAM;
             return fail;
         }
         for (uint64_t j = 0; j < take; ++j) {

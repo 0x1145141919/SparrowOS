@@ -56,7 +56,7 @@ KURD_t FreePagesAllocator::default_kurd()
 {
     return KURD_t(
             0, 0, module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, 0, err_domain::CORE_MODULE
         );
 }
@@ -106,8 +106,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
 
     KURD_t success(
         result_code::SUCCESS, 0, module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-        MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+        MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT,
         level_code::INFO, err_domain::CORE_MODULE
     );
     KURD_t fatal = set_fatal_result_level(success);
@@ -446,19 +446,19 @@ phyaddr_t FreePagesAllocator::alloc
     KURD_t fail = default_error();
     KURD_t retry = default_retry();
 
-    success.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
-    fail.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
-    retry.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
+    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
+    fail.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
+    retry.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
 
     if (state != FPA_STATE_ACTIVE) {
         KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
-        violation_kurd.reason = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::CALL_VIOLATION_RESULTS_CODE::FATAL_REASONS_CODE::CALL_VIOLATION;
+        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
+        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
         Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::alloc] called before unlock()", nullptr, nullptr, violation_kurd);
     }
 
-    using namespace MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::ALLOC_RESULTS_CODE;
+    using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::alloc_results;
 
     uint64_t processor_count = fpa_get_cpu_count();
     if (processor_count == 0) {
@@ -649,18 +649,18 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     KURD_t success = default_success();
     KURD_t fail = default_error();
 
-    success.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
-    fail.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
+    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
+    fail.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
 
     if (state != FPA_STATE_ACTIVE) {
         KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
-        violation_kurd.reason = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::CALL_VIOLATION_RESULTS_CODE::FATAL_REASONS_CODE::CALL_VIOLATION;
+        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
+        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
         Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] called before unlock()", nullptr, nullptr, violation_kurd);
     }
 
-    using namespace MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::FREE_RESULTS_CODE;
+    using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::free_results;
     auto make_not_belong = [&]() -> KURD_t {
         KURD_t r = fail;
         r.reason = FAIL_REASONS_CODE::FAIL_REASON_CODE_BASE_NOT_BELONG;
@@ -705,8 +705,8 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     { spintrylock_spin_guard _g(bcb.lock);
     if (bcb.dirty_count != 0) {
         KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
-        violation_kurd.reason = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::CALL_VIOLATION_RESULTS_CODE::FATAL_REASONS_CODE::CALL_VIOLATION;
+        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
+        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
         Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] freeing into dirty BCB", nullptr, nullptr, violation_kurd);
     }
@@ -776,7 +776,7 @@ void FreePagesAllocator::interval_pollute(phymem_segment seg)
     if (state != FPA_STATE_SEED) {
         KURD_t violation_kurd = default_fatal();
         violation_kurd.event_code = 0;
-        violation_kurd.reason = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::CALL_VIOLATION_RESULTS_CODE::FATAL_REASONS_CODE::CALL_VIOLATION;
+        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
         Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_pollute] called in ACTIVE state, data consistency hazard", nullptr, nullptr, violation_kurd);
     }
@@ -818,7 +818,7 @@ void FreePagesAllocator::interval_clean(phymem_segment seg)
 {
     KURD_t violation_kurd = default_fatal();
         violation_kurd.event_code = 0;
-        violation_kurd.reason = MEMMODULE_LOCAIONS::FREEPAGES_ALLOCATOR::CALL_VIOLATION_RESULTS_CODE::FATAL_REASONS_CODE::CALL_VIOLATION;
+        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
     if (state != FPA_STATE_ACTIVE) {
         

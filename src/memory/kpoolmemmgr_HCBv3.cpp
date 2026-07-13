@@ -46,7 +46,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::kurd_default_success()
     KURD_t k;
     k.domain            = err_domain::CORE_MODULE;
     k.module_code       = module_code::MEMORY;
-    k.in_module_location = MEMMODULE_LOCAIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
+    k.in_module_location = MEMMODULE_LOCATIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
     k.result            = result_code::SUCCESS;
     k.level             = level_code::INFO;
     return k;
@@ -57,7 +57,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::kurd_default_error()
     KURD_t k;
     k.domain            = err_domain::CORE_MODULE;
     k.module_code       = module_code::MEMORY;
-    k.in_module_location = MEMMODULE_LOCAIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
+    k.in_module_location = MEMMODULE_LOCATIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
     k.result            = result_code::FAIL;
     k.level             = level_code::ERROR;
     return k;
@@ -68,7 +68,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::kurd_default_fatal()
     KURD_t k;
     k.domain            = err_domain::CORE_MODULE;
     k.module_code       = module_code::MEMORY;
-    k.in_module_location = MEMMODULE_LOCAIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
+    k.in_module_location = MEMMODULE_LOCATIONS::LOCATION_CODE_KPOOLMEMMGR_HCB_V3;
     k.result            = result_code::FATAL;
     k.level             = level_code::FATAL;
     return k;
@@ -113,7 +113,7 @@ void kpoolmemmgr_t::HCB_v3::test_init(vaddr_t data_va, vaddr_t bitmap_va, uint32
 // ═══ HCB_v3 — online (含 data 区域物理页分配+映射) ═══
 KURD_t kpoolmemmgr_t::HCB_v3::online(uint32_t size, vaddr_t data_va, vaddr_t bitmap_va)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_ONLINE;
@@ -215,7 +215,7 @@ KURD_t hcb_unmap_free_tlb(const vm_interval& interval)
 // ═══ HCB_v3 — offline (归还 data + bitmap 物理页) ═══
 KURD_t kpoolmemmgr_t::HCB_v3::offline()
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_OFFLINE;
@@ -295,7 +295,7 @@ bool kpoolmemmgr_t::HCB_v3::cache_pick(uint8_t order, uint64_t& out_offset)
 
 KURD_t kpoolmemmgr_t::HCB_v3::internal_alloc(uint64_t& out_offset, uint8_t order)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t fail    = kurd_default_error();
     success.event_code = EVENT_CODE_INTERNAL_ALLOC;
@@ -325,7 +325,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_alloc(uint64_t& out_offset, uint8_t order
     uint8_t base_order = order;
     uint64_t found_off = fnd.find_candidate(base_order, fail);
     if (!success_all_kurd(fail)) {
-        fail.reason = INTERNAL_ALLOC_RESULTS::FAIL_RESONS::REASON_CODE_NO_AVALIABLE_BUDDY;
+        fail.reason = internal_alloc_results::FAIL_REASONS::REASON_CODE_NO_AVALIABLE_BUDDY;
         return fail;
     }
 
@@ -353,7 +353,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_alloc(uint64_t& out_offset, uint8_t order
 
 KURD_t kpoolmemmgr_t::HCB_v3::internal_free(uint64_t offset, uint8_t order)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_INTERNAL_FREE;
@@ -362,7 +362,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_free(uint64_t offset, uint8_t order)
     KURD_t kurd;
     uint8_t final_order = fnd.order_return(order, offset, kurd);
     if (final_order >= 0x40) {
-        error.reason = FREE_RESULTS::FATAL_REASONS::DOUBLE_FREE_DETECT;
+        error.reason = free_results::FATAL_REASONS::DOUBLE_FREE_DETECT;
         return error;
     }
 
@@ -378,7 +378,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::internal_free(uint64_t offset, uint8_t order)
 
 KURD_t kpoolmemmgr_t::HCB_v3::alloc(void*& addr, uint32_t size, alloc_flags_t flags)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_ALLOC;
@@ -386,13 +386,13 @@ KURD_t kpoolmemmgr_t::HCB_v3::alloc(void*& addr, uint32_t size, alloc_flags_t fl
 
     if (!valid) { return error; }
     if (size == 0) {
-        error.reason = ALLOC_RESULTS::FAIL_REASONS::REASON_CODE_SIZE_IS_ZERO;
+        error.reason = alloc_results::FAIL_REASONS::REASON_CODE_SIZE_IS_ZERO;
         return error;
     }
 
     uint32_t total_size = (uint32_t)size + sizeof(buddy_meta);
     if (total_size > (1u << (max_order_ + 5))) {  // max_order * 32B
-        error.reason = ALLOC_RESULTS::FAIL_REASONS::REASON_CODE_SIZE_TOO_LARGE;
+        error.reason = alloc_results::FAIL_REASONS::REASON_CODE_SIZE_TOO_LARGE;
         return error;
     }
 
@@ -417,7 +417,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::alloc(void*& addr, uint32_t size, alloc_flags_t fl
 
 KURD_t kpoolmemmgr_t::HCB_v3::free(void* ptr)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_FREE;
@@ -438,7 +438,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::free(void* ptr)
 
     buddy_meta* meta = meta_from_ptr(ptr);
     if (meta->magic != MAGIC_ALLOCATED) {
-        error.reason = FREE_RESULTS::FATAL_REASONS::DOUBLE_FREE_DETECT;
+        error.reason = free_results::FATAL_REASONS::DOUBLE_FREE_DETECT;
         return error;
     }
     meta->magic = 0;
@@ -450,7 +450,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::free(void* ptr)
 
 KURD_t kpoolmemmgr_t::HCB_v3::realloc(void*& ptr, uint32_t new_size, alloc_flags_t flags)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_REALLOC;
@@ -498,7 +498,7 @@ KURD_t kpoolmemmgr_t::HCB_v3::realloc(void*& ptr, uint32_t new_size, alloc_flags
 
 KURD_t kpoolmemmgr_t::HCB_v3::clear(void* ptr)
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_HCB_V3_EVENTS;
     KURD_t success = kurd_default_success();
     KURD_t error   = kurd_default_error();
     success.event_code = EVENT_CODE_CLEAR;

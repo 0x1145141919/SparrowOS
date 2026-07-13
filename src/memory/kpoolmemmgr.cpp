@@ -53,7 +53,7 @@ kpoolmemmgr_t::HCB_v3* kpoolmemmgr_t::find_hcb_by_address(void* ptr)
 
 KURD_t kpoolmemmgr_t::default_kurd()
 {
-    return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCAIONS::LOCATION_CODE_KPOOLMEMMGR,0,0,err_domain::CORE_MODULE);
+    return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCATIONS::LOCATION_CODE_KPOOLMEMMGR,0,0,err_domain::CORE_MODULE);
 }
 KURD_t kpoolmemmgr_t::default_success() { KURD_t k=default_kurd(); k.result=result_code::SUCCESS; k.level=level_code::INFO; return k; }
 KURD_t kpoolmemmgr_t::default_fail()   { KURD_t k=default_kurd(); k=set_result_fail_and_error_level(k); return k; }
@@ -67,7 +67,7 @@ void kpoolmemmgr_t::Init()
 // ── multi_heap_enable ──
 KURD_t kpoolmemmgr_t::multi_heap_enable()
 {
-    using namespace MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS;
 
     KURD_t success = default_success();
     KURD_t fail    = default_fail();
@@ -75,12 +75,12 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
     fail.event_code    = EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
 
     if (is_muli_heap_enabled) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_ALREADY_ENABLED;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_ALREADY_ENABLED;
         return fail;
     }
     uint64_t processor_count = logical_processor_count;
     if (processor_count == 0) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_BAD_PROCESSOR_COUNT;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_BAD_PROCESSOR_COUNT;
         return fail;
     }
     uint64_t hcb_count = processor_count * (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
@@ -119,25 +119,25 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
 
     heap_area.start = kspace_vm_table->alloc_available_space(heap_area_size, 0);
     if (heap_area.start == 0) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_NO_VADDR_SPACE;
         return fail;
     }
     heap_area.end = heap_area.start + heap_area_size;
     heap_area.is_vaddr_alloced = 1;
     if (kspace_vm_table->insert(heap_area) != OS_SUCCESS) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_VM_ADD_FAIL;
         return fail;
     }
 
     heap_area_bitmaps.start = kspace_vm_table->alloc_available_space(bitmap_area_size, 0);
     if (heap_area_bitmaps.start == 0) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_NO_VADDR_SPACE;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_NO_VADDR_SPACE;
         return fail;
     }
     heap_area_bitmaps.end = heap_area_bitmaps.start + bitmap_area_size;
     heap_area_bitmaps.is_vaddr_alloced = 1;
     if (kspace_vm_table->insert(heap_area_bitmaps) != OS_SUCCESS) {
-        fail.reason = PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_VM_ADD_FAIL;
+        fail.reason = per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_VM_ADD_FAIL;
         return fail;
     }
 #endif
@@ -150,17 +150,17 @@ KURD_t kpoolmemmgr_t::alloc_heap(uint32_t idx)
 {
     KURD_t success = default_success();
     KURD_t fail    = default_fail();
-    success.event_code = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
-    fail.event_code    = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    success.event_code = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    fail.event_code    = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
     uint64_t processor_count = logical_processor_count;
     uint64_t hcb_count = processor_count * (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
 
     if (idx >= hcb_count) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_IDX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_IDX_OUT_OF_RANGE;
         return fail;
     }
     if (HCB_ARRAY[idx].valid) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_HEAP_ALREADY_EXISTS;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_HEAP_ALREADY_EXISTS;
         return fail;
     }
 
@@ -173,16 +173,16 @@ KURD_t kpoolmemmgr_t::free_heap(uint32_t idx)
 {
     KURD_t success = default_success();
     KURD_t fail    = default_fail();
-    success.event_code = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
-    fail.event_code    = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    success.event_code = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
+    fail.event_code    = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_PER_PROCESSOR_HEAP_INIT;
     uint64_t processor_count = logical_processor_count;
     uint64_t hcb_count = processor_count * (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
     if (idx >= hcb_count) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_IDX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_IDX_OUT_OF_RANGE;
         return fail;
     }
     if (!HCB_ARRAY[idx].valid) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::PER_PROCESSOR_HEAP_INIT_RESULTS::FAIL_RESONS::REASON_CODE_HEAP_NOT_EXIST;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::per_processor_heap_init_results::FAIL_REASONS::REASON_CODE_HEAP_NOT_EXIST;
         return fail;
     }
     return HCB_ARRAY[idx].offline();
@@ -193,11 +193,11 @@ void* kpoolmemmgr_t::kalloc(uint64_t size, KURD_t& no_succes_report, alloc_flags
 {
     KURD_t success = default_success();
     KURD_t fail    = default_fail();
-    success.event_code = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_ALLOC;
-    fail.event_code    = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_ALLOC;
+    success.event_code = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_ALLOC;
+    fail.event_code    = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_ALLOC;
 
     if (size == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::ALLOC_RESULTS::FAIL_RESONS::REASON_CODE_SIZE_IS_ZERO;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::alloc_results::FAIL_REASONS::REASON_CODE_SIZE_IS_ZERO;
         no_succes_report = fail;
         return nullptr;
     }
@@ -258,7 +258,7 @@ void* kpoolmemmgr_t::kalloc(uint64_t size, KURD_t& no_succes_report, alloc_flags
     }
     }
 
-    fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::ALLOC_RESULTS::FAIL_RESONS::REASON_CODE_NO_AVALIABLE_MEM;
+    fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::alloc_results::FAIL_REASONS::REASON_CODE_NO_AVALIABLE_MEM;
     no_succes_report = fail;
     return nullptr;
 }
@@ -276,8 +276,8 @@ void* kpoolmemmgr_t::realloc(void* ptr, KURD_t& no_succes_report, uint64_t size,
     HCB_v3* hcb = find_hcb_by_address(ptr);
     if (!hcb) {
         KURD_t fail = default_fail();
-        fail.event_code = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_REALLOC;
-        fail.reason = MEMMODULE_LOCAIONS::KPOOLMEMMGR_EVENTS::REALLOC_RESULTS::FAIL_RESONS::REASON_CODE_PTR_NOT_IN_ANY_HEAP;
+        fail.event_code = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_REALLOC;
+        fail.reason = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::realloc_results::FAIL_REASONS::REASON_CODE_PTR_NOT_IN_ANY_HEAP;
         no_succes_report = fail;
         return nullptr;
     }

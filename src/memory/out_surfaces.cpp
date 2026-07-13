@@ -20,7 +20,7 @@ extern "C" uint64_t remote_invalidate_seg(void* ptr);
 #include <errno.h>
 #endif
 // ── 模块错误树：LOCATION_CODE_OUT_SURFACES ──────────────────────
-namespace MEMMODULE_LOCAIONS{
+namespace MEMMODULE_LOCATIONS{
     namespace OUT_SURFACES_EVENTS{
 
         constexpr uint8_t EVENT_CODE_PAGES_VALLOC             = 0;
@@ -32,26 +32,26 @@ namespace MEMMODULE_LOCAIONS{
         constexpr uint8_t EVENT_CODE_PINTERVAL_ALLOC_AND_MAP  = 8;
         constexpr uint8_t EVENT_CODE_BCAST_INVALIDATE_TLB     = 9;
 
-        // COMMON_FAIL_REASONS [0, 64)
+        // COMMON_FAIL_REASONS [0x00, 0x100)
         namespace COMMON_FAIL_REASONS {
-            constexpr uint16_t BAD_INTERVAL           = 0;
-            constexpr uint16_t BAD_PARAM              = 1;
-            constexpr uint16_t VADDR_ALLOC_FAIL       = 2;
-            constexpr uint16_t INSERT_VM_DESC_FAIL    = 3;
-            constexpr uint16_t REMOVE_VM_DESC_FAIL    = 4;
-            constexpr uint16_t PHYS_ALLOC_FAIL        = 5;
+            constexpr uint16_t BAD_INTERVAL           = 0x00;
+            constexpr uint16_t BAD_PARAM              = 0x01;
+            constexpr uint16_t VADDR_ALLOC_FAIL       = 0x02;
+            constexpr uint16_t INSERT_VM_DESC_FAIL    = 0x03;
+            constexpr uint16_t REMOVE_VM_DESC_FAIL    = 0x04;
+            constexpr uint16_t PHYS_ALLOC_FAIL        = 0x05;
         }
 
-        // COMMON_FATAL_REASONS [0, 64)
+        // COMMON_FATAL_REASONS [0x00, 0x100)
         namespace COMMON_FATAL_REASONS {
-            constexpr uint16_t TLB_SHOOTDOWN_TIMEOUT  = 0;
+            constexpr uint16_t TLB_SHOOTDOWN_TIMEOUT  = 0x00;
         }
 
-        // 结果容器（私有原因 ≥ 64, 当前不需）
-        namespace DIRECT_MAP_PADDR_RESULTS {}
-        namespace DIRECT_UNMAP_PADDR_RESULTS {}
-        namespace PINTERVAL_ALLOC_AND_MAP_RESULTS {}
-        namespace BCAST_INVALIDATE_TLB_RESULTS {}
+        // 结果容器（私有原因 ≥ 0x100, 当前不需）
+        namespace direct_map_paddr_results {}
+        namespace direct_unmap_paddr_results {}
+        namespace pinterval_alloc_and_map_results {}
+        namespace bcast_invalidate_tlb_results {}
     }
 }
 
@@ -60,7 +60,7 @@ namespace {
 static KURD_t out_surfaces_default_kurd()
 {
     return KURD_t(0, 0, module_code::MEMORY,
-                  MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
+                  MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
                   0, 0, err_domain::CORE_MODULE);
 }
 
@@ -166,7 +166,7 @@ extern "C" int userspace_compatible_phymem_direct_map_disable()
 
 extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t success = out_surfaces_default_success();
     KURD_t fail    = out_surfaces_default_failure();
     success.event_code = EVENT_CODE_DIRECT_MAP_PADDR;
@@ -204,7 +204,7 @@ extern "C" KURD_t Kspace_phyaddr_direct_map(vm_interval interval)
 
 extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* kurd)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t success = out_surfaces_default_success();
     KURD_t fail    = out_surfaces_default_failure();
     success.event_code = EVENT_CODE_PINTERVAL_ALLOC_AND_MAP;
@@ -261,7 +261,7 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
 
 extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     interrupt_guard g;
     KURD_t success = out_surfaces_default_success();
     KURD_t fail    = out_surfaces_default_failure();
@@ -294,7 +294,7 @@ extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 }
 KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
 {
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t success = out_surfaces_default_success();
     KURD_t fatal   = out_surfaces_default_fatal();
     success.event_code = EVENT_CODE_BCAST_INVALIDATE_TLB;
@@ -375,8 +375,8 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
             *kurd_out = KURD_t(result_code::FAIL,
                 OS_INVALID_PARAMETER,
                 module_code::MEMORY,
-                MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-                MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+                MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+                MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
                 level_code::ERROR,
                 err_domain::CORE_MODULE
             );
@@ -390,8 +390,8 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
         *kurd_out = KURD_t(result_code::FAIL,
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
             module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -400,14 +400,14 @@ void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t T
 
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VALLOC,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
     return p;
 #else
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t fail = out_surfaces_default_failure();
     fail.event_code = EVENT_CODE_PAGES_VALLOC;
 
@@ -477,8 +477,8 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
             *kurd_out = KURD_t(result_code::FAIL,
                 OS_INVALID_PARAMETER,
                 module_code::MEMORY,
-                MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-                MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+                MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+                MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
                 level_code::ERROR,
                 err_domain::CORE_MODULE
             );
@@ -495,8 +495,8 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
         *kurd_out = KURD_t(result_code::FAIL,
             (errno == ENOMEM) ? OS_OUT_OF_MEMORY : OS_FAIL_PAGE_ALLOC,
             module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -508,15 +508,15 @@ vaddr_t stack_alloc(KURD_t *kurd_out, uint64_t _4kbpgscount)
 
     *kurd_out = KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_ALLOC,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
     // priv_stack_base = raw + 0x1000
     return reinterpret_cast<vaddr_t>(raw) + 0x1000;
 #else
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t fail = out_surfaces_default_failure();
     fail.event_code = EVENT_CODE_PAGES_ALLOC;
 
@@ -589,8 +589,8 @@ KURD_t __wrapped_pgs_vfree(void* vbase, uint64_t _4kbpgscount)
         return KURD_t(result_code::FAIL,
             OS_INVALID_PARAMETER,
             module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -601,8 +601,8 @@ KURD_t __wrapped_pgs_vfree(void* vbase, uint64_t _4kbpgscount)
         return KURD_t(result_code::FAIL,
             OS_MEMORY_FREE_FAULT,
             module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-            MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+            MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
             level_code::ERROR,
             err_domain::CORE_MODULE
         );
@@ -610,13 +610,13 @@ KURD_t __wrapped_pgs_vfree(void* vbase, uint64_t _4kbpgscount)
 
     return KURD_t(result_code::SUCCESS, 0,
         module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_OUT_SURFACES,
-        MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES,
+        MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS::EVENT_CODE_PAGES_VFREE,
         level_code::INFO,
         err_domain::CORE_MODULE
     );
 #else
-    using namespace MEMMODULE_LOCAIONS::OUT_SURFACES_EVENTS;
+    using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
     KURD_t fail = out_surfaces_default_failure();
     fail.event_code = EVENT_CODE_PAGES_VFREE;
 

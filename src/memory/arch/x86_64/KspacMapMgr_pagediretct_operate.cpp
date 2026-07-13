@@ -45,7 +45,7 @@ alignas(4096) uint64_t kspace_up_half[256*512];
 shared_inval_VMentry_info_t shared_inval_kspace_VMentry_info;
 KURD_t KspacePageTable::default_kurd()
 {
-    return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCAIONS::LOCATION_CODE_KSPACE_MAP_MGR,0,0,err_domain::CORE_MODULE);
+    return KURD_t(0,0,module_code::MEMORY,MEMMODULE_LOCATIONS::LOCATION_CODE_KSPACE_MAP_MGR,0,0,err_domain::CORE_MODULE);
 }
 KURD_t KspacePageTable::default_success()
 {
@@ -99,14 +99,14 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
 
     // 检查count参数有效性
     if (count == 0) {
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
 
@@ -123,7 +123,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
 
     PageTableEntryUnion& pdpte = kspaceUPpdpt[pdpte_index];
     if(pdpte.raw & PDPTE::PS_MASK){
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
         return fail;
     }
     // 检查页目录指针表项是否存在且不是1GB页面
@@ -145,7 +145,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
         .raw = pderaw
     };
     if(pderaw & PDE::PS_MASK){
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDE_WHEN_GET_SUB;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_WHEN_GET_SUB;
         return fail;
     }
     // 检查页目录项是否存在且不是2MB页面
@@ -198,9 +198,9 @@ void KspacePageTable::invalidate_seg()
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_INVALIDATE_TLB;
     constexpr uint32_t _4KB_SIZE = 0x1000;
     constexpr uint32_t _2MB_SIZE = 1ULL << 21;
     constexpr uint32_t _1GB_SIZE = 1ULL << 30;
@@ -213,7 +213,7 @@ void KspacePageTable::invalidate_seg()
     };
     if (shared_inval_kspace_VMentry_info.is_package_valid == false) {
         bsp_kout<<"[KERNEL] invalid_kspace_VMentry_handler: stared_inval_kspace_VMentry_info is invalid"<<kendl;
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::INVALIDATE_TLB_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VM_ENTRY;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::invalidate_tlb_results::FAIL_REASONS::REASON_CODE_BAD_VM_ENTRY;
         Panic::panic(default_panic_behaviors_flags,
             "invalid_k space_VMentry_handler: stared_inval_kspace_VMentry_info is invalid",
         nullptr,&in_short,fail);
@@ -249,7 +249,7 @@ void KspacePageTable::invalidate_seg()
             default:
                 bsp_kout<< "[KERNEL] invalid_kspace_VMentry_handler: invalid page size in kspace_VMentry_info" << kendl;
                 asm volatile("sti");
-                fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::INVALIDATE_TLB_RESULTS::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
+                fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::invalidate_tlb_results::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
                 Panic::panic(default_panic_behaviors_flags,
             "invalid_k space_VMentry_handler: stared_inval_kspace_VMentry_info is invalid",
         nullptr,&in_short,fatal);
@@ -323,25 +323,25 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
 
     // 检查count参数有效性
     if (count == 0) {
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
     
     if (count > 512) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
     
     // 检查物理地址和虚拟地址是否按照2MB对齐
     if ((phybase & (_2MB_SIZE - 1)) || (vaddr_base & (_2MB_SIZE - 1))) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
         return fail;
     }
 
@@ -356,7 +356,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
 
     // 检查是否跨越PDPT边界
     if (pde_index + count > 512) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
 
@@ -364,7 +364,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
     
     // 检查页目录指针表项是否存在且不是1GB页面
     if (pdpte.raw & PDPTE::PS_MASK) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
         return fail;
     }
     
@@ -425,17 +425,17 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_set(phyaddr_t phybase,
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_SET;
 
     if (count == 0){
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
     if ((phybase & (_1GB_SIZE - 1)) || (vaddr_base & (_1GB_SIZE - 1))) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
         return fail; // 1GB 对齐
     }
 
@@ -447,7 +447,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_set(phyaddr_t phybase,
     for (uint16_t i = 0; i < count; i++) {
         PageTableEntryUnion& entry = kspaceUPpdpt[pdpt_index + i];
         if (entry.raw & PageTableEntry::P_MASK) [[unlikely]] {
-            fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_SET_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+            fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
             return fail;
         }
         PDPTEEntry1GB& huge = entry.pdpte1GB;
@@ -475,13 +475,13 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
 
@@ -491,21 +491,21 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     uint16_t pte_index = (highoffset >> 12) & ((1 << 9) - 1);
 
     if (pte_index + count > 512) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
     if (vaddr_base % _4KB_SIZE) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
         return fail;
     }
 
     PageTableEntryUnion& pdpte = kspaceUPpdpt[pdpte_index];
     if (!(pdpte.raw & PageTableEntry::P_MASK)) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST;
         return fail;
     }
     if (pdpte.raw & PDPTE::PS_MASK) {
-        fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_UNTIMELY;
+        fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_UNTIMELY;
         return fatal;
     }
 
@@ -516,12 +516,12 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     uint64_t pderaw = PhyAddrAccessor::readu64(pde_address);
     
     if (!(pderaw & PageTableEntry::P_MASK)) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDE_SUBTABLE_NOT_EXIST;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_SUBTABLE_NOT_EXIST;
         return fail;
     }
     
     if (pderaw & PDE::PS_MASK) {
-        fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDE_UNTIMELY;
+        fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_UNTIMELY;
         return fatal;
     }
     
@@ -568,17 +568,17 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
     if (vaddr_base & (_1GB_SIZE - 1)) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
         return fail;
     }
 
@@ -587,7 +587,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
     uint16_t start_idx  = (highoffset >> 30) & 0x1FF;               // 在 512 项中的起始位置
 
     if (start_idx + count > 512) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
 
@@ -597,7 +597,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
             continue;  // 已空
         }
         if (!(entry.raw & PDPTE::PS_MASK)) {
-            fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_NOT_EXIST;
+            fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_NOT_EXIST;
             return fatal;
         }
         entry.raw = 0;
@@ -624,21 +624,21 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
         self_trace();
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BAD_COUNT;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
     if (count > 512) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
     if (vaddr_base & (_2MB_SIZE - 1)) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_BASE_NOT_ALIGNED;
         return fail;
     }
 
@@ -647,18 +647,18 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
     uint16_t pde_index  = (highoffset >> 21) & 0x1FF;               // 在 PD 内的起始索引
 
     if (pde_index + count > 512) [[unlikely]] {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FAIL_REASONS::REASON_CODE_COUNT_AND_BASEINDEX_OUT_OF_RANGE;
         return fail;
     }
 
     // 获取或验证 PD 页表
     PageTableEntryUnion& pdpte = kspaceUPpdpt[pdpt_index];
     if (!(pdpte.raw & PageTableEntry::P_MASK)) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_SUBTABLE_NOT_EXIST;
         return fail;
     }
     if (pdpte.raw & PDPTE::PS_MASK) {
-        fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_UNTIMELY;
+        fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_UNTIMELY;
         return fatal;
     }
 
@@ -674,7 +674,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
             continue;
         }
         if (!(pde_value & PDE::PS_MASK)) {
-            fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::PAGES_CLEAR_RESULTS_CODE::FATAL_REASONS::REASON_CODE_HUGE_PDE_NOT_EXIST;
+            fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_NOT_EXIST;
             return fatal;
         }
         PhyAddrAccessor::writeu64(pd_phyaddr + pde_offset, 0);
@@ -708,9 +708,9 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_TRAN_TO_PHY_ENTRY;
 
     if(pglv_4_or_5){
         uint64_t highoffset = vaddr - PAGELV4_KSPACE_BASE;
@@ -721,7 +721,7 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
         // 检查PDPTE
         PageTableEntryUnion& pdpte = kspaceUPpdpt[pdpte_index];
         if (!(pdpte.raw & PageTableEntry::P_MASK)) {
-            fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::TRAN_TO_PHY_ENTRY_RESULTS_CODE::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
+            fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::tran_to_phy_entry_results::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
             return fail;
         }
         
@@ -740,7 +740,7 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
         
         // 检查PDE
         if (!(pde_raw & PageTableEntry::P_MASK)) {
-            fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::TRAN_TO_PHY_ENTRY_RESULTS_CODE::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
+            fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::tran_to_phy_entry_results::FAIL_REASONS::REASON_CODE_NOT_PRESENT_ENTRY;
             return fail;
         }
         
@@ -764,9 +764,9 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
         result.raw = pte_raw;
         return success;
     }else{
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::TRAN_TO_PHY_ENTRY_RESULTS_CODE::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::tran_to_phy_entry_results::FAIL_REASONS::REASON_CODE_NOT_SUPPORT_LV5_PAGING;
         return fail;
     }
-    fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::TRAN_TO_PHY_ENTRY_RESULTS_CODE::FATAL_REASONS::REASON_CODE_UNREACHABLE_CODE;
+    fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::tran_to_phy_entry_results::FATAL_REASONS::REASON_CODE_UNREACHABLE_CODE;
     return fatal;
 }

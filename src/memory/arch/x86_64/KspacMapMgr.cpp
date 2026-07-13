@@ -170,12 +170,12 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
     KURD_t success = default_success();
     KURD_t fail = default_failure();
     KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_ENABLE_VMENTRY;
     
     if (interval.npages == 0) {
-        fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+        fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
         return fail;
     }
     spinlock_interrupt_about_guard l(GMlock);
@@ -194,7 +194,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
         uint64_t psize = e.page_size_in_byte;
         // sanity check: vbase and base should be aligned to page size
         if ((e.vbase % psize) != 0 || (e.phybase % psize) != 0) {
-            fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+            fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
             return fail;
         }
 
@@ -215,7 +215,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
                 break;
             }
             default:
-                fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
+                fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::enable_vmentry_results::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
                 return fatal; // unknown page size
         }
         if (rc.result != result_code::SUCCESS) {
@@ -232,7 +232,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
         uint64_t psize = e.page_size_in_byte;
         // sanity check: vbase and base should be aligned to page size
         if ((e.vbase % psize) != 0 || (e.phybase % psize) != 0) {
-            fail.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
+            fail.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::enable_vmentry_results::FAIL_REASONS::REASON_CODE_BAD_VMENTRY;
             GMlock.unlock();
             return fail;
         }
@@ -261,7 +261,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
                 break;
             }
             default:
-                fatal.reason = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::ENABLE_VMENTRY_RESULTS::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
+                fatal.reason = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::enable_vmentry_results::FATAL_REASONS::REASON_CODE_INVALIDE_PAGES_SIZE;
                 
                 return fatal; // unknown page size
         }
@@ -303,7 +303,7 @@ KURD_t KspacePageTable::enable_VMentry(const vm_interval& interval)
 
 seg_to_pages_info_pakage_t KspacePageTable::disable_VMentry(const vm_interval& interval,KURD_t&kurd)
 {
-    using namespace MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::DISABLE_VMENTRY_RESULTS;
+    using namespace MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::disable_vmentry_results;
    KspacePageTableStatisitcs* stat = kpt_stat_for_current_cpu();
    if (stat) {
        stat->disable_vmentry_count++;
@@ -312,9 +312,9 @@ seg_to_pages_info_pakage_t KspacePageTable::disable_VMentry(const vm_interval& i
    KURD_t success = default_success();
    KURD_t fail = default_failure();
    KURD_t fatal = default_fatal();
-    success.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
-    fail.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
-    fatal.event_code = MEMMODULE_LOCAIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
+    success.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
+    fail.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
+    fatal.event_code = MEMMODULE_LOCATIONS::KSPACE_MAPPER_EVENTS::EVENT_CODE_DISABLE_VMENTRY;
 
    if (interval.npages == 0) {
         fail.reason = FAIL_REASONS::REASON_CODE_BAD_VMENTRY;

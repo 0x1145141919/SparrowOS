@@ -37,7 +37,7 @@ static KURD_t persist_elf_segments() {
         ehdr->e_ident[2] != 'L'  || ehdr->e_ident[3] != 'F') {
         bsp_kout << "[persist_elf] bad magic" << kendl;
         return {result_code::FATAL, 0, module_code::MEMORY,
-                MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+                MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
                 0, level_code::FATAL, err_domain::CORE_MODULE};
     }
     uint8_t* ptbl = elf_base + ehdr->e_phoff;
@@ -50,7 +50,7 @@ static KURD_t persist_elf_segments() {
         if (error_kurd(kurd)) return kurd;
     }
     return {result_code::SUCCESS, 0, module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, level_code::INFO, err_domain::CORE_MODULE};
 }
 
@@ -89,7 +89,7 @@ void fpa_properties_deal(){
 KURD_t KImage_map_rebuild(){
     KURD_t success(
         result_code::SUCCESS, 0, module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
         0, level_code::INFO, err_domain::CORE_MODULE
     );
 
@@ -101,7 +101,7 @@ KURD_t KImage_map_rebuild(){
         bsp_kout << "[KImage_map_rebuild] bad ELF magic" << kendl;
         KURD_t fail(
             result_code::FATAL, 0, module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, level_code::FATAL, err_domain::CORE_MODULE
         );
         return fail;
@@ -178,7 +178,7 @@ KURD_t kimg_affiliate_property_map1(){
 
             auto map_stack = [&](uint64_t field_off, uint64_t sz, const char* name) -> KURD_t {
                 if (sz == 0) return {result_code::SUCCESS, 0, module_code::MEMORY,
-                                     MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+                                     MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
                                      0, level_code::INFO, err_domain::CORE_MODULE};
                 vm_interval iv = {.vpn = (proc_v + field_off) >> 12,
                                   .ppn = (proc_p + field_off) >> 12,
@@ -226,7 +226,7 @@ KURD_t kimg_affiliate_property_map1(){
     }
     KURD_t ok(
         result_code::SUCCESS, 0, module_code::MEMORY,
-        MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+        MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
         0, level_code::INFO, err_domain::CORE_MODULE
     );
     return ok;
@@ -288,7 +288,7 @@ KURD_t properties_modify_stage1(){
     FreePagesAllocator::interval_clean(legacy_mmu_interval);
     FreePagesAllocator::print_all_bcb_pollution_counts();
     return {result_code::SUCCESS, 0, module_code::MEMORY,
-            MEMMODULE_LOCAIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
+            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, level_code::INFO, err_domain::CORE_MODULE};
 }
 extern "C" uint32_t assigned_cr3;
