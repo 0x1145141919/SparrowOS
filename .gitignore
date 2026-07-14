@@ -23,6 +23,7 @@ test_set_dump
 kspace_vm_table_test
 operation_log_dump
 build_utils/ksymbols_dumper
+build_utils/initramfs_builder/initramfs-builder
 initramfs.img
 initramfs.tar.gz
 
