@@ -1,1 +1,0 @@
-/usr/bin/c++  -mcmodel=large -std=c++23 -g -fsanitize=address -Wl,--dependency-file=CMakeFiles/multhread.dir/link.d CMakeFiles/multhread.dir/src/tests/multithread_test.cpp.o CMakeFiles/multhread.dir/src/utils/lock.cpp.o CMakeFiles/multhread.dir/src/utils/bitmap.cpp.o CMakeFiles/multhread.dir/src/utils/util.cpp.o -o multhread  -lpthread

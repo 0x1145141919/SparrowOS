@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/initramfs-builder.dir/link.d "CMakeFiles/initramfs-builder.dir/main.cpp.o" "CMakeFiles/initramfs-builder.dir/builder.cpp.o" -o initramfs-builder

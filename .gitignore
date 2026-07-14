@@ -1,42 +1,91 @@
-# 编译生成的文件和目录
+# ══════════════════════════════════════════════════
+#  SparrowOS kernel — .gitignore
+# ══════════════════════════════════════════════════
+
+# ── 编译输出目录 ──────────────────────────────────
+out/
 /build/
-/kernel.elf
+
+# ── in-source CMake 构建中间产物 ──────────────────
+src/**/CMakeFiles/
+build_utils/*/CMakeFiles/
+build_utils/*/-MD
+
+# ── 可执行文件与构建产物 ──────────────────────────
+*.elf
 *.o
 *.a
-*.so.*
 *.so
+*.so.*
+*.ko
+symbols_dumper
+test_set_dump
+kspace_vm_table_test
+operation_log_dump
+build_utils/ksymbols_dumper
+initramfs.img
+initramfs.tar.gz
+
+# ── 符号表 / 排序表（生成产物） ──────────────────
+ksymbols.bin
+ksymbols.txt
+ksymbols_sorted.txt
+ksorted.txt
+ksorted_sym.txt
+
+# ── CMake / 编译系统生成文件 ──────────────────────
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+Makefile.*
+*.cmake
+*.make
+*.ninja
+*.ninja_log
+*.ninja_deps
+rules.ninja
+build.ninja
+*.d
 *.ts
 *.out
-*.d
-*.make
-*.cmake
-*.elf
-*log.txt
-/src/memory/CMakeFiles
-/CMakeCache.txt
-/CMakeFiles/
-/cmake_install.cmake
-Makefile.*
-Makefile
-/.ninja_deps
-/.ninja_log
-/rules.ninja
-/build.ninja
-/compile_commands.json # 这个文件有时可以保留，但通常也会重新生成
+*.compiler_depend.internal
+*.compiler_depend.*
 
-# 编辑器和IDE文件
-/.vscode/
-/.cache/
-/.clangd/
-/cscope.*
-/tags
-/logs
+# ── CMake 外部依赖下载目录 ────────────────────────
+gnu-efi-prefix/
+outsbmodules/
+
+# ── 编辑器 / IDE 配置 ────────────────────────────
+.vs/
+.idea/
+.vscode/
+.codex
+.cache/
+.clangd/
+cscope.*
+tags
+
+# ── 日志 / 备份 / 临时文件 ───────────────────────
+*log.txt
+*.log
+logs/
 *.swp
 *~
-/gnu-efi-prefix
-/outsbmodules
-# 日志文件
-/*.log
-/log*.txt
-/*testlog.txt
-/*deslog.txt
+*.bak
+*.bak.*
+draft.txt
+tmp.txt
+
+# ── 敏感文件（密钥等） ────────────────────────────
+*key*.txt
+*_key.txt
+*secret*.txt
+*_token*.txt
+
+# ── 测试输出目录 ─────────────────────────────────
+tests/
+
+# ── 杂项 ─────────────────────────────────────────
+opencode.jsonc

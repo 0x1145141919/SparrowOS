@@ -1,2 +1,0 @@
-/usr/bin/ar qc libtinySTL.a CMakeFiles/tinySTL.dir/library.cpp.o
-/usr/bin/ranlib libtinySTL.a

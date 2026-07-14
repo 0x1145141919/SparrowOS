@@ -1,2 +1,0 @@
-kpoolmemmgr_t::mixed_bitmap_v2::online 这个接口要改成这个bitmap_va先确认至少4k对齐，再使用FreePagesAllocator::alloc的BUDDY_ALLOC_ALWAYS_TRY的flag分配内存并KspacePageTable::enable_VMentry的接口进行相关页框的映射，因为kpoolmemmgr_t::multi_heap_enable这个接口已经为堆空间以及相关位图的虚拟地址空间已经在地址区间红黑树占了位，但是具体页框分配需要在这里进行，同理kpoolmemmgr_t::HCB_v3::online，但是这个的接口要求为data_va至少2m对齐
-kpoolmemmgr_t::mixed_bitmap_v2::offline则是把相应占领的物理页框归还，同理kpoolmemmgr_t::HCB_v3::online 这是这个HCB的资源模型的实现

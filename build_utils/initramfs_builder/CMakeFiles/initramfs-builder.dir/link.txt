@@ -1,1 +1,0 @@
-/usr/bin/g++  -mcmodel=large -g -O0 -gdwarf-4 -std=c++23 -g -Wl,--dependency-file=CMakeFiles/initramfs-builder.dir/link.d "CMakeFiles/initramfs-builder.dir/main.cpp.o" "CMakeFiles/initramfs-builder.dir/builder.cpp.o" -o initramfs-builder

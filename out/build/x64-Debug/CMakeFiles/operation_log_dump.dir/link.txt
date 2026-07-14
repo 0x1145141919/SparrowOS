@@ -1,1 +1,0 @@
-/usr/bin/c++  -mcmodel=large -std=c++23 -g -Wl,--dependency-file=CMakeFiles/operation_log_dump.dir/link.d CMakeFiles/operation_log_dump.dir/src/tests/operation_log_dump.cpp.o -o operation_log_dump

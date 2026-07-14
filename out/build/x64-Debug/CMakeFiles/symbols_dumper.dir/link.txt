@@ -1,1 +1,0 @@
-/usr/bin/c++  -mcmodel=large -std=c++23 -g -Wl,--dependency-file=CMakeFiles/symbols_dumper.dir/link.d CMakeFiles/symbols_dumper.dir/build_utils/ksymbols_dumper.cpp.o -o symbols_dumper
