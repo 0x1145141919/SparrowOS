@@ -106,7 +106,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
 
     // 检查count参数有效性
     if (count == 0) {
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -124,8 +124,9 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
 
     PageTableEntryUnion& pdpte = kspaceUPpdpt[pdpte_index];
     if(pdpte.raw & PDPTE::PS_MASK){
-        fail.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
-        return fail;
+        self_trace();
+        fatal.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+        return fatal;
     }
     // 检查页目录指针表项是否存在且不是1GB页面
     if (!(pdpte.raw & PageTableEntry::P_MASK) ){
@@ -330,7 +331,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
 
     // 检查count参数有效性
     if (count == 0) {
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -365,8 +366,9 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
     
     // 检查页目录指针表项是否存在且不是1GB页面
     if (pdpte.raw & PDPTE::PS_MASK) {
-        fail.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
-        return fail;
+        self_trace();
+        fatal.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+        return fatal;
     }
     
     // 如果页目录指针表项不存在，则创建新的页目录
@@ -431,7 +433,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_set(phyaddr_t phybase,
     fatal.event_code = EVENT_CODE_PAGES_SET;
 
     if (count == 0){
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -448,8 +450,9 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_set(phyaddr_t phybase,
     for (uint16_t i = 0; i < count; i++) {
         PageTableEntryUnion& entry = kspaceUPpdpt[pdpt_index + i];
         if (entry.raw & PageTableEntry::P_MASK) [[unlikely]] {
-            fail.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
-            return fail;
+            self_trace();
+            fatal.reason = pages_set_results::FATAL_REASONS::REASON_CODE_HUGE_PDPTE_WHEN_GET_SUB;
+            return fatal;
         }
         PDPTEEntry1GB& huge = entry.pdpte1GB;
         huge.present       = 1;
@@ -481,7 +484,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     fatal.event_code = EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -574,7 +577,7 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
     fatal.event_code = EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
@@ -630,7 +633,7 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
     fatal.event_code = EVENT_CODE_PAGES_CLEAR;
 
     if (count == 0) {
-        self_trace();
+
         fail.reason = COMMON_FAIL_REASONS::REASON_CODE_BAD_COUNT;
         return fail;
     }
