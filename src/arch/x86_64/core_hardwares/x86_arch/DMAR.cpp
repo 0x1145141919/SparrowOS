@@ -203,158 +203,33 @@ int dmar::Init(acpi::DMAR_head *head)
         return OS_SUCCESS;
     }
 }
-dmar::driver::driver(acpi::DRHD_table *drhd)//未完全完成之DMA重映射之根表的初始化
+dmar::driver::driver(acpi::DRHD_table *drhd)
 {
+    this->drhd = drhd;
+
+    regs_interval.access = {
+        .is_kernel=1, .is_writeable=1, .is_readable=1,
+        .is_executable=false, .is_global=1, .cache_strategy=UC
+    };
+    regs_interval.ppn = drhd->register_base_addr >> 12;
+    regs_interval.npages = (1 << drhd->mmio_size_specify);
+    regs_interval.vpn = 0;
+
     KURD_t kurd;
-    KURD_t fatal=default_fatal;
-    default_fatal.result=COREHARDWARES_LOCATIONS::DMAR_DRIVERS_EVENTS::INIT;
-    using namespace COREHARDWARES_LOCATIONS::DMAR_DRIVERS_EVENTS::INIT_RESULTS;
-    panic_info_inshort info={
-            .is_bug=false,
-            .is_policy=true,
-            .is_hw_fault=false,
-            .is_mem_corruption=false,
-            .is_escalated=false
-        };
-    this->drhd=drhd;
-    regs_interval.access={
-        .is_kernel=1,
-        .is_writeable=1,
-        .is_readable=1,
-        .is_executable=false,
-        .is_global=1,
-        .cache_strategy=UC
-    };
-    regs_interval.ppn=drhd->register_base_addr>>12;
-    regs_interval.npages=(1<<drhd->mmio_size_specify);
-    regs_interval.vpn=0;
     vaddr_t regs_vaddr = Kspace_pinterval_alloc_and_map(regs_interval, &kurd);
-    regs=reinterpret_cast<head_regs*>(regs_vaddr);
+    regs = reinterpret_cast<head_regs*>(regs_vaddr);
     regs_interval.vpn = regs_vaddr >> 12;
-    if(error_kurd(kurd)){
-        bsp_kout<<"DMAR: regs_interval vpn=0x"<<HEX<<regs_interval.vpn
-                <<" ppn=0x"<<regs_interval.ppn
-                <<" npages=0x"<<regs_interval.npages<<DEC<<kendl;
-        Panic::panic(default_panic_behaviors_flags,"DMAR:regs_vbase map fail",
-            nullptr,
-            &info,
-            kurd
-        );
-    }
-    head_regs::cap_reg_union cap={
-        .value=regs->cap_regs
-    };
-    fault_record_regs_count=cap.fields.NFR+1;
-    fault_regs_bases=(fault_record_reg_raw*)((vaddr_t)regs+(cap.fields.FRO<<4));
-    uint64_t extend_cap =regs->extend_regs;
-    uint64_t check_caps= extend_cap&regs_specify::extended_caps_specify::mask_smallest_cap_set;
-    bsp_kout<<"check_caps:0x"<<HEX<<check_caps<<" extend_cap:0x"<<extend_cap<<DEC<<kendl;
-    if(check_caps!=regs_specify::extended_caps_specify::mask_smallest_cap_set){
-        fatal.reason=FATAL_REASONS::CAP_DIDNT_MET_LOWEST_DEMAND;
-        Panic::panic(default_panic_behaviors_flags,"DMAR:didnt meet lowest demand",
-            nullptr,
-            &info,
-            fatal
-        );
-    }
-    interrupt_remmaptable=(translation_structs::irte*)__wrapped_pgs_valloc(&kurd,interrupt_remapp_table_default_size/4096,page_state_t::kernel_pinned,12);
-    phyaddr_t iremap_pa;
-    interrupt_remmaptable_interval.vpn=reinterpret_cast<vaddr_t>(interrupt_remmaptable)>>12;
-    kurd=KspacePageTable::v_to_phyaddrtraslation(interrupt_remmaptable_interval.vbase(),iremap_pa);
-    interrupt_remmaptable_interval.ppn=iremap_pa>>12;
-    if(error_kurd(kurd)){
-        Panic::panic(default_panic_behaviors_flags,"DMAR:iremap_table reverse map fail",
-            nullptr,
-            &info,
-            kurd
-        );
-    }
-    interrupt_remmaptable_interval.npages=interrupt_remapp_table_default_size>>12;
-    ksetmem_64(interrupt_remmaptable,0,interrupt_remmaptable_interval.byte_cnt());
-    legacy_root_entry=(translation_structs::legacy_root_entry*)__wrapped_pgs_valloc(&kurd,1,page_state_t::kernel_pinned,12);
-    if(error_kurd(kurd)){
-        Panic::panic(default_panic_behaviors_flags,"DMAR:root_entry alloc fail",
-            nullptr,
-            &info,
-            kurd
-        );
-    }
-    phyaddr_t root_table_phybase;
-    kurd=KspacePageTable::v_to_phyaddrtraslation((vaddr_t)legacy_root_entry,root_table_phybase);
-    if(error_kurd(kurd)){
-        Panic::panic(default_panic_behaviors_flags,"DMAR:root_entry reverse map fail",
-            nullptr,
-            &info,
-            kurd
-        );
-    }
-    uint64_t root_table_reg_draft=root_table_phybase;
-    command_disable_traslation();
-    set_command_disable_iremap();
-    uint64_t iremap_ptr_reg_draft=interrupt_remmaptable_interval.pbase()|interrupt_remapp_table_default_S;
-    __sync_synchronize();
-    regs->root_table=root_table_reg_draft;
 
-    //传入的drhd开始解析下面的scope(只考虑用device_scope_simp简单解析，非device_scope_simp跳过),对应的scope调用device_regist
-    {
-        const uint8_t* scope_cur=reinterpret_cast<const uint8_t*>(drhd)+sizeof(acpi::DRHD_table);
-        const uint8_t* scope_end=reinterpret_cast<const uint8_t*>(drhd)+drhd->head.length;
-        while(scope_cur+sizeof(acpi::device_scope)<=scope_end){
-            const acpi::device_scope* scope=reinterpret_cast<const acpi::device_scope*>(scope_cur);
-            if(scope->length<sizeof(acpi::device_scope)||scope_cur+scope->length>scope_end){
-                break;
-            }
-            if(scope->length>=sizeof(acpi::device_scope_simp)){
-                const acpi::device_scope_simp* simp=
-                    reinterpret_cast<const acpi::device_scope_simp*>(scope_cur);
-                pcie_location loc={
-                    .segment_num=drhd->pcie_seg_number,
-                    .bus_num=simp->start_bus_num,
-                    .device_num=static_cast<uint8_t>(simp->device_num&0x1f),
-                    .func_num=static_cast<uint8_t>(simp->func_num&0x07)
-                };
-                kurd=device_regist(loc);
-                if(error_kurd(kurd)){
-                    Panic::panic(default_panic_behaviors_flags,"DMAR:device_regist fail",
-                        nullptr,
-                        &info,
-                        kurd
-                    );
-                }
-            }
-            scope_cur+=scope->length;
-        }
-    }
-    command_enable_root_table();
-    regs->Interrupt_remapping_table_addr=iremap_ptr_reg_draft;
-    set_command_set_iremap_tbptr();
-
-    // ── 每 DMAR 单元独立注册 Fault Event Interrupt ──
-    __uint128_t token_priv = (__uint128_t)(uint64_t)this;  // lo=driver*, hi=0 type=Fault
-    interrupt_token_t ftoken = { token_priv, 0, iommu_fault_cpp_enter };
-    KURD_t vec_kurd;
-    this->fault_vec = out_interrupt_vec_alloc(&ftoken, fast_get_processor_id(), &vec_kurd);
-    if (this->fault_vec == 0xFF || error_kurd(vec_kurd)) {
-        panic_context::x64_context ctx = {};
-        panic_info_inshort pinfo = { .is_bug = 1, .is_policy = 0, .is_hw_fault = 1,
-                                     .is_mem_corruption = 0, .is_escalated = 0 };
+    if (error_kurd(kurd)) {
+        panic_info_inshort info = {
+            .is_bug=false, .is_policy=true,
+            .is_hw_fault=false, .is_mem_corruption=false, .is_escalated=false
+        };
         Panic::panic(default_panic_behaviors_flags,
-            (char*)"DMAR: fault vec alloc failed",
-            &ctx, &pinfo, vec_kurd);
+            "DMAR: regs_vbase map fail", nullptr, &info, kurd);
     }
 
-    // 编程 Fault Event Data/Address 寄存器
-    uint32_t x2apicid = query_x2apicid();
-    regs->fault_event_data = this->fault_vec;
-    regs->fault_event_addr = 0xfee00000 | ((x2apicid & 0xff) << 12);
-    regs->fault_event_addr_high = x2apicid >> 8;
-    asm volatile("mfence" ::: "memory");
-
-    // Unmask
-    head_regs::fault_event_control_union ctl = { .value = regs->fault_event_control };
-    ctl.fields.IM = 0;
-    regs->fault_event_control = ctl.value;
-    asm volatile("mfence" ::: "memory");
+    command_disable_traslation();
 }
 KURD_t dmar::driver::regist_interrupt_simp(regist_remmap_struct arg, uint16_t &idx)
 {
