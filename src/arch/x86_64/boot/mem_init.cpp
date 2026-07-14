@@ -214,7 +214,7 @@ KURD_t kimg_affiliate_property_map1(){
                      << " (npages=0 or ppn=0)" << kendl;
             continue;
         }
-        KURD_t map_kurd = KspacePageTable::enable_VMentry(*e.iv);
+        KURD_t map_kurd = Kspace_phyaddr_direct_map(*e.iv);
         if (error_kurd(map_kurd)) {
             bsp_kout << "[kimg_affiliate_property_map1] " << e.name
                      << " map fail" << kendl;
