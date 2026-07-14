@@ -91,47 +91,53 @@ static inline bool str_eq(const char* lhs, const char* rhs)
     return (*lhs == '\0' && *rhs == '\0');
 }
 
-bool kptrace_current_stack_has_kthread_entry()
-{
-    struct StackFrame {
-        StackFrame* rbp;
-        uint64_t rip;
-    };
+struct StackFrame {
+    StackFrame* rbp;
+    uint64_t rip;
+};
 
-    void* rbp_raw = nullptr;
-    asm volatile ("movq %%rbp, %0" : "=r"(rbp_raw));
-    StackFrame* frame = static_cast<StackFrame*>(rbp_raw);
+/* ── 核心回溯：从指定 rbp 检查是否命中 allkthread_true_enter ── */
+static bool walk_stack_for_kthread_entry(StackFrame* frame)
+{
     constexpr int MAX_FRAMES = 128;
     constexpr uint64_t kNearRangeBytes = 256;
     const uint64_t kthread_entry_addr = reinterpret_cast<uint64_t>(&allkthread_true_enter);
 
     for(int i = 0; frame != nullptr && i < MAX_FRAMES; ++i){
-        if((reinterpret_cast<uint64_t>(frame) & 0x7ull) != 0 || frame->rip == 0){
+        if((reinterpret_cast<uint64_t>(frame) & 0x7ull) != 0 || frame->rip == 0)
             return false;
-        }
 
 #ifdef KERNEL_MODE
         symbol_entry* sym = ksymmanager::get_entry_near_addr(frame->rip);
-        if(sym != nullptr && str_eq(sym->name, "allkthread_true_enter")){
+        if(sym != nullptr && str_eq(sym->name, "allkthread_true_enter"))
             return true;
-        }
 #endif
 
         const uint64_t rip = frame->rip;
         const uint64_t diff = (rip >= kthread_entry_addr)
             ? (rip - kthread_entry_addr)
             : (kthread_entry_addr - rip);
-        if(diff <= kNearRangeBytes){
+        if(diff <= kNearRangeBytes)
             return true;
-        }
 
         StackFrame* next = frame->rbp;
-        if(next <= frame || (reinterpret_cast<uint64_t>(next) & 0x7ull) != 0){
+        if(next <= frame || (reinterpret_cast<uint64_t>(next) & 0x7ull) != 0)
             return false;
-        }
         frame = next;
     }
     return false;
+}
+
+bool kptrace_stack_has_kthread_entry(void* rbp)
+{
+    return walk_stack_for_kthread_entry(static_cast<StackFrame*>(rbp));
+}
+
+bool kptrace_current_stack_has_kthread_entry()
+{
+    void* rbp_raw = nullptr;
+    asm volatile ("movq %%rbp, %0" : "=r"(rbp_raw));
+    return walk_stack_for_kthread_entry(static_cast<StackFrame*>(rbp_raw));
 }
 
 void self_trace()

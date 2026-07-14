@@ -169,7 +169,7 @@ void create_first_kthread(){
             __builtin_unreachable();
         }
     }
-
+    
     kthread_creating_package pkg;
     pkg.func_raw = (uint64_t)kthread_ymir;
     pkg.args[0] = 0;
