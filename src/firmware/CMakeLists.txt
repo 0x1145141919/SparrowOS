@@ -3,7 +3,6 @@ set(firmware_SOURCE
     ${CMAKE_CURRENT_SOURCE_DIR}/acpimgr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/APIC_convert_functions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/APIC_table_analyzer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/UefiRunTimeServices.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/uefi_kshell_commands.cpp
 )
 

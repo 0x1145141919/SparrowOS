@@ -1,5 +1,4 @@
 #include "panic.h"
-#include "firmware/UefiRunTimeServices.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"

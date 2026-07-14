@@ -765,3 +765,21 @@ void atomic_write64_rdbk(volatile void *addr, uint64_t val)
     } while(read_val != val);  // 等待直到回读值与写入值一致
 }
 
+// ── 替代 gnu-efi 的 memset / memcpy（内部用 ksetmem/ksystemramcpy 优化）──
+extern "C" void* memset(void* s, int c, size_t n)
+{
+    ksetmem_8(s, static_cast<uint8_t>(c), n);
+    return s;
+}
+
+extern "C" void* memcpy(void* dest, const void* src, size_t n)
+{
+    ksystemramcpy(const_cast<void*>(src), dest, n);
+    return dest;
+}
+
+extern "C" void __cxa_pure_virtual()
+{
+    while (1) asm volatile("hlt");
+}
+

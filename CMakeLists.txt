@@ -83,15 +83,19 @@ target_include_directories(json_praser PRIVATE
 ExternalProject_Get_Property(gnu-efi SOURCE_DIR)
 set(GNU_EFI_SOURCE_DIR ${SOURCE_DIR})
 
-# gnu-efi 链接库 + 头文件接口
-add_library(gnu_efi_iface INTERFACE)
-target_link_libraries(gnu_efi_iface INTERFACE
-    ${GNU_EFI_SOURCE_DIR}/x86_64/lib/libefi.a
-    ${GNU_EFI_SOURCE_DIR}/x86_64/gnuefi/libgnuefi.a
-)
-target_include_directories(gnu_efi_iface INTERFACE
+# gnu-efi 头文件接口（纯头文件，不链接 lib）
+add_library(gnu_efi_headers INTERFACE)
+target_include_directories(gnu_efi_headers INTERFACE
     "${GNU_EFI_SOURCE_DIR}/inc"
     "${GNU_EFI_SOURCE_DIR}/inc/x86_64"
+)
+
+# gnu-efi 完整接口（头文件 + lib，仅 init.elf 需要）
+add_library(gnu_efi_iface INTERFACE)
+target_link_libraries(gnu_efi_iface INTERFACE
+    gnu_efi_headers
+    ${GNU_EFI_SOURCE_DIR}/x86_64/lib/libefi.a
+    ${GNU_EFI_SOURCE_DIR}/x86_64/gnuefi/libgnuefi.a
 )
 
 add_subdirectory(src/memory)
@@ -189,7 +193,7 @@ add_executable(init.elf
 # kernel.elf
 # =====================================================
 target_link_libraries(kernel.elf PRIVATE
-    gnu_efi_iface
+    gnu_efi_headers
     kspace_base_flags x86_kflags cpp_macro nasm_flags
 )
 target_link_options(kernel.elf PRIVATE ${KERNEL_LINK_OPTS})

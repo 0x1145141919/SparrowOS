@@ -20,13 +20,7 @@ extern KURD_t cmd_kbdmonitor(const line_t* line);
 extern KURD_t cmd_kbdtest(const line_t* line);
 extern KURD_t cmd_i8042regs(const line_t* line);
 
-// UEFI 运行时服务命令（src/firmware/uefi_kshell_commands.cpp）
-extern KURD_t cmd_uefitime(const line_t* line);
-extern KURD_t cmd_uefisettime(const line_t* line);
-extern KURD_t cmd_uefireboot(const line_t* line);
-extern KURD_t cmd_ueficreset(const line_t* line);
-extern KURD_t cmd_uefishutdown(const line_t* line);
-extern KURD_t cmd_uefiptrs(const line_t* line);
+// Platform system commands（src/firmware/uefi_kshell_commands.cpp）
 extern KURD_t cmd_legacy_reboot(const line_t* line);
 extern KURD_t cmd_get_macro_time(const line_t* line);
 extern KURD_t cmd_set_marcro_time(const line_t* line);
@@ -101,32 +95,20 @@ static constexpr size_t I8042_CMD_COUNT =
     sizeof(g_i8042_command_table) / sizeof(g_i8042_command_table[0]);
 
 // ═══════════════════════════════════════════════════════════════════
-//  UEFI 运行时服务命令表
+//  Platform / miscellaneous system commands
 // ═══════════════════════════════════════════════════════════════════
 
-static command_entry_t g_uefi_command_table[] = {
-    {"uefitime",       "Query UEFI RTC time (full/simple/timestamp)",
-        cmd_uefitime,       command_risk_level_t::SAFE, false},
-    {"uefisettime",    "Set UEFI RTC time (YYYY-MM-DD HH:MM:SS [-f])",
-        cmd_uefisettime,    command_risk_level_t::WARNING, true},
-    {"uefireboot",     "System warm reboot",
-        cmd_uefireboot,     command_risk_level_t::DANGEROUS, false},
-    {"ueficreset",     "System cold reset",
-        cmd_ueficreset,     command_risk_level_t::DANGEROUS, false},
-    {"uefishutdown",   "System shutdown",
-        cmd_uefishutdown,   command_risk_level_t::DANGEROUS, false},
-    {"legacy_reboot", "Legacy reset via 0xcf9 port [--cold|--warm]",
+static command_entry_t g_platform_command_table[] = {
+    {"legacy_reboot", "Reset via 0xcf9 port [--cold|--warm]",
         cmd_legacy_reboot,  command_risk_level_t::DANGEROUS, false},
-    {"uefiptrs",       "UEFI RT function pointer table",
-        cmd_uefiptrs,       command_risk_level_t::SAFE, false},
     {"get_macro_time", "Read OS RTC-anchored calendar time",
         cmd_get_macro_time, command_risk_level_t::SAFE, false},
     {"set_marcro_time","Set OS time calibration offset (no RTC write)",
         cmd_set_marcro_time,command_risk_level_t::WARNING, false},
 };
 
-static constexpr size_t UEFI_CMD_COUNT =
-    sizeof(g_uefi_command_table) / sizeof(g_uefi_command_table[0]);
+static constexpr size_t PLATFORM_CMD_COUNT =
+    sizeof(g_platform_command_table) / sizeof(g_platform_command_table[0]);
 
 // ═══════════════════════════════════════════════════════════════════
 //  内存操作命令表
@@ -252,10 +234,10 @@ void register_i8042_kshell_commands() {
              << " i8042 keyboard debug commands" << kendl;
 }
 
-void register_uefi_kshell_commands() {
-    regist_table(g_uefi_command_table, UEFI_CMD_COUNT);
-    bsp_kout << "[KSHELL] Registered " << UEFI_CMD_COUNT
-             << " UEFI runtime service commands" << kendl;
+void register_platform_kshell_commands() {
+    regist_table(g_platform_command_table, PLATFORM_CMD_COUNT);
+    bsp_kout << "[KSHELL] Registered " << PLATFORM_CMD_COUNT
+             << " platform system commands" << kendl;
 }
 
 void register_mem_kshell_commands() {
@@ -283,7 +265,7 @@ void register_intr_kshell_commands() {
 KURD_t kshell_framework_t::initial_commands_regist()
 {
     register_i8042_kshell_commands();
-    register_uefi_kshell_commands();
+    register_platform_kshell_commands();
     register_mem_kshell_commands();
     register_pcie_kshell_commands();
     register_x86_kshell_commands();

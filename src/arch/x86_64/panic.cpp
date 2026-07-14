@@ -1,5 +1,4 @@
 #include "panic.h"
-#include "firmware/UefiRunTimeServices.h"
 #include "util/kout.h"
 #include "util/kptrace.h"
 #include "util/OS_utils.h"
@@ -8,6 +7,9 @@
 #include "linker_symbols.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
+#include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "arch/x86_64/abi/GS_complex.h"
+#include "Scheduler/task.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/init_memory_info.h"
 #include "arch/x86_64/intel_processor_trace.h"
@@ -105,7 +107,9 @@ atomic_scalar_t<uint32_t> panic_winner{0};
 void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
 {
     uint32_t prev = panic_winner.add_ka(1);
-
+    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
+        broadcast_halt();
+    }
     if (global_pt_blackboxes)
         disable_blackbox(&global_pt_blackboxes[fast_get_processor_id()]);
 
@@ -127,27 +131,51 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     bsp_kout<<"PANIC: "<<now<<kendl;
     bsp_kout<<kurd<<kendl;
     if(message)bsp_kout<<message<<kendl;
-    if(context){dumpregisters(context);
-    symbol_entry *first_entry=ksymmanager::get_entry_near_addr(context->rip);
-    if(first_entry){
-        bsp_kout<<"Kernel panic at "<<first_entry->name<<" + "<<context->rip-first_entry->address<<kendl;
-    }
-    else_trace((void*)context->rbp);
-    }
+    if(context){
+        /* ── 打印肇事者 PID / APICID ── */
+        uint64_t gs_slot1 = 0;
+        /* gs_base 是罪犯 CPU 的 GS_BASE，直接当作 gs_complex_t* 读 slots[1] */
+        if (context->gs_base) {
+            gs_complex_t* guilty = (gs_complex_t*)context->gs_base;
+            gs_slot1 = guilty->slots[PROCESSOR_ID_GS_INDEX];
+            uint32_t pid  = (uint32_t)(gs_slot1 & 0xFFFFFFFF);
+            uint32_t apic = (uint32_t)(gs_slot1 >> 32);
+            bsp_kout << "[PANIC ON] processor_id=" << pid
+                     << " x2apicid=0x" << HEX << apic << DEC << kendl;
+        }
+
+        dumpregisters(context);
+
+        /* ── RIP 符号 ── */
+        symbol_entry *first_entry=ksymmanager::get_entry_near_addr(context->rip);
+        if(first_entry){
+            bsp_kout<<"Kernel panic at "<<first_entry->name<<" + "<<context->rip-first_entry->address<<kendl;
+        }
+        /* ── 栈回溯 ── */
+        else_trace((void*)context->rbp);
+
+        /* ── 若栈上命中 allkthread_true_enter，从 GS 捞 task TID ── */
+        if (kptrace_stack_has_kthread_entry((void*)context->rbp) && context->gs_base) {
+            gs_complex_t* guilty = (gs_complex_t*)context->gs_base;
+            task* t = (task*)guilty->slots[PROCESSOR_NOW_RUNNING_TASK_GS_INDEX];
+            if (t)
+                bsp_kout << "  -> running task tid=" << t->get_tid() << kendl;
+        }
+
+        
     }else{
 
     }
 
-    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
-        broadcast_halt();
-    }
+    
     
     asm volatile("cli");
     asm volatile("hlt");
 }
-// 注意：global_gST已经在UefiRunTimeServices.cpp中定义，此处不再重复定义
-// EFI_SYSTEM_TABLE* global_gST = nullptr;
 
+
+
+}
 void Panic::write_will()
 {
     // 遍历所有 freeSystemRam 类型的物理内存段
