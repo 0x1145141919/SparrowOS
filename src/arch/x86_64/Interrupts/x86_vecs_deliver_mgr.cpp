@@ -13,6 +13,7 @@
 #include "panic.h"
 #include "ktime.h"
 #include "util/lock.h"
+#include "exec_env_detect.h"
 
 #include "arch/x86_64/intel_processor_trace.h"
 bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复器 置函数)中bsp测量是否支持fred,若支持则此bit置1,并且ap直接根据这个bit决定是否初始化fred。
@@ -519,6 +520,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
         case ipi_vecs::IPI_RUNAWAY:{
             local_ipi_complex_fnbox_t fnbox=*(local_ipi_complex_fnbox_t*)local_ipi_complex;
             __uint128_t get_func_mail = 1;
+            // bsp_kout<<"interrupt_sended"<<kendl; — 真机串口慢，去掉节省 ~1.5ms
             cmpxchg16b(local_ipi_complex,&fnbox_copy,&get_func_mail);
             x2apic::x2apic_driver::write_eoi();
             fnbox.func(fnbox.arg);
@@ -648,6 +650,9 @@ static uint32_t target_x2apicid(gs_complex_t* cx)
 static x2apic::x2apic_icr_t make_ipi_icr(uint8_t vec, uint32_t dest_apicid)
 {
     x2apic::x2apic_icr_t icr = {};
+    icr.raw=0;
+    icr.param.level = 1;        // assert, 不是 INIT de-assert                                                                                                                       
+    icr.param.trigger_mode = 0; // edge（已经是 0，显式写出更好）  
     icr.param.vector               = vec;
     icr.param.delivery_mode        = LAPIC_PARAMS_ENUM::DELIVERY_MODE_T::FIXED;
     icr.param.destination_mode     = LAPIC_PARAMS_ENUM::DESTINATION_T::PHYSICAL;
@@ -655,15 +660,46 @@ static x2apic::x2apic_icr_t make_ipi_icr(uint8_t vec, uint32_t dest_apicid)
     icr.param.destination.id       = dest_apicid;
     return icr;
 }
+extern "C" bool cacheline_wait(void* addr);// false=store 唤醒, true=超时/其他
 // ── 轮询辅助：等待 slot.lo64 变为 1 ────────────────────────────
-// 全环境统一使用 pause 自旋
+// KVM/BARE_METAL + WAITPKG → UMONITOR + cacheline_wait
+// TCG / 无 WAITPKG         → pause() spin
 // 返回 true=预期值到达, false=超时
 static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t deadline_us)
 {
-    while ((uint64_t)*slot != 1) {
-        if (ktime::get_microsecond_stamp() >= deadline_us)
+    /* 单次 WAITPKG 探测 (CPUID leaf 0x07, subleaf 0, ECX bit 5) */
+    static bool waitpkg_checked = false;
+    static bool has_waitpkg = false;
+    if (!waitpkg_checked) {
+        cpuid_tmp cpuid7(0x07, 0x00);
+        has_waitpkg = (cpuid7.ecx >> 5) & 1;
+        waitpkg_checked = true;
+    }
+
+    /* 只读 lo64，避免编译器生成 __uint128_t 分裂读 */
+    volatile uint64_t* lo = (volatile uint64_t*)slot;
+
+    if (g_env == ENV_TCG || !has_waitpkg) {
+        /* TCG / 无 WAITPKG → pause 自旋 */
+        while (*lo != 1) {
+            if (ktime::get_microsecond_stamp() >= deadline_us) {
+                asm volatile("mfence" ::: "memory");
+                if (*lo == 1) return true;
+                return false;
+            }
+            asm volatile("pause");
+        }
+        return true;
+    }
+
+    /* KVM / BARE_METAL + WAITPKG → UMONITOR + cacheline_wait */
+    while (*lo != 1) {
+        if (ktime::get_microsecond_stamp() >= deadline_us) {
+            asm volatile("mfence" ::: "memory");
+            if (*lo == 1) return true;
             return false;
-        asm volatile("pause");
+        }
+        cacheline_wait((void*)slot);
     }
     return true;
 }
@@ -697,7 +733,7 @@ __uint128_t returnable_ipi_send(ipi_package_t *package)
     x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_RETURNABLE, dest_apicid));
 
     /* 轮询结果：lo64 != func → target 已消费并写回 */
-    uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
+    uint64_t deadline = ktime::get_microsecond_stamp() + 100000;  // 100ms (真机 10ms 太紧)
     if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
         __uint128_t release=0;
         cmpxchg16b(&complex->local_ipi_complex, &desired, &release);
@@ -719,26 +755,37 @@ __uint128_t returnable_ipi_send(ipi_package_t *package)
 uint64_t fly_ipi_send(ipi_package_t *package)
 {
     gs_complex_t* complex = resolve_target(package->id, package->is_apicid);
-    if (!complex)
+    if (!complex) {
+        bsp_kout << now << "[DBG] fly_ipi_send: resolve_target(" << (uint32_t)package->id
+                 << ") = nullptr" << kendl;
         return 4;
-
+    }
     interrupt_guard irq;
 
     __uint128_t expected = 0;
     __uint128_t desired  = package->func
                          | ((__uint128_t)(uint64_t)package->arg << 64);
-    if (!cmpxchg16b(&complex->local_ipi_complex, &expected, &desired))
+    if (!cmpxchg16b(&complex->local_ipi_complex, &expected, &desired)) {
         return 2;   // BUSY
+    }
 
     uint32_t dest_apicid = package->is_apicid
         ? package->id
         : target_x2apicid(complex);
-    x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_RUNAWAY, dest_apicid));
+
+    bsp_kout << now << "[DBG] fly_ipi_send: dest_apicid=0x" << HEX
+             << (uint32_t)dest_apicid
+             << " (from slot[1]>>32)" << DEC << kendl;
+
+    x2apic::x2apic_icr_t icr = make_ipi_icr(ipi_vecs::IPI_RUNAWAY, dest_apicid);
+    x2apic::x2apic_driver::raw_send_ipi(icr);
 
     /* 轮询确认：target 将 lo64 置 1 表示已消费 */
-    uint64_t deadline = ktime::get_microsecond_stamp() + 1000000;  // 10ms
+    uint64_t deadline = ktime::get_microsecond_stamp() + 100000;  // 100ms (真机 10ms 太紧)
     __uint128_t release_zero=0;
     if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
+        bsp_kout << now << "[DBG] fly_ipi_send: TIMEOUT, slot lo=0x" << HEX
+                 << (uint64_t)complex->local_ipi_complex << DEC << kendl;
         cmpxchg16b(&complex->local_ipi_complex, &desired, &release_zero);
         return 3;                         // 超时
     }
