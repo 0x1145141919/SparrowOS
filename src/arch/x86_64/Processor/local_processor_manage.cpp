@@ -33,7 +33,7 @@ extern "C" x2apicid_t x2apic_core_init()
     }
 
     uint64_t apic_base = rdmsr(msr::apic::IA32_APIC_BASE);
-    if (!(apic_base & (1ULL << 10))) {
+
         // x2APIC 尚未启用（AP 路径）→ 启用
         apic_base |= (1ULL << 11);   // APIC 全局使能
         apic_base |= (1ULL << 10);   // x2APIC 模式
@@ -42,7 +42,7 @@ extern "C" x2apicid_t x2apic_core_init()
         // Spurious Vector Register — 只在首次启用时写入
         // 向量 0xFF, 位 8 = APIC software enable
         wrmsr_func(msr::apic::IA32_X2APIC_SVR, (uint64_t)0x1FF);
-    }
+    
 
     // ── TPR: 允许优先级 ≥1 的中断 ───────────────────────────────────
     uint64_t tpr = 1;
