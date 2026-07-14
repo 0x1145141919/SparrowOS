@@ -13,7 +13,7 @@
 #include "panic.h"
 #include "ktime.h"
 #include "util/lock.h"
-#include "exec_env_detect.h"
+
 #include "arch/x86_64/intel_processor_trace.h"
 bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复器 置函数)中bsp测量是否支持fred,若支持则此bit置1,并且ap直接根据这个bit决定是否初始化fred。
 logical_idt template_idt[256];
@@ -655,39 +655,15 @@ static x2apic::x2apic_icr_t make_ipi_icr(uint8_t vec, uint32_t dest_apicid)
     icr.param.destination.id       = dest_apicid;
     return icr;
 }
-extern "C" bool cacheline_wait(void* addr);// false=store 唤醒, true=超时/其他
 // ── 轮询辅助：等待 slot.lo64 变为 1 ────────────────────────────
-// KVM/BARE_METAL + WAITPKG → UMONITOR + cacheline_wait
-// TCG / 无 WAITPKG         → pause() spin
+// 全环境统一使用 pause 自旋
 // 返回 true=预期值到达, false=超时
-static bool ipi_wait_lo(volatile __uint128_t* slot,uint64_t deadline_us)
+static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t deadline_us)
 {
-    // 单次探测 WAITPKG (CPUID leaf 0x07, subleaf 0, ECX bit 5)
-    static bool waitpkg_checked = false;
-    static bool has_waitpkg = false;
-    if (!waitpkg_checked) {
-        cpuid_tmp cpuid7(0x07, 0x00);
-        has_waitpkg = (cpuid7.ecx >> 5) & 1;
-        waitpkg_checked = true;
-    }
-
-    if (g_env == ENV_TCG || !has_waitpkg) {
-        /* TCG / 无 WAITPKG → pause spin */
-        while ((uint64_t)*slot != 1) {
-            if (ktime::get_microsecond_stamp() >= deadline_us)
-                return false;
-            asm volatile("pause");
-        }
-        return true;
-    }
-
-    /* KVM / BARE_METAL + WAITPKG → UMONITOR + cacheline_wait */
     while ((uint64_t)*slot != 1) {
         if (ktime::get_microsecond_stamp() >= deadline_us)
             return false;
-
-        cacheline_wait((void*)slot);
-        // 醒来：store 命中 → 下次循环检测；OS deadline 超时 → 继续
+        asm volatile("pause");
     }
     return true;
 }
@@ -760,7 +736,7 @@ uint64_t fly_ipi_send(ipi_package_t *package)
     x2apic::x2apic_driver::raw_send_ipi(make_ipi_icr(ipi_vecs::IPI_RUNAWAY, dest_apicid));
 
     /* 轮询确认：target 将 lo64 置 1 表示已消费 */
-    uint64_t deadline = ktime::get_microsecond_stamp() + 10000;  // 10ms
+    uint64_t deadline = ktime::get_microsecond_stamp() + 1000000;  // 10ms
     __uint128_t release_zero=0;
     if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
         cmpxchg16b(&complex->local_ipi_complex, &desired, &release_zero);
