@@ -142,6 +142,7 @@ add_executable(kernel.elf
     src/arch/x86_64/boot/kernel_entry.asm
     src/arch/x86_64/boot/ap_init_pemode_exceptions.asm
     src/arch/x86_64/panic_processor_resources_shift.asm
+    src/arch/x86_64/wheels.asm
     src/utils/int128_div.cpp
     src/arch/x86_64/time.cpp
     src/utils/textConsole.cpp
@@ -184,6 +185,7 @@ add_executable(init.elf
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp
     src/arch/x86_64/Processor/runtime_processor_regist.asm
+    src/arch/x86_64/wheels.asm
     src/os_error_definitions.cpp
     src/init/info_fill.cpp
     src/init/mem_loads.cpp
