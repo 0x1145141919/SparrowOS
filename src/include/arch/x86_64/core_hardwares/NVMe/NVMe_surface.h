@@ -13,8 +13,18 @@ struct NVMe_device_private {
     uint32_t nsid;
 };
 
+
 class NVMe_Controller {
 public:
+    struct Identity {
+        uint16_t vid;
+        uint16_t did;
+        uint16_t ssvid;
+        uint8_t  serial[20];
+        uint8_t  model[40];
+        uint16_t cntlid;
+    };
+
     struct node {
         uint16_t pcie_seg;
         uint8_t pcie_bus;
@@ -144,8 +154,11 @@ private:
     static constexpr uint16_t AER_base_cid = 0xf000;
     vm_interval admin_buffer;
     vm_interval hmb_buffer;
+    Identity identity{};
     static uint64_t interrupt_handle(interrupt_token_t*token);
 public:
+    bool identity_verify(const Identity* t) const;
+
     static node* node_array;
     static uint32_t controllers_count;
 

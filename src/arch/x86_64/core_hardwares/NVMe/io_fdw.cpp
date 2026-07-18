@@ -118,16 +118,9 @@ KURD_t NVMe_Controller::flush(BlockDevice* dev, uint64_t flags)
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return param_error_flush(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return param_error_flush(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     NVMe::command::submit_command_common cmd{};
     cmd.fiedls.opcode = NVMe::command::io_opcode::FLUSH;
@@ -153,16 +146,9 @@ KURD_t NVMe_Controller::write_zero(BlockDevice* dev,LBA_interval_t interval,uint
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return param_error_wz(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return param_error_wz(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
@@ -215,16 +201,9 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return param_error_discard(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return param_error_discard(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {

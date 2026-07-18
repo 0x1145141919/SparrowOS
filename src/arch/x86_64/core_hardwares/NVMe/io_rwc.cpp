@@ -67,19 +67,9 @@ KURD_t NVMe_Controller::read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interva
     (void)flags;
 
     // ---- 1. 提取 controller & nsid ----
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) {
-        return read_param_error(0x1);
-    }
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller) {
-        return read_param_error(0x2);
-    }
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     // ---- 2. 零长度检查 ----
     uint64_t count = interval.LBA_count;
@@ -205,19 +195,9 @@ KURD_t NVMe_Controller::read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_inte
     (void)flags;
 
     // ---- 1. 提取 controller & nsid ----
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) {
-        return read_advance_param_error(0x1);
-    }
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller) {
-        return read_advance_param_error(0x2);
-    }
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     // ---- 2. 校验 segs 参数 ----
     if (!segs || segs->count == 0 || !segs->entries) {
@@ -338,16 +318,9 @@ KURD_t NVMe_Controller::write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interv
     (void)flags;
 
     // ---- 1. 提取 controller & nsid ----
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return write_param_error(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return write_param_error(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     // ---- 2. 零长度检查 ----
     uint64_t count = interval.LBA_count;
@@ -422,16 +395,9 @@ KURD_t NVMe_Controller::write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_int
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return write_param_error(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return write_param_error(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     // ---- 2. segs 校验 ----
     if (!segs || segs->count == 0 || !segs->entries)
@@ -514,16 +480,9 @@ KURD_t NVMe_Controller::compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t inte
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return cmp_param_error(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return cmp_param_error(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     uint64_t count = interval.LBA_count;
     if (count == 0) {
@@ -588,16 +547,9 @@ KURD_t NVMe_Controller::compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_i
 {
     (void)flags;
 
-    auto* priv = static_cast<NVMe_device_private*>(dev->private_data);
-    if (!priv) return cmp_param_error(0x1);
-
-    uint32_t controller_id = priv->controller_id;
+    auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&dev->private_data);
+    NVMe_Controller* ctrl = priv->controller;
     uint32_t nsid          = priv->nsid;
-
-    if (controller_id >= controllers_count || !node_array[controller_id].controller)
-        return cmp_param_error(0x2);
-
-    NVMe_Controller* ctrl = node_array[controller_id].controller;
 
     if (!segs || segs->count == 0 || !segs->entries)
         return cmp_param_error(0x9);

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <abi/os_error_definitions.h>
 
+class NVMe_Controller;
 namespace NVMe {
     constexpr uint64_t entry_block_token = ~0ull;
 
@@ -363,5 +364,8 @@ namespace aer_event_type {
         constexpr uint8_t RESERVATION_PREEMPT_AND_ABORT = 0x03;
     }
 }
-
+struct NVMe_device_private_v2 {
+    NVMe_Controller*controller;
+    uint32_t nsid;
+};
 constexpr uint64_t soon_ring_bell_mask = 1;

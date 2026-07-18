@@ -62,6 +62,44 @@ static KURD_t alloc_contiguous_pages(KURD_t* kurd_out,
 } // anonymous namespace
 
 // ============================================================
+// BlockDeviceOps wrappers
+// ============================================================
+namespace {
+KURD_t nvme_read_op(BlockDevice* dev, uint64_t sector, uint32_t count, void* buf, uint64_t flags)
+{
+    uint32_t sector_size = dev->sector_size;
+    phyaddr_t pbase;
+    KURD_t kurd = KspacePageTable::v_to_phyaddrtraslation(reinterpret_cast<vaddr_t>(buf), pbase);
+    if (error_kurd(kurd)) return kurd;
+    pbuf_t pbuf{pbase, static_cast<uint64_t>(count) * sector_size};
+    LBA_interval_t interval{sector, count};
+    return NVMe_Controller::read(dev, pbuf, interval, flags);
+}
+
+KURD_t nvme_write_op(BlockDevice* dev, uint64_t sector, uint32_t count, void* buf, uint64_t flags)
+{
+    uint32_t sector_size = dev->sector_size;
+    phyaddr_t pbase;
+    KURD_t kurd = KspacePageTable::v_to_phyaddrtraslation(reinterpret_cast<vaddr_t>(buf), pbase);
+    if (error_kurd(kurd)) return kurd;
+    pbuf_t pbuf{pbase, static_cast<uint64_t>(count) * sector_size};
+    LBA_interval_t interval{sector, count};
+    return NVMe_Controller::write(dev, pbuf, interval, flags);
+}
+
+KURD_t nvme_flush_op(BlockDevice* dev, uint64_t flags)
+{
+    return NVMe_Controller::flush(dev, flags);
+}
+
+KURD_t nvme_discard_op(BlockDevice* dev, uint64_t sector, uint32_t count, uint64_t flags)
+{
+    LBA_interval_t interval{sector, count};
+    return NVMe_Controller::discard(dev, interval, flags);
+}
+} // anonymous namespace (wrappers)
+
+// ============================================================
 // wait_for_ready
 // ============================================================
 bool NVMe_Controller::wait_for_ready(head_regs_t* regs, bool target,
@@ -301,6 +339,19 @@ KURD_t NVMe_Controller::second_stage_init()
     bsp_kout << id_ctrl->nn;
     bsp_kout << kendl;
 
+    // ---- 8b. 填充身份标识 ----
+    identity.vid    = id_ctrl->vid;
+    identity.did    = *(volatile uint16_t*)(ecam + 0x02);
+    identity.ssvid  = id_ctrl->ssvid;
+    __builtin_memcpy(identity.serial, id_ctrl->sn, 20);
+    __builtin_memcpy(identity.model,  id_ctrl->mn, 40);
+    identity.cntlid = id_ctrl->cntlid;
+    bsp_kout << "[NVMe] Identity: 0x";
+    bsp_kout.shift_hex();
+    bsp_kout << identity.vid << ":" << identity.did;
+    bsp_kout.shift_dec();
+    bsp_kout << " cntlid=" << (uint32_t)identity.cntlid << kendl;
+
     // ---- 9. I/O 队列 + HMB 初始化 ----
     { NVMe::command_result_t r = io_queue_init(sq_count-1,cq_count-1);
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
@@ -348,12 +399,14 @@ KURD_t NVMe_Controller::second_stage_init()
         NSs[ns - 1].sector_size   = ss;
         NSs[ns - 1].sector_count  = nsze;
         NSs[ns - 1].block_device_type = 0;
-        NSs[ns - 1].ops = nullptr;
 
-        auto* p = new NVMe_device_private();
-        p->controller_id = 0;
-        p->nsid = ns;
-        NSs[ns - 1].private_data = p;
+        auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&NSs[ns - 1].private_data);
+        priv->controller = this;
+        priv->nsid = ns;
+        NSs[ns - 1].ops.read    = nvme_read_op;
+        NSs[ns - 1].ops.write   = nvme_write_op;
+        NSs[ns - 1].ops.flush   = nvme_flush_op;
+        NSs[ns - 1].ops.discard = nvme_discard_op;
 
         bsp_kout << "[NVMe] NS " << (uint32_t)ns << ": size=";
         bsp_kout.shift_hex();
