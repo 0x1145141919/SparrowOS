@@ -1,4 +1,4 @@
-#include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "init/core_hardwares/init_gop.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/init/page_table.h"
 #include "memory/AddresSpace.h"
@@ -76,69 +76,23 @@ int modify_access(phymem_segment seg, pgaccess access)
 InitGop::Info InitGop::s_info = {};
 bool InitGop::s_ready = false;
 
-KURD_t InitGop::default_kurd()
+bool InitGop::Init(GlobalBasicGraphicInfoType* metainf)
 {
-    return KURD_t(
-        0,
-        0,
-        module_code::DEVICES_CORE,
-        COREHARDWARES_LOCATIONS::LOCATION_CODE_INIT_GOP,
-        0,
-        0,
-        err_domain::CORE_MODULE
-    );
-}
-
-KURD_t InitGop::default_success()
-{
-    KURD_t kurd = default_kurd();
-    kurd.result = result_code::SUCCESS;
-    kurd.level = level_code::INFO;
-    return kurd;
-}
-
-KURD_t InitGop::default_fail()
-{
-    KURD_t kurd = default_kurd();
-    kurd = set_result_fail_and_error_level(kurd);
-    return kurd;
-}
-
-KURD_t InitGop::default_fatal()
-{
-    KURD_t kurd = default_kurd();
-    kurd = set_fatal_result_level(kurd);
-    return kurd;
-}
-
-KURD_t InitGop::Init(GlobalBasicGraphicInfoType* metainf)
-{
-    using namespace COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT_RESULTS;
-    KURD_t success = default_success();
-    KURD_t fail = default_fail();
-    success.event_code = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT;
-    fail.event_code = COREHARDWARES_LOCATIONS::INIT_GOP_EVENTS::INIT;
-
     if (metainf == nullptr) {
-        fail.reason = FAIL_REASONS::PARAM_METAINF_NULLPTR;
-        return fail;
+        return false;
     }
     if (s_ready) {
-        fail.reason = FAIL_REASONS::ALLREADE_INIT;
-        return fail;
+        return false;
     }
     if (metainf->FrameBufferBase == 0 || metainf->FrameBufferSize == 0) {
-        fail.reason = FAIL_REASONS::BAD_PARAM;
-        return fail;
+        return false;
     }
     if (!is_4k_aligned(static_cast<uint64_t>(metainf->FrameBufferBase)) ||
         !is_4k_aligned(static_cast<uint64_t>(metainf->FrameBufferSize))) {
-        fail.reason = FAIL_REASONS::BAD_PARAM;
-        return fail;
+        return false;
     }
     if (metainf->pixelFormat != PixelBlueGreenRedReserved8BitPerColor) {
-        fail.reason = FAIL_REASONS::BAD_PARAM;
-        return fail;
+        return false;
     }
 
     s_info.width = metainf->horizentalResolution;
@@ -163,11 +117,10 @@ KURD_t InitGop::Init(GlobalBasicGraphicInfoType* metainf)
     };
     int result = modify_access(seg, access);
     if (result != OS_SUCCESS) {
-        fail.reason = FAIL_REASONS::MODIFY_ACCESS_FAILED;
-        return fail;
+        return false;
     }
 
-    return success;
+    return true;
 }
 
 void InitGop::PutPixelUnsafe(Vec2i pos, uint32_t color)

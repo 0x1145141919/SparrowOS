@@ -17,41 +17,6 @@ static void textconsole_write(const char* buf, uint64_t len) {
     init_textconsole::PutString(buf, len);
 }
 
-KURD_t init_textconsole::default_kurd()
-{
-    return KURD_t(
-        0,
-        0,
-        module_code::INFRA,
-        infrastructure_location_code::location_code_init_textconsole,
-        0,
-        0,
-        err_domain::CORE_MODULE
-    );
-}
-
-KURD_t init_textconsole::default_success()
-{
-    KURD_t kurd = default_kurd();
-    kurd.result = result_code::SUCCESS;
-    kurd.level = level_code::INFO;
-    return kurd;
-}
-
-KURD_t init_textconsole::default_fail()
-{
-    KURD_t kurd = default_kurd();
-    kurd = set_result_fail_and_error_level(kurd);
-    return kurd;
-}
-
-KURD_t init_textconsole::default_fatal()
-{
-    KURD_t kurd = default_kurd();
-    kurd = set_fatal_result_level(kurd);
-    return kurd;
-}
-
 void init_textconsole::render_glyph(int m, int n, unsigned char ch)
 {
     uint16_t idx = glyph_index[ch];
@@ -83,33 +48,24 @@ void init_textconsole::render_glyph(int m, int n, unsigned char ch)
     }
 }
 
-KURD_t init_textconsole::Init(
+bool init_textconsole::Init(
     const unsigned char* font_bitmap_param,
     Vec2i cell_size,
     uint32_t font_color_param,
     uint32_t background_color_param
 )
 {
-    KURD_t success = default_success();
-    KURD_t fail = default_fail();
-    success.event_code = infrastructure_location_code::init_textconsole_events::textconsole_event_init;
-    fail.event_code = infrastructure_location_code::init_textconsole_events::textconsole_event_init;
-
     if (ready) {
-        fail.reason = infrastructure_location_code::init_textconsole_events::init_results::fail_reasons::already_init;
-        return fail;
+        return false;
     }
     if (font_bitmap_param == nullptr) {
-        fail.reason = infrastructure_location_code::init_textconsole_events::init_results::fail_reasons::font_bitmap_is_null;
-        return fail;
+        return false;
     }
     if (!InitGop::Ready()) {
-        fail.reason = infrastructure_location_code::init_textconsole_events::init_results::fail_reasons::gfx_not_ready;
-        return fail;
+        return false;
     }
     if (cell_size.x != 16 || cell_size.y != 32) {
-        fail.reason = infrastructure_location_code::init_textconsole_events::init_results::fail_reasons::bad_cell_size;
-        return fail;
+        return false;
     }
 
     const InitGop::Info info = InitGop::GetInfo();
@@ -119,8 +75,7 @@ KURD_t init_textconsole::Init(
     view.cols = view.size.x / view.cell.x;
     view.rows = view.size.y / view.cell.y;
     if (view.cols <= 0 || view.rows <= 0) {
-        fail.reason = infrastructure_location_code::init_textconsole_events::init_results::fail_reasons::zero_grid;
-        return fail;
+        return false;
     }
 
     font_bitmap = font_bitmap_param;
@@ -136,7 +91,7 @@ KURD_t init_textconsole::Init(
     // 清屏：填充背景色 + 复位光标
     Clear();
 
-    return success;
+    return true;
 }
 
 bool init_textconsole::Ready()

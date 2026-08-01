@@ -171,22 +171,18 @@ add_executable(init.elf
     src/init/Interrupts/Sysdef_exception_entries.asm
     src/init/Interrupts/exceptions_handler.cpp
     src/init/init_heap_v3.cpp
-    src/utils/BuddyControlBlock_foundation.cpp
     src/init/core_hardwares/init_gop.cpp
     src/init/core_hardwares/PortDriver.cpp
     src/init/util/textConsole.cpp
     src/init/pages_alloc.cpp
     src/init/page_allocator.cpp
     src/init/initramfs_lookup.cpp
-    src/init/panic.cpp
     src/init/util/kout.cpp
     src/utils/util.cpp
-    src/utils/BCB_fnd_DeepFirst.cpp 
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp
     src/arch/x86_64/Processor/runtime_processor_regist.asm
     src/arch/x86_64/wheels.asm
-    src/os_error_definitions.cpp
     src/init/info_fill.cpp
     src/init/mem_loads.cpp
 )

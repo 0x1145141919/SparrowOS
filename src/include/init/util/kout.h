@@ -1,5 +1,4 @@
 #pragma once
-#include "abi/os_error_definitions.h"
 #include "util/OS_utils.h"
 
 namespace kio {
@@ -37,7 +36,6 @@ public:
         uint64_t calls_s32;
         uint64_t calls_u64;
         uint64_t calls_s64;
-        uint64_t calls_KURD;
         uint64_t calls_shift_bin;
         uint64_t calls_shift_dec;
         uint64_t calls_shift_hex;
@@ -67,14 +65,8 @@ protected:
         bool is_signed);
     
     void uniform_puts(const char* str, uint64_t len);
-    
-    void __print_level_code(KURD_t value);
-    void __print_module_code(KURD_t value);
-    void __print_result_code(KURD_t value);
-    void __print_err_domain(KURD_t value);
 
 public:
-    kout& operator<<(KURD_t info);
     kout& operator<<(const char* str);
     kout& operator<<(char c);
     kout& operator<<(const void* ptr);

@@ -6,7 +6,7 @@
 #include "init/util/kout.h"
 #include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
-#include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop_types.h"
 #include "arch/x86_64/boot.h"
 #include "memory/memory_base.h"
 

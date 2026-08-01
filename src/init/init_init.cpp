@@ -5,10 +5,10 @@
 #include "init/util/textConsole.h"
 #include "init/util/kout.h"
 #include "init/core_hardwares/PortDriver.h"
-#include "init/panic.h"
+#include "init/init_fatal.h"
 #include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
-#include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "init/core_hardwares/init_gop.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
@@ -56,9 +56,10 @@ static constexpr uint64_t INIT_TO_KERNEL_MAGIC = 0x494E494B524E4C48ULL; // "INIK
 // 定义在 kernel_load.cpp，这里使用相同的全局变量
 extern uint64_t g_va_alloc_base;
 
-// ── BSS: BCB 位图 ──
-static constexpr uint64_t HEAP_BITMAP_BITS  = 3ull << 16;
-static constexpr uint64_t HEAP_BITMAP_BYTES = ((HEAP_BITMAP_BITS + 63) >> 6) * 8;
+// ── BSS: 堆位图 ──
+// flat bitmap: 1 bit = 8B，2MB 堆 → 2MB/8 = 262144 bits = 32KB
+static constexpr uint64_t HEAP_BITMAP_BITS  = 1ull << 18;   // 262144
+static constexpr uint64_t HEAP_BITMAP_BYTES = HEAP_BITMAP_BITS / 8;
 alignas(64) static uint8_t s_heap_bitmap[HEAP_BITMAP_BYTES];
 uint64_t va_alloc(uint64_t size,uint8_t align_log2){
     if (align_log2 < 12) {
@@ -746,7 +747,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
 // init — 主入口
 // ============================================================================
 extern "C" void init_main(BootInfoHeader* header) {
-    if (init_io_and_heap(header) != 0) asm volatile("hlt");    
+    if (init_io_and_heap(header) != 0) init_fatal::halt();    
     auto em = init_memory_early(header);
     if (!em.xsdt_base && /* memory early 出错检测 */ 0) asm volatile("hlt");
     // 注意: init_memory_early 返回空 struct 时 xsdt_base=0 属于正常（ACPI 找不到），

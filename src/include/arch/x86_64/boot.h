@@ -1,7 +1,7 @@
 #pragma once
 #include "stdint.h"
 #include "memory/memory_base.h"
-#include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "arch/x86_64/core_hardwares/primitive_gop_types.h"
 #include "firmware/gSTResloveAPIs.h"
 struct x86_specify_init_to_kernel_info{
     vm_interval hpet_mmio;

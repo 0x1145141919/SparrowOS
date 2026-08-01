@@ -21,68 +21,6 @@ namespace kio {
 // kout 类实现
 // ============================================================================
 
-void kout::__print_level_code(KURD_t value)
-{
-    switch (value.level) {
-        case level_code::INVALID: *this << "[level:INVALID]"; break;
-        case level_code::INFO: *this << "[level:INFO]"; break;
-        case level_code::NOTICE: *this << "[level:NOTICE]"; break;
-        case level_code::WARNING: *this << "[level:WARNING]"; break;
-        case level_code::ERROR: *this << "[level:ERROR]"; break;
-        case level_code::FATAL: *this << "[level:FATAL]"; break;
-        default: *this << "[level:unknown]"; break;
-    }
-}
-
-void kout::__print_result_code(KURD_t value)
-{
-    switch (value.result) {
-        case result_code::SUCCESS: *this << "[result:SUCCESS]"; break;
-        case result_code::SUCCESS_BUT_SIDE_AFFECTS: *this << "[result:SUCCESS_BUT_SIDE_AFFECTS]"; break;
-        case result_code::PARTIAL_SUCCESS: *this << "[result:PARTIAL_SUCCESS]"; break;
-        case result_code::FAIL: *this << "[result:FAIL]"; break;
-        case result_code::RETRY: *this << "[result:RETRY]"; break;
-        case result_code::FATAL: *this << "[result:FATAL]"; break;
-        default: *this << "[result:unknown]"; break;
-    }
-}
-
-void kout::__print_err_domain(KURD_t value)
-{
-    switch (value.domain) {
-        case err_domain::INVALID: *this << "[err_domain:INVALID]"; break;
-        case err_domain::CORE_MODULE: *this << "[err_domain:CORE_MODULE]"; break;
-        case err_domain::ARCH: *this << "[err_domain:ARCH]"; break;
-        case err_domain::USER: *this << "[err_domain:USER]"; break;
-        case err_domain::HYPERVISOR: *this << "[err_domain:HYPERVISOR]"; break;
-        case err_domain::OUT_MODULES: *this << "[err_domain:OUT_MODULES]"; break;
-        case err_domain::FILE_SYSTEM: *this << "[err_domain:FILE_SYSTEM]"; break;
-        case err_domain::HARDWARE: *this << "[err_domain:HARDWARE]"; break;
-        default: *this << "[err_domain:unknown]"; break;
-    }
-}
-
-void kout::__print_module_code(KURD_t value)
-{
-    switch (value.module_code) {
-        case module_code::INVALID: *this << "[module_code:INVALID]"; break;
-        case module_code::MEMORY: *this << "[module_code:MEMORY]"; break;
-        case module_code::SCHEDULER: *this << "[module_code:SCHEDULER]"; break;
-        case module_code::INTERRUPT: *this << "[module_code:INTERRUPT]"; break;
-        case module_code::FIRMWARE: *this << "[module_code:FIRMWARE]"; break;
-        case module_code::VFS: *this << "[module_code:VFS]"; break;
-        case module_code::VMM: *this << "[module_code:VMM]"; break;
-        case module_code::INFRA: *this << "[module_code:INFRA]"; break;
-        case module_code::DEVICE: *this << "[module_code:DEVICES]"; break;
-        case module_code::DEVICES_CORE: *this << "[module_code:DEVICES_CORE]"; break;
-        case module_code::HARDWARE_DEBUG: *this << "[module_code:HARDWARE_DEBUG]"; break;
-        case module_code::USER_KERNEL_ABI: *this << "[module_code:USER_KERNEL_ABI]"; break;
-        case module_code::TIME: *this << "[module_code:TIME]"; break;
-        case module_code::PANIC: *this << "[module_code:PANIC]"; break;
-        default: *this << "[module_code:unknown]"; break;
-    }
-}
-
 void kout::print_numer(
     uint64_t* num_ptr,
     numer_system_select numer_system,
@@ -164,15 +102,6 @@ kio::kout &kio::kout::operator<<(endl end)
     *this<<'\n';
     return *this;
 }
-kout& kout::operator<<(KURD_t info)
-{
-    __print_level_code(info);
-    __print_result_code(info);
-    __print_err_domain(info);
-    __print_module_code(info);
-    return *this;
-}
-
 kout& kout::operator<<(const char* str)
 {
     uint64_t strlength = strlen_in_kernel(str);

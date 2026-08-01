@@ -1,6 +1,6 @@
 #pragma once
 #include "stdint.h"
-#include "arch/x86_64/core_hardwares/primitive_gop.h"
+#include "init/core_hardwares/init_gop.h"
 struct TextCursor {
     int m;          // 列
     int n;          // 行
@@ -13,25 +13,9 @@ struct TextViewport {
     int rows;       // size.y / cell.y
 };
 
-namespace infrastructure_location_code{
-    constexpr uint8_t location_code_init_textconsole=5;
-    namespace init_textconsole_events{
-        constexpr uint8_t textconsole_event_init=0;
-        namespace init_results{
-            namespace fail_reasons{
-                constexpr uint8_t font_bitmap_is_null=0;
-                constexpr uint8_t gfx_not_ready=1;
-                constexpr uint8_t bad_cell_size=2;
-                constexpr uint8_t zero_grid=3;
-                constexpr uint8_t already_init=4;
-            }
-        }
-    }
-}
-
 class init_textconsole {
 public:
-    static KURD_t Init(
+    static bool Init(
         const unsigned char* font_bitmap,
         Vec2i cell_size,
         uint32_t font_color,
@@ -54,8 +38,4 @@ private:
     static bool ready;
     static uint16_t glyph_index[256];
     static uint64_t fb_backend_index;
-    static KURD_t default_kurd();
-    static KURD_t default_success();
-    static KURD_t default_fail();
-    static KURD_t default_fatal();
 };
