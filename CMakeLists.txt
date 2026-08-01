@@ -72,6 +72,29 @@ add_dependencies(ksymbols symbols_dumper init.elf kernel.elf)
 add_dependencies(kernel_resources initramfs) 
 add_dependencies(initramfs ksymbols)
 
+# =====================================================
+# src_loc — 源码位置定位码解码表（纯宿主产物，不进映像）
+# =====================================================
+# 遍历 src/，对每个源文件算 hash44(绝对路径)，产出排序的 srcloc.json。
+# 供宿主编译侧 build_utils/src_loc_decode.py 二分还原出错点 path:line。
+# 独立于 kernel_resources/initramfs 依赖链（迭代开发期手动 make srcloc 即可）。
+add_executable(src_loc_dumper
+    build_utils/src_loc_dumper.cpp
+)
+set_target_properties(src_loc_dumper PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+target_compile_definitions(src_loc_dumper PRIVATE
+    PJ_ROOT_PATH="${CMAKE_SOURCE_DIR}"
+)
+add_custom_target(srcloc
+    COMMAND ${CMAKE_BINARY_DIR}/src_loc_dumper
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS ${CMAKE_BINARY_DIR}/src_loc_dumper
+    COMMENT "Generating src_loc decode table (srcloc.json)"
+)
+
 add_library(json_praser 
     user_utils/json_configs_prase.cpp
 )
@@ -178,6 +201,7 @@ add_executable(init.elf
     src/init/page_allocator.cpp
     src/init/initramfs_lookup.cpp
     src/init/util/kout.cpp
+    src/init/init_fatal.cpp
     src/utils/util.cpp
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp

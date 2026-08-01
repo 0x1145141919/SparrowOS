@@ -34,6 +34,10 @@ ksymbols_sorted.txt
 ksorted.txt
 ksorted_sym.txt
 
+# ── 源码位置定位码解码表（纯宿主产物，不进映像） ──
+srcloc.json
+src_loc_dumper
+
 # ── CMake / 编译系统生成文件 ──────────────────────
 compile_commands.json
 CMakeCache.txt

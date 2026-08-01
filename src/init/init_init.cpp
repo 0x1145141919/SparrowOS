@@ -74,7 +74,7 @@ uint64_t va_alloc(uint64_t size,uint8_t align_log2){
 // ============================================================================
 // Phase 1: 输出器 + 堆
 // ============================================================================
-static int init_io_and_heap(BootInfoHeader* header) {
+static loc_code_t init_io_and_heap(BootInfoHeader* header) {
     bsp_kout.Init();
     // 初始化 V3 伴侣堆 (BCB-based, 单线程, 无锁)
     uint64_t heap_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_heap_start;
@@ -232,18 +232,18 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
 
     // ---- 1. 从 initramfs 定位 kernel.elf，分配瞬态端 ----
     if (em->ramfs_base == 0) {
-        bsp_kout << "[Phase3a] initramfs not relocated" << kendl; asm volatile("hlt");
+        bsp_kout << "[Phase3a] initramfs not relocated" << kendl; init_fatal::halt(SRC_LOC());
     }
     const initramfs_header* rh = (const initramfs_header*)(uint64_t)em->ramfs_base;
     uint64_t kelf_sz = 0;
     phyaddr_t kelf_in_ramfs = initramfs_lookup(rh, "/kernel.elf", &kelf_sz);
     if (kelf_in_ramfs == 0 || kelf_sz == 0) {
-        bsp_kout << "[Phase3a] initramfs_lookup failed" << kendl; asm volatile("hlt");
+        bsp_kout << "[Phase3a] initramfs_lookup failed" << kendl; init_fatal::halt(SRC_LOC());
     }
     uint64_t kelf_pages = align_up(kelf_sz, 4096) >> 12;
     phyaddr_t kelf_top   = page_allocator::available_meminterval_probe(kelf_pages, 12);
     if (kelf_top == 0) {
-        bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; asm volatile("hlt");
+        bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; init_fatal::halt(SRC_LOC());
     }
     kl.kimg_pbase = kelf_top - (kelf_pages << 12);  // top → base (瞬态端高→低)
     page_allocator::pages_set({kl.kimg_pbase, kelf_pages << 12}, page_state_t::kernel_persisit);
@@ -258,7 +258,7 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_base;
     if (ehdr->e_ident[EI_MAG0]!=ELFMAG0||ehdr->e_ident[EI_MAG1]!=ELFMAG1||
         ehdr->e_ident[EI_MAG2]!=ELFMAG2||ehdr->e_ident[EI_MAG3]!=ELFMAG3) {
-        bsp_kout << "[Phase3a] bad magic" << kendl; asm volatile("hlt");
+        bsp_kout << "[Phase3a] bad magic" << kendl; init_fatal::halt(SRC_LOC());
     }
     kl.entry_vaddr = ehdr->e_entry;
     bsp_kout << "[Phase3a] phnum=" << ehdr->e_phnum << " entry=0x" << kl.entry_vaddr << kendl;
@@ -279,17 +279,17 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
         if ((ph->p_offset & 0xFFF) || (ph->p_filesz & 0xFFF) ||
             (ph->p_memsz  & 0xFFF) || (ph->p_vaddr & 0xFFF) ||
             (ph->p_paddr  & 0xFFF)) {
-            bsp_kout << "[Phase3a] align fail seg " << i << kendl; asm volatile("hlt");
+            bsp_kout << "[Phase3a] align fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
         }
         // 校验文件数据不超出文件映像
         if (ph->p_filesz) {
             phyaddr_t seg_p = kl.kimg_pbase + ph->p_offset;
             if (seg_p + ph->p_filesz > kl.kimg_pbase + kelf_pages * 4096ULL) {
-                bsp_kout << "[Phase3a] range fail seg " << i << kendl; asm volatile("hlt");
+                bsp_kout << "[Phase3a] range fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
             }
         }
     }
-    if (ptcnt == 0) { bsp_kout << "[Phase3a] no PT_LOAD" << kendl; asm volatile("hlt"); }
+    if (ptcnt == 0) { bsp_kout << "[Phase3a] no PT_LOAD" << kendl; init_fatal::halt(SRC_LOC()); }
 
     // 3b. 加载：遍历 PT_LOAD，按 0x100 标志决定分配策略
     uint64_t kernel_vaddr_top = 0;
@@ -309,7 +309,7 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
             pa = page_allocator::available_meminterval_probe_keep(npg, 12);
             if (!pa) {
                 bsp_kout << "[Phase3a] keep OOM seg " << i << " (0x" << HEX << va << ")" << DEC << kendl;
-                asm volatile("hlt");
+                init_fatal::halt(SRC_LOC());
             }
             page_allocator::pages_set({pa, npg << 12}, page_state_t::kernel_persisit);
 
@@ -353,7 +353,7 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
                         (uint8_t)((flags & PF_X) ? 1 : 0), 1, WB};
         uint64_t seg_sz = align_up(msz, 4096);
         if (kl.kmmu->map({pa, va, seg_sz}, acc)) {
-            bsp_kout << "[Phase3a] map fail seg " << i << kendl; asm volatile("hlt");
+            bsp_kout << "[Phase3a] map fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
         }
     }
 
@@ -366,7 +366,7 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
     vaddr_t  wv   = va_alloc(ws, 21);
     pgaccess wa   = KSPACE_RW_ACCESS;
     if (kl.kmmu->map({kl.kimg_pbase, wv, ws}, wa)) {
-        bsp_kout << "[Phase3a] kIMG_window map fail" << kendl; asm volatile("hlt");
+        bsp_kout << "[Phase3a] kIMG_window map fail" << kendl; init_fatal::halt(SRC_LOC());
     }
     kl.kIMG_self_window = {.vpn = wv >> 12, .ppn = kl.kimg_pbase >> 12,
                            .npages = wpgs, .access = wa};
@@ -414,7 +414,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t sz  = align_up((tp*3)>>3, 4096);//一个页框3bit的预算
         uint64_t npg = sz >> 12;
         phyaddr_t p  = page_allocator::available_meminterval_probe_keep(npg, 12);
-        if (!p) { bsp_kout << "FPA OOM" << kendl; asm volatile("hlt"); }
+        if (!p) { bsp_kout << "FPA OOM" << kendl; init_fatal::halt(SRC_LOC()); }
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
         vaddr_t v = va_alloc_up(sz, 12);
@@ -429,7 +429,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t sz  = LOGBUFFER_SIZE;
         uint64_t npg = sz >> 12;
         phyaddr_t p  = page_allocator::available_meminterval_probe(npg, 21);
-        if (!p) { bsp_kout << "log OOM" << kendl; asm volatile("hlt"); }
+        if (!p) { bsp_kout << "log OOM" << kendl; init_fatal::halt(SRC_LOC()); }
         p -= sz;  // top → base
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
@@ -454,7 +454,7 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
             uint64_t sz  = align_up(sym_sz, 4096);
             uint64_t npg = sz >> 12;
             phyaddr_t p  = page_allocator::available_meminterval_probe(npg, 21);
-            if (!p) { bsp_kout << "sym OOM" << kendl; asm volatile("hlt"); }
+            if (!p) { bsp_kout << "sym OOM" << kendl; init_fatal::halt(SRC_LOC()); }
             p -= sz;
             page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
             ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
@@ -747,9 +747,9 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
 // init — 主入口
 // ============================================================================
 extern "C" void init_main(BootInfoHeader* header) {
-    if (init_io_and_heap(header) != 0) init_fatal::halt();    
+    if (init_io_and_heap(header) != 0) init_fatal::halt(SRC_LOC());    
     auto em = init_memory_early(header);
-    if (!em.xsdt_base && /* memory early 出错检测 */ 0) asm volatile("hlt");
+    if (!em.xsdt_base && /* memory early 出错检测 */ 0) init_fatal::halt(SRC_LOC());
     // 注意: init_memory_early 返回空 struct 时 xsdt_base=0 属于正常（ACPI 找不到），
     // 不 halt。只有 basic_allocator/page_allocator 失败才会内部 halt。
 
@@ -765,14 +765,14 @@ extern "C" void init_main(BootInfoHeader* header) {
     phymem_segment* pure_view = basic_allocator::get_pure_memory_view(&segcnt);
     constexpr uint64_t PKT_PAGES = 4;
     phyaddr_t pkt = page_allocator::available_meminterval_probe(PKT_PAGES, 12);
-    if (!pkt) { bsp_kout << "pkt OOM" << kendl; asm volatile("hlt"); }
+    if (!pkt) { bsp_kout << "pkt OOM" << kendl; init_fatal::halt(SRC_LOC()); }
     pkt -= (PKT_PAGES << 12);
     ksetmem_8((void*)(uint64_t)pkt, 0, PKT_PAGES * 4096);
     page_allocator::pages_set({pkt, PKT_PAGES * 4096}, page_state_t::kernel_persisit);
 
     if (!build_init_to_kernel_header(pkt, PKT_PAGES, header,
                                      &kl, &iv, pure_view, segcnt)) {
-        bsp_kout << "build_init_to_kernel_header failed" << kendl; asm volatile("hlt");
+        bsp_kout << "build_init_to_kernel_header failed" << kendl; init_fatal::halt(SRC_LOC());
     }
 
     bsp_kout << "[Phase4] info_pkt: paddr=" << (void*)(uint64_t)pkt
@@ -782,5 +782,5 @@ extern "C" void init_main(BootInfoHeader* header) {
 
     // Phase 4.5
     phase_45_finalize(kmmu, pkt, kl.entry_vaddr, &iv);
-    asm volatile("hlt");
+    init_fatal::halt(SRC_LOC());
 }
