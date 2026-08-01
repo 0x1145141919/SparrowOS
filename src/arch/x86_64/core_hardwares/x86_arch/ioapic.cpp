@@ -34,7 +34,7 @@ ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entr
             .is_mem_corruption=false,
             .is_escalated=false
         };
-        Panic::panic(default_panic_behaviors_flags,"IOAPIC: unable to map IOAPIC registers",nullptr,&info,kurd);
+        Panic::panic(default_panic_behaviors_flags,"IOAPIC: unable to map IOAPIC registers",nullptr,&info,kurd_get_raw(kurd));
     }
     
     // 初始化完成，保存 IOAPIC ID

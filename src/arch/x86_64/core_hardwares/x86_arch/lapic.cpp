@@ -131,7 +131,7 @@ void x2apic::lapic_timer_tsc_ddline::processor_regist()
                                     .is_mem_corruption = 0, .is_escalated = 0 };
         Panic::panic(default_panic_behaviors_flags,
             (char*)"lapic_timer_tsc_ddline::processor_regist: vec alloc failed",
-            &ctx, &info, kurd);
+            &ctx, &info, kurd_get_raw(kurd));
     }
     timer_lvt_entry ddl=ddline_timer;
     ddl.param.vector=vec;
@@ -171,7 +171,7 @@ void x2apic::lapic_error_handler::processor_regist()
                                     .is_mem_corruption = 0, .is_escalated = 0 };
         Panic::panic(default_panic_behaviors_flags,
             (char*)"lapic_error_handler::processor_regist: vec alloc failed",
-            &ctx, &info, kurd);
+            &ctx, &info, kurd_get_raw(kurd));
     }
     lvt_error_entry entry;
     entry.raw = 0;

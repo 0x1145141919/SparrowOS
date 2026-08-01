@@ -99,12 +99,14 @@ Panic::~Panic()
 //首先是其它CPU冻结
 //其次是无条件切换CPU资源，使用BSP的EARLY_BOOT那一套
 //第三步是will_write_will控制下写遗言
-//第四步是allow_broadcast控制下对于非空message，context进行打印，kurd甩给kout分析
+//第四步是allow_broadcast控制下对于非空message，context进行打印，arg5 按 interpret_arg5_as_err_locator 位分流：
+//   interpret_arg5_as_err_locator=1 → 按源码位置戳(err_locator) 以 u64 重载塞入 kout
+//   interpret_arg5_as_err_locator=0 → 按 KURD raw 还原后以 KURD 重载塞入 kout
 //最后停机
 extern "C" void resources_shift();
 atomic_scalar_t<uint32_t> panic_winner{0};
 #ifdef KERNEL_MODE
-void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
+void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, uint64_t arg5)
 {
     uint32_t prev = panic_winner.add_ka(1);
     if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
@@ -119,7 +121,12 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     resources_shift();
     will.magic=panic_will_magic;
     if(panic_info)will.latest_panic_info=*panic_info;
-    will.kurd=kurd;
+    if (behaviors.interpret_arg5_as_err_locator) {
+        will.extra[0] = arg5;      // 留存原始位置戳
+        will.kurd = KURD_t();      // 无 KURD 语义
+    } else {
+        will.kurd = raw_analyze(arg5);
+    }
     will.magic=panic_will_magic;
     will.version=panic_will_version;
     will.size=sizeof(panic_last_will);
@@ -129,7 +136,11 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     will.Whistleblower.end_timestamp=rdtsc();
     //if(behaviors.will_write_will)write_will();
     bsp_kout<<"PANIC: "<<now<<kendl;
-    bsp_kout<<kurd<<kendl;
+    if (behaviors.interpret_arg5_as_err_locator) {
+        bsp_kout<<"[ERR_LOCATOR] "<<arg5<<kendl;
+    } else {
+        bsp_kout<<"[KURD] "<<raw_analyze(arg5)<<kendl;
+    }
     if(message)bsp_kout<<message<<kendl;
     if(context){
         /* ── 打印肇事者 PID / APICID ── */
@@ -284,10 +295,14 @@ void Panic::write_will()
 }
 #endif
 #ifdef USER_MODE
-void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
+void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, uint64_t arg5)
 {
     bsp_kout<<now<<"USERMODE EMULATION PANIC: "<<kendl;
-    bsp_kout<<kurd<<kendl;
+    if (behaviors.interpret_arg5_as_err_locator) {
+        bsp_kout<<"[ERR_LOCATOR] "<<arg5<<kendl;
+    } else {
+        bsp_kout<<"[KURD] "<<raw_analyze(arg5)<<kendl;
+    }
     if(message)bsp_kout<<message<<kendl;
     _exit(-1);
 }

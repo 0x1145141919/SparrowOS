@@ -218,7 +218,7 @@ void KspacePageTable::invalidate_seg()
         fail.reason = invalidate_tlb_results::FAIL_REASONS::REASON_CODE_BAD_VM_ENTRY;
         Panic::panic(default_panic_behaviors_flags,
             "invalid_k space_VMentry_handler: stared_inval_kspace_VMentry_info is invalid",
-        nullptr,&in_short,fail);
+        nullptr,&in_short,kurd_get_raw(fail));
         return;
     }
     
@@ -254,7 +254,7 @@ void KspacePageTable::invalidate_seg()
                 fatal.reason = invalidate_tlb_results::FATAL_REASONS::REASON_CODE_INVALID_PAGE_SIZE;
                 Panic::panic(default_panic_behaviors_flags,
             "invalid_k space_VMentry_handler: stared_inval_kspace_VMentry_info is invalid",
-        nullptr,&in_short,fatal);
+        nullptr,&in_short,kurd_get_raw(fatal));
                 return;  // 添加 return 避免继续执行
         }
     }

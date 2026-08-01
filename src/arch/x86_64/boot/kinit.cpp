@@ -165,7 +165,7 @@ void create_first_kthread(){
             };
             Panic::panic(default_panic_behaviors_flags,
                 (char*)"create_first_kthread: AP start failed",
-                nullptr, &inshort, fatal);
+                nullptr, &inshort, kurd_get_raw(fatal));
             __builtin_unreachable();
         }
     }
@@ -323,7 +323,7 @@ extern "C" void kernel_start(init_to_kernel_header* transfer)
             .is_escalated = false
         };
         Panic::panic(default_panic_behaviors_flags,
-            "global_schedulers alloc failed", nullptr, &inshort, alloc_kurd);
+            "global_schedulers alloc failed", nullptr, &inshort, kurd_get_raw(alloc_kurd));
     }
     for (uint32_t i = 0; i < logical_processor_count; i++) {
         new (&global_schedulers[i]) per_processor_scheduler();

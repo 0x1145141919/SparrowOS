@@ -1282,7 +1282,7 @@ extern "C" void utlb_invalidate_ipis(uspace_tlb_shutdown_infopak* pak)
             };
             Panic::panic(default_panic_behaviors_flags,
                 (char*)"utlb_invalidate_ipis: 50ms deadline exceeded",
-                nullptr, &inshort, fatal);
+                nullptr, &inshort, kurd_get_raw(fatal));
             __builtin_unreachable();
         }
 

@@ -223,7 +223,7 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
                 .is_escalated = false
             };
             Panic::panic(default_panic_behaviors_flags,
-                nullptr, nullptr, &inshort, kurd);
+                nullptr, nullptr, &inshort, kurd_get_raw(kurd));
         }
     }
 }

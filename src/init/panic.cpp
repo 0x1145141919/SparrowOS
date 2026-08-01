@@ -90,12 +90,16 @@ void Panic::dumpregisters(panic_context::x64_context* regs) {
     
     bsp_kout<< "=====================================================" << kendl;
 }
-void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, KURD_t kurd)
+void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, uint64_t arg5)
 {
     will.kernel_final_state=GlobalStatus;
     GlobalStatus=kernel_state::PANIC;
     bsp_kout<<"PANIC: "<<kendl;
-    bsp_kout<<kurd<<kendl;
+    if (behaviors.interpret_arg5_as_err_locator) {
+        bsp_kout<<"[ERR_LOCATOR] "<<arg5<<kendl;
+    } else {
+        bsp_kout<<"[KURD] "<<raw_analyze(arg5)<<kendl;
+    }
     if(message)bsp_kout<<message<<kendl;
     if(context)dumpregisters(context);
     asm volatile("cli");

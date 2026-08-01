@@ -329,7 +329,7 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
             };
             Panic::panic(default_panic_behaviors_flags,
                 (char*)"broadcast_invalidate_tlb: deadline exceeded",
-                nullptr, &inshort, fatal);
+                nullptr, &inshort, kurd_get_raw(fatal));
             __builtin_unreachable();
         }
 
@@ -686,7 +686,7 @@ void* operator new(size_t size) {
             "new operator failed",
             nullptr,
             &inshort,
-            kurd
+            kurd_get_raw(kurd)
         );
     }
     return result;
@@ -709,7 +709,7 @@ void *operator new(size_t size, alloc_flags_t flags)
             "new operator failed",
             nullptr,
             &inshort,
-            kurd
+            kurd_get_raw(kurd)
         );
     }
     return result;
@@ -731,7 +731,7 @@ void *operator new[](size_t size)
             "new operator failed",
             nullptr,
             &inshort,
-            kurd
+            kurd_get_raw(kurd)
         );
     }
     return result;
@@ -754,7 +754,7 @@ void *operator new[](size_t size, alloc_flags_t flags)
             "new operator failed",
             nullptr,
             &inshort,
-            kurd
+            kurd_get_raw(kurd)
         );
     }
     return result;

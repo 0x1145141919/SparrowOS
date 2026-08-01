@@ -226,7 +226,7 @@ dmar::driver::driver(acpi::DRHD_table *drhd)
             .is_hw_fault=false, .is_mem_corruption=false, .is_escalated=false
         };
         Panic::panic(default_panic_behaviors_flags,
-            "DMAR: regs_vbase map fail", nullptr, &info, kurd);
+            "DMAR: regs_vbase map fail", nullptr, &info, kurd_get_raw(kurd));
     }
 
     command_disable_traslation();

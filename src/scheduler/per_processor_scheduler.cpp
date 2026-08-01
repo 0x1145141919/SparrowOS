@@ -92,7 +92,7 @@ static inline void panic_with_kurd(x64_standard_context_v2 *frame, KURD_t kurd)
         nullptr,
         &panic_ctx,
         &inshort,
-        kurd
+        kurd_get_raw(kurd)
     );
 }
 
@@ -109,7 +109,7 @@ static inline void panic_with_kurd(KURD_t kurd)
         nullptr,
         nullptr,
         &inshort,
-        kurd
+        kurd_get_raw(kurd)
     );
 }
 

@@ -476,7 +476,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
                                     .is_mem_corruption = 0, .is_escalated = 0 };
         Panic::panic(default_panic_behaviors_flags,
             (char *)"idt_vec_demux_entry: vec < 32 on vec_delivery path",
-            &ctx, &info, fatal_k);
+            &ctx, &info, kurd_get_raw(fatal_k));
         return;
     }
 

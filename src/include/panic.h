@@ -40,6 +40,7 @@ struct panic_last_will {
 struct panic_behaviors_flags{
         uint32_t will_write_will:1;//控制是否写内存遗言
         uint32_t allow_broadcast:1;//控制kout后端要不要给后端那些输出设备的行为
+        uint32_t interpret_arg5_as_err_locator:1;//为1:arg5按err_locator(源码位置戳)解释并u64重载塞kout;为0(默认):按KURD raw解释
     }; 
 constexpr panic_behaviors_flags default_panic_behaviors_flags={
     .will_write_will=1,
@@ -72,7 +73,7 @@ public:
         char*message,
         panic_context::x64_context*context,
         panic_info_inshort*panic_info,
-        KURD_t kurd
+        uint64_t arg5
     );
     /**
      * 打印指定的 x86_64 CPU 上下文寄存器内容。

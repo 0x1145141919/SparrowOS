@@ -455,7 +455,7 @@ phyaddr_t FreePagesAllocator::alloc
         violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
         violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::alloc] called before unlock()", nullptr, nullptr, violation_kurd);
+        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::alloc] called before unlock()", nullptr, nullptr, kurd_get_raw(violation_kurd));
     }
 
     using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::alloc_results;
@@ -657,7 +657,7 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
         violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
         violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] called before unlock()", nullptr, nullptr, violation_kurd);
+        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] called before unlock()", nullptr, nullptr, kurd_get_raw(violation_kurd));
     }
 
     using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::free_results;
@@ -708,7 +708,7 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
         violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
         violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] freeing into dirty BCB", nullptr, nullptr, violation_kurd);
+        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] freeing into dirty BCB", nullptr, nullptr, kurd_get_raw(violation_kurd));
     }
     KURD_t bcb_kurd = bcb.free_buddy_way(base, size);
     if (error_kurd(bcb_kurd)) {
@@ -778,7 +778,7 @@ void FreePagesAllocator::interval_pollute(phymem_segment seg)
         violation_kurd.event_code = 0;
         violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
         violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_pollute] called in ACTIVE state, data consistency hazard", nullptr, nullptr, violation_kurd);
+        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_pollute] called in ACTIVE state, data consistency hazard", nullptr, nullptr, kurd_get_raw(violation_kurd));
     }
     if (BCBS == nullptr || BCB_count == 0) return;
     if (seg.size == 0) return;
@@ -822,7 +822,7 @@ void FreePagesAllocator::interval_clean(phymem_segment seg)
         violation_kurd.result = result_code::FATAL;
     if (state != FPA_STATE_ACTIVE) {
         
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called in SEED state", nullptr, nullptr, violation_kurd);
+        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called in SEED state", nullptr, nullptr, kurd_get_raw(violation_kurd));
     }
     if (BCBS == nullptr || BCB_count == 0) return;
     if (seg.size == 0) return;
@@ -854,7 +854,7 @@ void FreePagesAllocator::interval_clean(phymem_segment seg)
 
         { spintrylock_spin_guard _g(bcb.lock);
         if (bcb.dirty_count == 0) {
-            Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called but out_of_number", nullptr, nullptr, violation_kurd);
+            Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called but out_of_number", nullptr, nullptr, kurd_get_raw(violation_kurd));
             continue;
         }
         --bcb.dirty_count;

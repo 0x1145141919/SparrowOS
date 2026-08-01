@@ -19,7 +19,7 @@ static void double_fault_handler(x64_standard_context_v2* frame,uint64_t errcode
     };
     panic_context::x64_context panic_context;
     panic_frame(frame,&panic_context);
-    Panic::panic(default_panic_behaviors_flags,"kernel_context cause #DF(Double Fault)", &panic_context,&inshort,KURD_t());
+    Panic::panic(default_panic_behaviors_flags,"kernel_context cause #DF(Double Fault)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
 }
 
 static void page_fault_handler(x64_standard_context_v2* frame,uint64_t errcode,vaddr_t liner_addr){
@@ -37,7 +37,7 @@ static void page_fault_handler(x64_standard_context_v2* frame,uint64_t errcode,v
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #PF(Page Fault)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #PF(Page Fault)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -56,7 +56,7 @@ static void general_protection_handler(x64_standard_context_v2* frame,uint64_t e
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #GP(General Protection)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #GP(General Protection)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -76,7 +76,7 @@ static void invalid_tss_handler(x64_standard_context_v2* frame,uint64_t errcode)
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #TS(Invalid TSS)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #TS(Invalid TSS)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -95,7 +95,7 @@ void div_by_zero_cpp_enter(x64_standard_context_v2 *frame)
             .is_mem_corruption=0,
             .is_escalated=0
         };
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #DE", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #DE", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -129,7 +129,7 @@ void overflow_cpp_enter(x64_standard_context_v2 *frame)
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #OF(Overflow)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #OF(Overflow)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -148,7 +148,7 @@ void invalid_opcode_cpp_enter(x64_standard_context_v2 *frame)
         // 内核态, panic
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #UD(Invalid Opcode)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #UD(Invalid Opcode)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -194,7 +194,7 @@ void machine_check_cpp_enter(x64_standard_context_v2 *frame)
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #MC(Machine Check)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #MC(Machine Check)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -213,7 +213,7 @@ void simd_floating_point_cpp_enter(x64_standard_context_v2 *frame)
         // 内核态, panic
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #XM(SIMD Floating Point)", &panic_context,&inshort,KURD_t());
+        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #XM(SIMD Floating Point)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
@@ -236,7 +236,7 @@ void asm_panic_cpp_enter(x64_standard_context_v2 *frame)
         };
     panic_context::x64_context panic_context;
     panic_frame(frame,&panic_context);
-    Panic::panic(default_panic_behaviors_flags,"[ASM PANIC]",&panic_context,&inshort,raw_analyze(frame->rax));
+    Panic::panic(default_panic_behaviors_flags,"[ASM PANIC]",&panic_context,&inshort,frame->rax);
 }
 
 void suprious_interrupt_cpp_enter(x64_standard_context_v2 *frame)
