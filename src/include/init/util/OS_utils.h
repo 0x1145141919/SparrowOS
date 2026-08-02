@@ -163,8 +163,8 @@ void linearTBSerialInsert(
     uint64_t entryCount = 1
 ) ;
 
-int strcmp_in_kernel(const char *str1, const char *str2,uint32_t max_strlen=4096);
-int strlen_in_kernel(const char *s);
+extern "C" int strcmp_in_kernel(const char *str1, const char *str2,uint32_t max_strlen=4096);
+extern "C" int strlen_in_kernel(const char *s);
 void ksetmem_8(void* ptr, uint8_t value, uint64_t size_in_byte);
 void ksetmem_16(void* ptr, uint16_t value, uint64_t size_in_byte);
 void ksetmem_32(void* ptr, uint32_t value, uint64_t size_in_byte);

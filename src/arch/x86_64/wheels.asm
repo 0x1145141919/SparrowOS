@@ -33,22 +33,33 @@ strlen_in_kernel:
 ; int strcmp_in_kernel(const char *str1, const char *str2,
 ;                      uint32_t max_strlen)
 ; ================================================================
-; 硬件加速: repe cmpsb 一次比较多个字节。
-; 短字符串（<128 字节）明显快于 C 循环。
+; 先扫 str1 找 '\0' 得到真实长度（含 terminator），
+; 再 cap 到 max_strlen，然后 repe cmpsb 比较恰好这么多字节。
+; 解决原版只管 rcx 不停在 '\0' 导致的误判。
 ; ================================================================
 global strcmp_in_kernel
 strcmp_in_kernel:
     ; rdi = str1, rsi = str2, rdx = max_strlen
-    mov     rcx, rdx            ; max_strlen
+    mov     r8, rdi             ; 保存 str1
+    mov     r9, rsi             ; 保存 str2
+    mov     r10, rdx            ; 保存 max_strlen
     xor     eax, eax
-    repe cmpsb                  ; 比较直到不等或 rcx=0
-    jne     .diff               ; 发现差异
-    ; 相等（要么完全匹配，要么都遇到 '\0'）
+    mov     rcx, -1
+    repne scasb                 ; 扫 str1 到 '\0'
+    not     rcx                 ; rcx = strlen(str1) + 1
+    cmp     rcx, r10
+    jbe     .cmp_s
+    mov     rcx, r10            ; cap 到 max_strlen
+.cmp_s:
+    mov     rdi, r8
+    mov     rsi, r9
+    xor     eax, eax
+    repe cmpsb                  ; 比较 rcx 字节
+    jne     .diff_s
     xor     eax, eax
     ret
 
-.diff:
-    ; str1[i-1] - str2[i-1]
+.diff_s:
     movzx   eax, byte [rdi - 1]
     movzx   ecx, byte [rsi - 1]
     sub     eax, ecx
@@ -58,25 +69,35 @@ strcmp_in_kernel:
 ; int strncmp_in_kernel(const char *str1, const char *str2,
 ;                       size_t n)
 ; ================================================================
-; 硬件加速: repe cmpsb 一次比较，rcx = n。
-; 相等时返回 0，不等返回差值。
+; 同上：扫 str1 找 '\0' 得到真实长度，cap 到 n，repe cmpsb。
 ; ================================================================
 global strncmp_in_kernel
 strncmp_in_kernel:
     ; rdi = str1, rsi = str2, rdx = n
-    mov     rcx, rdx            ; n
-    test    rcx, rcx
-    jz      .equal              ; n == 0 → 返回 0
-
+    mov     r8, rdi             ; 保存 str1
+    mov     r9, rsi             ; 保存 str2
+    mov     r10, rdx            ; 保存 n
+    test    r10, r10
+    jz      .equal_n            ; n == 0 → 返回 0
     xor     eax, eax
-    repe cmpsb                  ; 比较最多 n 个字节
-    jne     .diff               ; 发现差异
+    mov     rcx, -1
+    repne scasb                 ; 扫 str1 到 '\0'
+    not     rcx                 ; rcx = strlen(str1) + 1
+    cmp     rcx, r10
+    jbe     .cmp_n
+    mov     rcx, r10            ; cap 到 n
+.cmp_n:
+    mov     rdi, r8
+    mov     rsi, r9
+    xor     eax, eax
+    repe cmpsb                  ; 比较 rcx 字节
+    jne     .diff_n
 
-.equal:
+.equal_n:
     xor     eax, eax
     ret
 
-.diff:
+.diff_n:
     movzx   eax, byte [rdi - 1]
     movzx   ecx, byte [rsi - 1]
     sub     eax, ecx
