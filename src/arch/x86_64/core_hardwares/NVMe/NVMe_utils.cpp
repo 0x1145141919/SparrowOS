@@ -174,3 +174,19 @@ void pcie_nvme_scan_complete()
         NVMe_Controller::node_array[i].controller = nullptr;
     }
 }
+
+bool NVMe_Controller::identity_verify(const Identity* t) const
+{
+    if (!t) return false;
+    if (identity.vid    != t->vid)    return false;
+    if (identity.did    != t->did)    return false;
+    if (identity.ssvid  != t->ssvid)  return false;
+    if (identity.cntlid != t->cntlid) return false;
+    for (int i = 0; i < 20; i++)
+        if (identity.serial[i] != t->serial[i]) 
+            return false;
+    for (int i = 0; i < 40; i++)
+        if (identity.model[i]  != t->model[i])  
+            return false;
+    return true;
+}
