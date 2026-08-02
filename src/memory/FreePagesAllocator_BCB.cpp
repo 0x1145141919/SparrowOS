@@ -144,6 +144,16 @@ void FreePagesAllocator::BuddyControlBlock::corebcb_mixedbitmap_base_acclaim(vad
 }
 
 // ================================================================
+// corebcb_init_from_leaves — 收养路径（init.elf 穿越位图，叶子已写实）
+// 置幼年态；由上层在适当时候调用 fold_up_from_leaves 成年
+// ================================================================
+
+void FreePagesAllocator::BuddyControlBlock::corebcb_init_from_leaves(vaddr_t bitmap_base_addr)
+{
+    fnd.init_from_leaves(bitmap_base_addr, max_supprt_order);
+}
+
+// ================================================================
 // allocate_buddy_way — 先试缓存，miss 则 fallback 底座
 // ================================================================
 
@@ -151,6 +161,21 @@ phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(
     uint64_t size, KURD_t& result, uint8_t align_log2)
 {
     KURD_t error = default_error();
+
+    // ── 幼年态：order-0 连续叶扫描，放弃对齐（纯内存语义由本层翻译） ──
+    if (fnd.is_juvenile()) {
+        tmp_error_locator jkurd = 0;
+        uint64_t pages = (size + _4KB_PAGESIZE - 1) / _4KB_PAGESIZE;
+        uint64_t off = fnd.juvenile_alloc_order0(jkurd, pages);
+        if (jkurd != 0 || off == INVALID_INBCB_INDEX) {
+            result = error;
+            statistics.alloc_times_fail++;
+            return 0;
+        }
+        statistics.alloc_times_success++;
+        result = default_success();
+        return base + (off << 12);
+    }
 
     uint8_t order = size_to_order(size);
     uint8_t align_order = align_log2 > 12 ? align_log2 - 12 : 0;
@@ -237,6 +262,15 @@ KURD_t FreePagesAllocator::BuddyControlBlock::free_buddy_way(phyaddr_t addr, uin
     if (!is_addr_belong_to_this_BCB_no_lock(addr) ||
         !is_addr_belong_to_this_BCB_no_lock(addr + size - 1)) {
         return error;
+    }
+
+    // ── 幼年态：order-0 连续叶归还，无合并 ──
+    if (fnd.is_juvenile()) {
+        uint64_t pages = (size + _4KB_PAGESIZE - 1) / _4KB_PAGESIZE;
+        tmp_error_locator jkurd = fnd.juvenile_free_order0((addr - this->base) >> 12, pages);
+        if (jkurd != 0) return error;
+        statistics.free_times_success++;
+        return default_success();
     }
 
     uint8_t order = size_to_order(size);

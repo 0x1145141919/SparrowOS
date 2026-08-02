@@ -1,4 +1,5 @@
 #include "util/BuddyControlBlock_foundation.h"
+#include "abi/src_loc.h"
 
 // ════════════════════════════════════════════════════════════════
 // BuddyControlBlock_foundation 基类实现
@@ -203,4 +204,162 @@ KURD_t BuddyControlBlock_foundation::btree_validation()
 
     kurd.result = result_code::SUCCESS;
     return kurd;
+}
+
+// ================================================================
+// 收养：叶子已在全布局位图区写实，内部节点区清零
+// 不重扫清零，只算 free_count[0]，状态置 JUVENILE
+// ================================================================
+
+void BuddyControlBlock_foundation::init_from_leaves(
+    vaddr_t bitmap_va, uint8_t max_order_val)
+{
+    max_order = max_order_val;
+    bitmap    = reinterpret_cast<uint64_t*>(bitmap_va);
+
+    for (uint8_t i = 0; i < ORDER_COUNT; i++)
+        free_count[i] = 0;
+
+    const uint64_t leaf_cnt = 1ull << max_order;
+    uint64_t free_leaf = 0;
+    for (uint64_t o = 0; o < leaf_cnt; o++)
+        if (leaf_read((1ull << max_order) + o))
+            free_leaf++;
+    free_count[0] = free_leaf;
+
+    state = STATE_JUVENILE;
+}
+
+// ================================================================
+// 成年仪式：JUVENILE → ADULT
+// 自底向上填内部节点（4 状态），被合并的空闲叶子清位，全 free_count 重算
+// 完成后满足 btree_validation 全部不变约束
+// ================================================================
+
+tmp_error_locator BuddyControlBlock_foundation::fold_up_from_leaves()
+{
+    if (state != STATE_JUVENILE)
+        return SRC_LOC();
+
+    for (uint8_t i = 0; i < ORDER_COUNT; i++)
+        free_count[i] = 0;
+
+    // 自底向上：order 1 .. max_order
+    for (uint8_t k = 1; k <= max_order; k++) {
+        const uint64_t level_base  = 1ull << (max_order - k);  // order-k 节点 heap idx 起点
+        const uint64_t level_count = 1ull << (max_order - k);  // order-k 节点个数
+        for (uint64_t j = 0; j < level_count; j++) {
+            uint64_t idx = level_base + j;
+            uint64_t lc  = idx << 1;
+            uint64_t rc  = (idx << 1) | 1;
+
+            if (k == 1) {
+                bool lf = leaf_read(lc);
+                bool rf = leaf_read(rc);
+                if (lf && rf) {
+                    node_write(idx, NODE_FREE);
+                    free_count[1]++;
+                    leaf_write(lc, false);
+                    leaf_write(rc, false);
+                } else if (!lf && !rf) {
+                    node_write(idx, NODE_OCCUPIED);
+                } else {
+                    node_write(idx, NODE_NONLEAF);
+                }
+            } else {
+                uint8_t ls = node_read(lc);
+                uint8_t rs = node_read(rc);
+                if (ls == NODE_FREE && rs == NODE_FREE) {
+                    node_write(idx, NODE_FREE);
+                    free_count[k]++;
+                    free_count[k - 1] -= 2;   // 双子不再空闲，合并到 order-k
+                    node_write(lc, NODE_NONEXIST);
+                    node_write(rc, NODE_NONEXIST);
+                } else if (ls == NODE_OCCUPIED && rs == NODE_OCCUPIED) {
+                    node_write(idx, NODE_OCCUPIED);
+                } else {
+                    node_write(idx, NODE_NONLEAF);
+                }
+            }
+        }
+    }
+
+    // 重算 free_count[0]：合并后剩余的空闲叶子
+    const uint64_t leaf_cnt = 1ull << max_order;
+    uint64_t free_leaf = 0;
+    for (uint64_t o = 0; o < leaf_cnt; o++)
+        if (leaf_read((1ull << max_order) + o))
+            free_leaf++;
+    free_count[0] = free_leaf;
+
+    state = STATE_ADULT;
+    return 0;
+}
+
+// ================================================================
+// 幼年态 order-0 分配：找 acquire_count 个连续空闲叶子 → 占位 → 返回页偏移
+// 纯位图语义，无内存/对齐概念；只维护 free_count[0]
+// ================================================================
+
+uint64_t BuddyControlBlock_foundation::juvenile_alloc_order0(
+    tmp_error_locator& kurd, uint64_t acquire_count)
+{
+    kurd = 0;
+    if (state != STATE_JUVENILE) {
+        kurd = SRC_LOC();
+        return INVALID_OFFSET;
+    }
+    if (acquire_count == 0 || acquire_count > (1ull << max_order)) {
+        kurd = SRC_LOC();
+        return INVALID_OFFSET;
+    }
+    if (free_count[0] < acquire_count) {
+        kurd = SRC_LOC();
+        return INVALID_OFFSET;
+    }
+
+    const uint64_t leaf_cnt = 1ull << max_order;
+    uint64_t run = 0, start = 0;
+    for (uint64_t o = 0; o < leaf_cnt; o++) {
+        if (leaf_read((1ull << max_order) + o)) {
+            if (run == 0) start = o;
+            if (++run >= acquire_count) break;
+        } else {
+            run = 0;
+        }
+    }
+    if (run < acquire_count) {
+        kurd = SRC_LOC();
+        return INVALID_OFFSET;
+    }
+
+    for (uint64_t o = start; o < start + acquire_count; o++)
+        leaf_write((1ull << max_order) + o, false);
+    free_count[0] -= acquire_count;
+    return start;
+}
+
+// ================================================================
+// 幼年态 order-0 归还：清 return_count 个叶子 → 维护 free_count[0]
+// ================================================================
+
+tmp_error_locator BuddyControlBlock_foundation::juvenile_free_order0(
+    uint64_t offset, uint64_t return_count)
+{
+    if (state != STATE_JUVENILE)
+        return SRC_LOC();
+    if (return_count == 0)
+        return SRC_LOC();
+    if (offset + return_count > (1ull << max_order))
+        return SRC_LOC();
+
+    // 防御：目标范围内叶子须全部占用（重复释放检测）
+    for (uint64_t o = offset; o < offset + return_count; o++) {
+        if (leaf_read((1ull << max_order) + o))
+            return SRC_LOC();
+    }
+    for (uint64_t o = offset; o < offset + return_count; o++)
+        leaf_write((1ull << max_order) + o, true);
+    free_count[0] += return_count;
+    return 0;
 }

@@ -197,6 +197,7 @@ public:
         );
         BuddyControlBlock();
         void corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr = 0);
+        void corebcb_init_from_leaves(vaddr_t bitmap_base_addr);   // 收养路径：叶子已写实，置幼年态
         phyaddr_t allocate_buddy_way(
             uint64_t size,
             KURD_t& result,

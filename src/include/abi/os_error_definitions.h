@@ -72,6 +72,7 @@ struct KURD_t {//设计意图详见文档
                          free_to_use(0), event_code(0), level(0), domain(0) {}
 };
 typedef uint64_t ckurd;
+typedef uint64_t tmp_error_locator;
 constexpr KURD_t empty_kurd = KURD_t();
 KURD_t set_result_fail_and_error_level(KURD_t pre);
 KURD_t set_fatal_result_level(KURD_t pre);

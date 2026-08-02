@@ -51,7 +51,23 @@ public:
     }
     uint8_t get_max_order() const { return max_order; }
 
+    
+
+    // 收养：叶子已在全布局位图区写实，内部节点区清零；不重扫清零，只算 free_count[0]
+    void init_from_leaves(vaddr_t bitmap_va, uint8_t max_order_val);
+
+// 成年仪式：JUVENILE → ADULT，自底向上填内部节点 + 全 free_count 重算
+    tmp_error_locator fold_up_from_leaves();
+
+    uint64_t juvenile_alloc_order0(tmp_error_locator& kurd,uint64_t acquire_count);   // 扫order0的1bit位图，找到根据acquire_count要求的连续空闲页，找到则返回偏移量，并且维护order 0的freecount
+    tmp_error_locator   juvenile_free_order0(uint64_t offset,uint64_t return_count); // 修改order0位图并且维护order 0 free_count
+
+    // ── 状态查询（包装层分流用） ──
+    bool is_juvenile() const { return state == STATE_JUVENILE; }
+    bool is_adult()    const { return state == STATE_ADULT; }
 protected:
+    enum allocator_state : uint8_t { STATE_JUVENILE = 0, STATE_ADULT = 1 };
+    allocator_state state = STATE_ADULT;   // 默认成年（现有 init() 全空闲成年态兼容）
     // ─── 公共数据结构 ───
     uint64_t* bitmap          = nullptr;
     uint8_t   max_order       = 0;
