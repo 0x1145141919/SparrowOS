@@ -1,6 +1,5 @@
 #pragma once
 #include "stdint.h"
-#include "util/BCB_fnd_DeepFirst.h"
 #include "memmodule_err_definitions.h"
 #include "abi/boot.h"
 #include <util/lock.h>
@@ -11,7 +10,7 @@ typedef uint64_t phyaddr_t;
 typedef uint64_t vaddr_t;
 
 namespace MEMMODULE_LOCATIONS {
-    // kpoolmemmgr 沿用 [4~7]
+    // kpoolmemmgr facade 使用位置码 4
     constexpr uint8_t LOCATION_CODE_KPOOLMEMMGR = 4;
     namespace KPOOLMEMMGR_EVENTS {
         constexpr uint8_t EVENT_CODE_INIT = 0;
@@ -41,72 +40,80 @@ namespace MEMMODULE_LOCATIONS {
             constexpr uint16_t REASON_CODE_HEAP_NOT_EXIST        = 0x07;
         }
     }
-    // HCB_v3 使用位置码 7
-    constexpr uint8_t LOCATION_CODE_KPOOLMEMMGR_HCB_V3 = 7;
-    namespace KPOOLMEMMGR_HCB_V3_EVENTS {
-        constexpr uint8_t EVENT_CODE_ONLINE  = 0;
-        constexpr uint8_t EVENT_CODE_OFFLINE = 1;
-        constexpr uint8_t EVENT_CODE_ALLOC   = 2;
-        constexpr uint8_t EVENT_CODE_FREE    = 3;
-        constexpr uint8_t EVENT_CODE_REALLOC = 4;
-        constexpr uint8_t EVENT_CODE_INTERNAL_ALLOC = 5;
-        constexpr uint8_t EVENT_CODE_INTERNAL_FREE = 6;
-        constexpr uint8_t EVENT_CODE_CLEAR = 7;
-        namespace COMMON_FAIL_REASONS { // 公共原因 [0x00, 0x100)
-            constexpr uint16_t REASON_CODE_BAD_ADDR          = 0x00;
+
+    // HCB_v2.1 使用位置码 7（替换原 v3）
+    constexpr uint8_t LOCATION_CODE_KPOOLMEMMGR_HCB = 7;
+    namespace KPOOLMEMMGR_HCB_EVENTS {
+        constexpr uint8_t EVENT_CODE_LINKTIME_INIT = 0;
+        constexpr uint8_t EVENT_CODE_ONLINE        = 1;
+        constexpr uint8_t EVENT_CODE_OFFLINE       = 2;
+        constexpr uint8_t EVENT_CODE_ALLOC         = 3;
+        constexpr uint8_t EVENT_CODE_FREE          = 4;
+        constexpr uint8_t EVENT_CODE_REALLOC       = 5;
+        constexpr uint8_t EVENT_CODE_CLEAR         = 6;
+
+        // 公共原因 [0x00, 0x100)
+        namespace COMMON_FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_BAD_ADDR           = 0x00;
             constexpr uint16_t REASON_CODE_ADDR_NOT_THIS_HEAP = 0x01;
+            constexpr uint16_t REASON_CODE_HEAP_NOT_ONLINE    = 0x02;
         }
-        namespace COMMON_FATAL_REASONS { // 公共原因 [0x00, 0x100)
+        namespace COMMON_FATAL_REASONS {
             constexpr uint16_t REASON_CODE_METADATA_DESTROYED = 0x00;
         }
-        namespace internal_alloc_results::FAIL_REASONS {
-            constexpr uint16_t REASON_CODE_NO_AVALIABLE_BUDDY = 0x100;
-        }
+
+        // 事件私有原因 [0x100, 0xFFF)
         namespace alloc_results::FAIL_REASONS {
             constexpr uint16_t REASON_CODE_SIZE_IS_ZERO       = 0x100;
             constexpr uint16_t REASON_CODE_SIZE_TOO_LARGE     = 0x101;
+            constexpr uint16_t REASON_CODE_NO_AVAILABLE_BLOCK = 0x102;
         }
-        namespace free_results::FATAL_REASONS {
-            constexpr uint16_t DOUBLE_FREE_DETECT       = 0x100;
-            constexpr uint16_t MERGE_BUT_ALREADY_FREE   = 0x102;
+        namespace free_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_DOUBLE_FREE_DETECT   = 0x100;
+            constexpr uint16_t REASON_CODE_CANARY_CORRUPTED     = 0x101;
+        }
+        namespace online_results::FAIL_REASONS {
+            constexpr uint16_t REASON_CODE_ALREADY_ONLINE       = 0x100;
         }
     }
 }
-constexpr uint64_t HCB_evict_span=20000;
-constexpr uint64_t HCB_evictor_sleep_cycle=1000000;
+
 // ════════════════════════════════════════════════════════════════
-// HCB_v3 — BCB-based Heap Control Block (replaces HCB_v2)
+// HCB_v2.1 — Flat bitmap Heap Control Block
 //
-// BCB order 0 = 32B (16B buddy_meta + 16B payload), max_order = 16
-// 编译时链接: first_linekd_heap 的 bitmap/data 在 BSS, online() 在
-// 内核入口尽早调用. 之后 new/delete 立即可用.
+// 替换 HCB_v3 (buddy tree):
+//   - 8B/bit flat bitmap (vs 3×2^N buddy tree)
+//   - 8B data_meta (vs 16B buddy_meta)
+//   - next-fit scan + scan_cache (vs. per-order buddy cache)
+//   - 0xFF canary 越界检测 (vs. MAGIC magic value)
+//   - 精确 used_bytes / entry_count 统计
 // ════════════════════════════════════════════════════════════════
+
 class kpoolmemmgr_t {
 #ifdef TEST_MODE
 public:
 #endif
-    static constexpr uint32_t HCB_DEFAULT_SIZE     = 0x200000; // 2MB
-    static constexpr uint32_t BYTES_PER_ORDER0      = 32;
-    static constexpr uint8_t  MAX_ORDER             = 16;
-    static constexpr uint8_t  PER_ORDER_CACHE_COUNT = 8;
-    static constexpr uint8_t  PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2 = 0x4;
-    static constexpr uint64_t MAGIC_ALLOCATED = 0xDEADBEEFCAFEBABEull;
+    static constexpr uint32_t HCB_DEFAULT_SIZE = 0x200000; // 2MB
+    static constexpr uint8_t  BYTES_PER_BIT    = 8;         // bitmap 1 bit = 8 bytes
+    static constexpr uint8_t  PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2 = 0x4; // 16 heaps/CPU
 
-public:
-    // ── buddy_meta (16B, data_meta 替代) ──
-    struct alignas(16) buddy_meta {
-        uint32_t data_size;
-        uint8_t  flags;        // alloc_flags_t 压缩
-        uint64_t magic;        // MAGIC_ALLOCATED
+    // ── data_meta (8B) ──
+    struct alignas(8) data_meta {
+        uint32_t data_size;      // 4B, 用户请求大小; 0 = 已释放
+        uint8_t  alloc_flags;    // 1B, 编码 alloc_flags_t 位域
+        uint8_t  magic;          // 1B, debug 保留
+        uint16_t align_pad_bits; // 2B, 对齐浪费的 bitmap bits (free 时用于归还完整 run)
     };
-    static_assert(sizeof(buddy_meta) == 16, "buddy_meta must be 16 bytes");
+    static_assert(sizeof(data_meta) == 8, "data_meta must be 8 bytes");
 
-    // ── HCB_v3 内部类 ──
-    // （mixed_bitmap_v2 已替换为 BuddyControlBlock_foundation）
-
-    struct BuddyCache {
-        uint64_t entries[PER_ORDER_CACHE_COUNT];
-        uint8_t  cursor = 0;
+    // ── ScanCache (取代 per-order buddy cache) ──
+    struct ScanCache {
+        uint64_t hint_u64_idx      = 0;  // 下一个待扫 64-bit word
+        uint64_t last_success_idx  = 0;  // next-fit 起点 (bit index)
+        uint64_t largest_free_hint = 0;  // 最长连续空闲 bits 缓存
+        uint64_t free_bit_count    = 0;  // 总空闲 bits
+        uint64_t entry_count       = 0;  // 活跃分配数
+        uint64_t used_bytes_acc    = 0;  // 用户 payload 累计
     };
 
 #ifdef TEST_MODE
@@ -114,64 +121,74 @@ public:
 #else
 private:
 #endif
-    class HCB_v3 {
+    class HCB_v2 {
     public:
         bool valid = false;
+        spintrylock_cpp_t hcb_lock;
+
+        // ── 生命周期 ──
         KURD_t online(uint32_t size, vaddr_t data_va, vaddr_t bitmap_va);
         KURD_t offline();
+        void   linktime_init();
+
+        // ── 分配器接口 ──
         KURD_t alloc(void*& addr, uint32_t size, alloc_flags_t flags);
         KURD_t free(void* ptr);
         KURD_t realloc(void*& ptr, uint32_t new_size, alloc_flags_t flags);
         KURD_t clear(void* ptr);
-        bool is_addr_belong(void* addr) const;
-        uint64_t used_bytes() const;
-        bool is_full() const;
-        // 扫描位图校验 order_free_count 一致性
-        KURD_t flush_free_count();
 
-        // ══ 只用于 first_linekd_heap 编译时链接 ══
-        void linktime_init();
+        // ── 查询 ──
+        bool     is_addr_belong(void* addr) const;
+        uint64_t used_bytes() const;
+        bool     is_full() const;
+        KURD_t   flush_free_count();
 
 #ifdef TEST_MODE
-        // ══ 用户态测试用 — 使用预分配的 mmap/malloc 内存初始化 HCB ══
         void test_init(vaddr_t data_va, vaddr_t bitmap_va, uint32_t size);
 #endif
 
-        // 统计（order_free_count 由底座内部维护）
-        uint64_t stat_alloc   = 0;
-        uint64_t stat_free    = 0;
-        uint64_t stat_alloc_fail = 0;
-        uint64_t stat_coalesce   = 0;
-        uint64_t stat_split      = 0;
-        uint64_t stat_cache_hit  = 0;
-        uint64_t stat_scan       = 0;
+        // ── 统计 ──
+        uint64_t stat_alloc       = 0;
+        uint64_t stat_free        = 0;
+        uint64_t stat_alloc_fail  = 0;
+        uint64_t stat_oom         = 0;  // 内存耗尽次数
+        uint64_t stat_realloc_expand = 0;  // 原地扩展次数
+        uint64_t stat_scan_fail   = 0;  // 扫描 round 数
 
     private:
         friend class kpoolmemmgr_t;
-        BCB_fnd_DeepFirst fnd;
-        BuddyCache      caches_[MAX_ORDER + 1];
-        vaddr_t         vbase_  = 0;
-        phyaddr_t       data_pbase = 0;
-        uint32_t        total_size_ = 0;
-        uint8_t         max_order_ = MAX_ORDER;
-        phyaddr_t       bitmap_pbase = 0;
-        uint64_t        bitmap_allocated_size = 0;
 
-        // BCB core
-        buddy_meta* meta_from_ptr(void* ptr) const;
-        uint8_t     size_to_order(uint32_t size_with_meta) const;
-        uint64_t    ptr_to_offset(void* ptr, uint8_t order) const;
-        KURD_t internal_alloc(uint64_t& out_offset, uint8_t order);
-        KURD_t internal_free(uint64_t offset, uint8_t order);
-        void   cache_insert(uint8_t order, uint64_t offset);
-        bool   cache_pick(uint8_t order, uint64_t& out_offset);
+        vaddr_t   vbase_     = 0;
+        phyaddr_t data_pbase = 0;
+        uint32_t  total_size_ = 0;
+        uint32_t  total_bits_ = 0;     // total_size_ / BYTES_PER_BIT
 
-        spintrylock_cpp_t hcb_lock;
+        vaddr_t   bitmap_va_ = 0;
+        phyaddr_t bitmap_pbase = 0;
+        uint32_t  bitmap_bytes_ = 0;
 
-        // KURD 位置级模板
-        KURD_t kurd_default_success();
-        KURD_t kurd_default_error();
-        KURD_t kurd_default_fatal();
+        ScanCache cache_;
+
+        // ── bitmap 操作 ──
+        uint64_t  bit_idx_from_ptr(void* ptr) const;
+        bool      bitmap_test(uint64_t bit_idx) const;
+        void      bitmap_set(uint64_t bit_idx, uint64_t count);
+        void      bitmap_clear(uint64_t bit_idx, uint64_t count);
+        bool      bitmap_scan_from(uint64_t start_idx, uint64_t needed,
+                                   uint64_t& out_idx, uint64_t& out_runlen);
+
+        // ── 内部 ──
+        data_meta* meta_from_ptr(void* ptr) const;
+        void       fill_canary(uint8_t* user_ptr, uint32_t user_size,
+                               uint64_t total_bits_alloced);
+        void       check_canary(uint8_t* user_ptr, uint32_t user_size,
+                                uint64_t total_bits_alloced);
+        uint32_t   bits_needed(uint32_t user_size) const;
+
+        // ── KURD 模板 ──
+        static KURD_t kurd_default_success();
+        static KURD_t kurd_default_error();
+        static KURD_t kurd_default_fatal();
     };
 
     // ── 静态成员 ──
@@ -180,20 +197,17 @@ private:
     static KURD_t default_fail();
     static KURD_t default_fatal();
 
-    static bool     is_muli_heap_enabled;
-    // first_linekd_heap: BSS 静态数据, 内核入口尽早 online().
-    // 编译时 bitmap/data 在 BSS, 第一行代码即可 alloc.
-    static HCB_v3   first_linekd_heap;
+    static bool    is_muli_heap_enabled;
+    static HCB_v2  first_linekd_heap;
 #ifdef TEST_MODE
 public:
 #endif
-    static HCB_v3*  HCB_ARRAY;          // 动态分配, multi_heap_enable 后可用
-    static spinrwlock_cpp_t HCB_ARRAY_lock;
-    static KURD_t   alloc_heap(uint32_t idx);
-    static KURD_t   free_heap(uint32_t idx);
-    static HCB_v3*  find_hcb_by_address(void* ptr);
-    static VM_DESC  heap_area;
-    static VM_DESC  heap_area_bitmaps;
+    static HCB_v2* HCB_ARRAY;
+    static KURD_t alloc_heap(uint32_t idx);
+    static KURD_t free_heap(uint32_t idx);
+    static HCB_v2* find_hcb_by_address(void* ptr);
+    static VM_DESC heap_area;
+    static VM_DESC heap_area_bitmaps;
 
 public:
     static void* kalloc(uint64_t size, KURD_t& no_succes_report,

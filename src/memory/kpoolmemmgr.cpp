@@ -20,22 +20,20 @@
 #include <cstring>
 
 // ════════════════════════════════════════════════════════════════
-// kpoolmemmgr_t — HCB_v3 全局堆管理器
+// kpoolmemmgr_t — HCB_v2.1 全局堆管理器 (flat bitmap)
 //
-// first_linekd_heap 在 BSS 中, 内核入口尽早 online()
-// (mmu_init 阶段调用 first_linekd_heap.online()).
+// first_linekd_heap 在 BSS 中, 内核入口尽早 linktime_init()
 // multi_heap_enable() 后启用 per-processor 堆.
 // ════════════════════════════════════════════════════════════════
 
 // 静态成员定义
 bool    kpoolmemmgr_t::is_muli_heap_enabled = false;
-kpoolmemmgr_t::HCB_v3 kpoolmemmgr_t::first_linekd_heap;
-kpoolmemmgr_t::HCB_v3* kpoolmemmgr_t::HCB_ARRAY = nullptr;
-spinrwlock_cpp_t kpoolmemmgr_t::HCB_ARRAY_lock;
+kpoolmemmgr_t::HCB_v2 kpoolmemmgr_t::first_linekd_heap;
+kpoolmemmgr_t::HCB_v2* kpoolmemmgr_t::HCB_ARRAY = nullptr;
 VM_DESC kpoolmemmgr_t::heap_area_bitmaps = { .end=0, .map_type=VM_DESC::MAP_NONE };
 VM_DESC kpoolmemmgr_t::heap_area = { .start=0, .end=0, .map_type=VM_DESC::MAP_NONE };
 
-kpoolmemmgr_t::HCB_v3* kpoolmemmgr_t::find_hcb_by_address(void* ptr)
+kpoolmemmgr_t::HCB_v2* kpoolmemmgr_t::find_hcb_by_address(void* ptr)
 {
     if (first_linekd_heap.is_addr_belong(ptr))
         return &first_linekd_heap;
@@ -44,9 +42,7 @@ kpoolmemmgr_t::HCB_v3* kpoolmemmgr_t::find_hcb_by_address(void* ptr)
     if (uptr < heap_area.start || uptr >= heap_area.end)
         return nullptr;
     uint64_t idx = (uptr - heap_area.start) / HCB_DEFAULT_SIZE;
-    HCB_ARRAY_lock.read_lock();
-    HCB_v3* hcb = &HCB_ARRAY[idx];
-    HCB_ARRAY_lock.read_unlock();
+    HCB_v2* hcb = &HCB_ARRAY[idx];
     if (!hcb->valid) return nullptr;
     return hcb;
 }
@@ -85,14 +81,14 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
     }
     uint64_t hcb_count = processor_count * (1 << PER_PROCESSOR_MAX_HCB_COUNT_ALIGN2);
     uint64_t heap_area_size = HCB_DEFAULT_SIZE * hcb_count;
-    uint64_t bitmap_area_size = heap_area_size / 128;
+    uint64_t bitmap_area_size = heap_area_size / 64;
 
 #ifdef TEST_MODE
-    HCB_ARRAY = (HCB_v3*)mmap(nullptr, sizeof(HCB_v3) * hcb_count,
+    HCB_ARRAY = (HCB_v2*)mmap(nullptr, sizeof(HCB_v2) * hcb_count,
                                PROT_READ|PROT_WRITE,
                                MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (HCB_ARRAY == MAP_FAILED) { return fail; }
-    memset(HCB_ARRAY, 0, sizeof(HCB_v3) * hcb_count);
+    memset(HCB_ARRAY, 0, sizeof(HCB_v2) * hcb_count);
 
     void* heap_mem = mmap(nullptr, heap_area_size + bitmap_area_size,
                            PROT_READ|PROT_WRITE,
@@ -107,15 +103,13 @@ KURD_t kpoolmemmgr_t::multi_heap_enable()
 #else
     {
         KURD_t kurd;
-        spinrwlock_interrupt_about_write_guard g(HCB_ARRAY_lock);
-        HCB_ARRAY = (HCB_v3*)__wrapped_pgs_valloc(&kurd,
-            alignup_and_shift_right(sizeof(HCB_v3) * hcb_count, 12),
+        HCB_ARRAY = (HCB_v2*)__wrapped_pgs_valloc(&kurd,
+            alignup_and_shift_right(sizeof(HCB_v2) * hcb_count, 12),
             page_state_t::kernel_pinned, 12);
         if(error_kurd(kurd))
             return kurd;
-        
     }
-    ksetmem_8(HCB_ARRAY, 0, hcb_count * sizeof(HCB_v3));
+    ksetmem_8(HCB_ARRAY, 0, hcb_count * sizeof(HCB_v2));
 
     heap_area.start = kspace_vm_table->alloc_available_space(heap_area_size, 0);
     if (heap_area.start == 0) {
@@ -165,7 +159,7 @@ KURD_t kpoolmemmgr_t::alloc_heap(uint32_t idx)
     }
 
     vaddr_t data_va   = heap_area.start + HCB_DEFAULT_SIZE * idx;
-    vaddr_t bitmap_va = heap_area_bitmaps.start + (HCB_DEFAULT_SIZE / 128) * idx;
+    vaddr_t bitmap_va = heap_area_bitmaps.start + (HCB_DEFAULT_SIZE / 64) * idx;
     return HCB_ARRAY[idx].online(HCB_DEFAULT_SIZE, data_va, bitmap_va);
 }
 
@@ -213,7 +207,7 @@ void* kpoolmemmgr_t::kalloc(uint64_t size, KURD_t& no_succes_report, alloc_flags
 
         // Phase 1: 本 CPU 热点堆（优先，cache 亲和）
         for (uint32_t i = hotspot_start; i < hotspot_end; ++i) {
-            HCB_v3* hcb = &HCB_ARRAY[i];
+            HCB_v2* hcb = &HCB_ARRAY[i];
             { spintrylock_try_guard _g(&hcb->hcb_lock);
             if (!_g.is_locked()) continue;
 
@@ -232,7 +226,7 @@ void* kpoolmemmgr_t::kalloc(uint64_t size, KURD_t& no_succes_report, alloc_flags
         // Phase 2: 全局扫描（跳过已试过热点堆）
         for (uint32_t i = 0; i < hcb_count; ++i) {
             if (i >= hotspot_start && i < hotspot_end) continue;
-            HCB_v3* hcb = &HCB_ARRAY[i];
+            HCB_v2* hcb = &HCB_ARRAY[i];
             { spintrylock_try_guard _g(&hcb->hcb_lock);
             if (!_g.is_locked()) continue;
 
@@ -273,7 +267,7 @@ void* kpoolmemmgr_t::realloc(void* ptr, KURD_t& no_succes_report, uint64_t size,
         return nullptr;
     }
 
-    HCB_v3* hcb = find_hcb_by_address(ptr);
+    HCB_v2* hcb = find_hcb_by_address(ptr);
     if (!hcb) {
         KURD_t fail = default_fail();
         fail.event_code = MEMMODULE_LOCATIONS::KPOOLMEMMGR_EVENTS::EVENT_CODE_REALLOC;
@@ -290,7 +284,7 @@ void* kpoolmemmgr_t::realloc(void* ptr, KURD_t& no_succes_report, uint64_t size,
         // fallback: alloc new + copy + free old
         void* new_ptr = kalloc(size, no_succes_report, flags);
         if (new_ptr) {
-            buddy_meta* meta = (buddy_meta*)((uint8_t*)ptr - sizeof(buddy_meta));
+            data_meta* meta = (data_meta*)((uint8_t*)ptr - sizeof(data_meta));
             ksystemramcpy(ptr, new_ptr, meta->data_size < size ? meta->data_size : size);
             kfree(ptr);
             return new_ptr;
@@ -306,7 +300,7 @@ void* kpoolmemmgr_t::realloc(void* ptr, KURD_t& no_succes_report, uint64_t size,
 void kpoolmemmgr_t::clear(void* ptr)
 {
     if (!ptr) return;
-    HCB_v3* hcb = find_hcb_by_address(ptr);
+    HCB_v2* hcb = find_hcb_by_address(ptr);
     if (!hcb) return;
     spintrylock_spin_guard _g(hcb->hcb_lock);
     hcb->clear(ptr);
@@ -316,7 +310,7 @@ void kpoolmemmgr_t::clear(void* ptr)
 void kpoolmemmgr_t::kfree(void* ptr)
 {
     if (!ptr) return;
-    HCB_v3* hcb = find_hcb_by_address(ptr);
+    HCB_v2* hcb = find_hcb_by_address(ptr);
     if (!hcb) return;
 
     // 锁定目标 HCB（自旋等待）
@@ -326,6 +320,6 @@ void kpoolmemmgr_t::kfree(void* ptr)
     if (contain.result == result_code::FATAL && contain.level == level_code::FATAL) {
         bsp_kout << "kpoolmemmgr_t::kfree: METADATA_DESTROYED at " << ptr << kendl;
         panic_info_inshort inshort = { .is_bug=false, .is_policy=true, .is_hw_fault=false, .is_mem_corruption=true, .is_escalated=false };
-        Panic::panic(default_panic_behaviors_flags, "kfree: metadata corrupted", nullptr, &inshort, contain);
+        Panic::panic(default_panic_behaviors_flags, "kfree: metadata corrupted", nullptr, &inshort, kurd_get_raw(contain));
     }
 }

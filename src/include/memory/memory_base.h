@@ -259,15 +259,16 @@ struct VM_DESC
     uint8_t is_vaddr_alloced:1;    // 虚拟地址是否由地址空间管理器分配（否则为固定映射）
     uint8_t is_out_bound_protective:1; // 是否有越界保护区,只有is_vaddr_alloced为1的bit此位才有意义，
 };
-// v3: 砍掉 is_longtime, is_crucial_variable, vaddraquire, align_log2
-// 仅保留 force_first_linekd_heap 和 is_when_realloc_force_new_addr
+// v2.1: 恢复 align_require_log2 (v3 砍掉的)
 struct alloc_flags_t{
     uint8_t force_first_linekd_heap:1;    // 强制使用 first_linekd_heap
     uint8_t is_when_realloc_force_new_addr:1;// realloc 强制新分配
+    uint8_t align_require_log2:6;         // 对齐要求 (2^n), 默认 3=8B
 };
 constexpr alloc_flags_t default_flags={
     .force_first_linekd_heap=false,
     .is_when_realloc_force_new_addr=false,
+    .align_require_log2=3,
 };
 
 /**
