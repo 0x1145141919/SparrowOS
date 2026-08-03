@@ -27,12 +27,23 @@ struct bcb_juvenile_init_config{
     // ── MATCH_THREAD 时有效：逻辑 CPU 数 ──
     uint64_t        logical_processor_count;
 
-    // 预设 strategy（segs/segs_count 需调用方自行填充）
+    // ── 位图池来源：池 = 3bit × 总空闲页 的一块连续物理区 ──
+    //   CALLER           ：调用方预置 region_pbase_（0 = plan-only 只算 plan/预算；
+    //                       非 0 = 在调用方提供的池上 full 铺叶 + 池自保护）
+    //   BASIC_ALLOCATOR  ：生产路径。plan_and_setup 内部经 basic_allocator 挖池
+    //                      并 pages_set 标记，一次调用即 full（KERNEL_MODE 构建）
+    enum pool_source : uint8_t {
+        POOL_SOURCE_CALLER            = 0,
+        POOL_SOURCE_BASIC_ALLOCATOR   = 1,
+    };
+    pool_source     pool;
+
+    // 预设 strategy（segs/segs_count 需调用方自行填充；池默认 CALLER 注入）
     static constexpr bcb_juvenile_init_config BEST_FIT() {
-        return { nullptr, 0, INIT_STRATEGY_BEST_ALIGN_FIT, 1, 0 };
+        return { nullptr, 0, INIT_STRATEGY_BEST_ALIGN_FIT, 1, 0, POOL_SOURCE_CALLER };
     }
     static constexpr bcb_juvenile_init_config DEFAULT_THREAD() {
-        return { nullptr, 0, INIT_STRATEGY_MATCH_THREAD, 1, 0 };
+        return { nullptr, 0, INIT_STRATEGY_MATCH_THREAD, 1, 0, POOL_SOURCE_CALLER };
     }
 };
 

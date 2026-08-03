@@ -1,18 +1,21 @@
 #include "init/init_bcb_juvenile.h"
+#ifdef KERNEL_MODE
+#include "init/pages_alloc.h"   // basic_allocator：位图池内部挖取（生产路径）
+#endif
 #include <new>
 
 // ════════════════════════════════════════════════════════════════
 // init_bcb_juvenile — init.elf 阶段幼年 BCB 分配器（纯静态类，独立可测单元）
 //
 // 显式参数。plan_and_setup 的输入全部来自 bcb_juvenile_init_config
-// （内存视图 + strategy 链条），位图池由调用方预分配后通过
-// region_pbase_/region_size_ 提供（静态成员，全局一份账本）。
-//
-// 两种模式：
-//   region_pbase_ == 0   → plan-only：只算 plan（bcbs_/descs_），
-//                          不写位图；region_size_ 输出所需池字节数。
-//   region_pbase_ != 0   → full：在调用方提供的池上铺全空闲叶子 +
-//                          池自保护（池页在所属 BCB 叶子置占用）。
+// （内存视图 + strategy 链条 + 池来源）。位图池两种来源：
+//   POOL_SOURCE_BASIC_ALLOCATOR → 生产路径：plan_and_setup 内部经
+//                                  basic_allocator 挖池（KERNEL_MODE 构建）
+//   POOL_SOURCE_CALLER          → 调用方预置 region_pbase_：
+//     region_pbase_ == 0   → plan-only：只算 plan（bcbs_/descs_），
+//                            不写位图；region_size_ 输出所需池字节数。
+//     region_pbase_ != 0   → full：在调用方提供的池上铺全空闲叶子 +
+//                            池自保护（池页在所属 BCB 叶子置占用）。
 // ════════════════════════════════════════════════════════════════
 
 namespace {
@@ -189,6 +192,27 @@ loc_code_t init_bcb_juvenile::plan_and_setup(bcb_juvenile_init_config* cfg)
     region_size_ = align_up_2pow((total_free_pages * 3 + 7) >> 3, PAGE_SIZE);
     if (region_size_ == 0) { delete[] plan; return SRC_LOC(); }
 
+    // ---- 6.5 池来源：BASIC_ALLOCATOR 生产路径内部挖池 ----
+    //     池经 basic_allocator 挖取后 pages_set 标记（防 basic_allocator 复用），
+    //     并在 step 8 池自保护钉入所属 BCB 叶子（防 BCB 自分配）。一次调用即 full。
+    if (cfg->pool == bcb_juvenile_init_config::POOL_SOURCE_BASIC_ALLOCATOR) {
+#ifdef KERNEL_MODE
+        phyaddr_t pool = basic_allocator::pages_alloc(region_size_, 12);
+        if (pool == ~0ull) pool = 0;
+        if (pool == 0) {
+            region_pbase_ = 0;
+            delete[] plan;
+            return fail_cleanup();
+        }
+        basic_allocator::pages_set({pool, region_size_}, PHY_MEM_TYPE::OS_KERNEL_DATA);
+        region_pbase_ = pool;
+#else
+        // 用户态构建（测试）无 basic_allocator：内部挖池不可用
+        delete[] plan;
+        return fail_cleanup();
+#endif
+    }
+
     // ---- 7. 建立 bcbs_ / descs_（池内 8B 对齐逐 BCB 切片） ----
     bcbs_  = new bcb_state[plan_count];
     descs_ = new bcb_desc_t[plan_count];
@@ -226,7 +250,7 @@ loc_code_t init_bcb_juvenile::plan_and_setup(bcb_juvenile_init_config* cfg)
     // ---- 8. 铺位图（仅当池已提供，full 模式） ----
     if (region_pbase_ != 0) {
         // 8a. 整池清零：内部节点区 = 0 (NODE_NONEXIST)，叶子 = 0 (占用)
-        zero_bytes(reinterpret_cast<void*>(static_cast<uintptr_t>(region_pbase_)), region_size_);
+        zero_bytes(reinterpret_cast<void*>(static_cast<uintptr_t>(region_pbase_)), region_size_);//用mem_set
 
         // 8b. 全叶子置空闲（1）
         for (uint64_t i = 0; i < bcb_count_; ++i) {

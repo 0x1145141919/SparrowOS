@@ -1,6 +1,7 @@
 #include "abi/boot.h"
 #include "init/load_kernel.h"
 #include "init/page_allocator.h"
+#include "init/init_bcb_juvenile.h"
 #include "init/pages_alloc.h"
 #include "init/util/textConsole.h"
 #include "init/util/kout.h"
@@ -147,11 +148,52 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
             PHY_MEM_TYPE::OS_KERNEL_DATA);
     }
 
-    // 2d. page_allocator
+    // 2d. init_bcb_juvenile 顶替 page_allocator —— 幼年 BCB 位图分配器（分配职责唯一来源）
+    //     位图池从 basic_allocator 预挖（POOL_SOURCE_BASIC_ALLOCATOR，生产路径）
+    {
+        uint64_t segcnt = 0;
+        phymem_segment* view = basic_allocator::get_pure_memory_view(&segcnt);
+        if (!view || segcnt == 0) {
+            bsp_kout << "[INIT] get_pure_memory_view failed" << kendl; return em;
+        }
+
+        bcb_juvenile_init_config cfg = bcb_juvenile_init_config::BEST_FIT();
+        cfg.segs                    = view;
+        cfg.segs_count              = segcnt;
+        cfg.logical_processor_count = header->logical_processor_count;
+        cfg.pool                    = bcb_juvenile_init_config::POOL_SOURCE_BASIC_ALLOCATOR;
+        if (init_bcb_juvenile::plan_and_setup(&cfg) != 0) {
+            bsp_kout << "[INIT] init_bcb_juvenile::plan_and_setup failed" << kendl; return em;
+        }
+        bsp_kout << "[INIT] BCB up: managed=" << init_bcb_juvenile::total_page_count()
+                 << " free=" << init_bcb_juvenile::free_page_count()
+                 << " pool=0x" << HEX << init_bcb_juvenile::region_pbase_ << DEC << kendl;
+
+        // 2c 再做一遍（BCB 侧钉占用）：纯视图快照里 init 镜像/header/loaded files 仍是
+        // freeSystemRam，plan 会覆盖它们；位图里不钉住，BCB 就会把它们分配出去。
+        init_bcb_juvenile::mark_used((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
+        init_bcb_juvenile::mark_used((uint64_t)header, (uint64_t)header->total_pages_count * 4096);
+        for (uint64_t i = 0; i < header->loaded_file_count; i++) {
+            if (header->loaded_files[i].file_type == LOADED_FILE_ENTRY_TYPE_ELF_REAL_LOAD) continue;
+            init_bcb_juvenile::mark_used(
+                (uint64_t)header->loaded_files[i].raw_data,
+                align_up(header->loaded_files[i].file_size, 4096));
+        }
+        // 低 1MB（x86 实模式 IVT/BDA/EBDA/BIOS，保留语义）
+        init_bcb_juvenile::mark_used(0, 0x100000);
+    }
+
+    // 2e. page_allocator 降级为 pages_arr 账本（不再承担分配）
+    //     kernel 的 all_pages_arr::Init 会从 handoff 的 phymem_segments 全量重建状态，
+    //     它真正需要的只是这块 per-page 缓冲（决定 mem_map_entry_count 上界）。
+    //     handoff 升级前保留；其缓冲页必须钉进 BCB，防被分配出去。
     r = page_allocator::init();
-    if (r != 0) { bsp_kout << "[INIT] page_allocator::init failed: " << r << kendl; return em; }
-    bsp_kout << "[INIT] Phase 2: memory ready, free pages="
-             << page_allocator::free_page_count() << kendl;
+    if (r != 0) { bsp_kout << "[INIT] page_allocator ledger init failed: " << r << kendl; return em; }
+    init_bcb_juvenile::mark_used(page_allocator::get_mem_map_pbase(),
+                                 page_allocator::total_page_count() * sizeof(page));
+
+    bsp_kout << "[INIT] Phase 2: memory ready, BCB free pages="
+             << init_bcb_juvenile::free_page_count() << kendl;
     return em;
 }
 
@@ -174,7 +216,8 @@ static void relocate_initramfs(BootInfoHeader* header, ctx_early_mem* em) {
     uint64_t sz   = ramfs->file_size;
     uint64_t asz  = align_up(sz, 4096);
     uint64_t pcnt = asz >> 12;
-    uint64_t newb = page_allocator::available_meminterval_probe(pcnt, 12);
+    loc_code_t alloc_err = 0;
+    uint64_t newb = init_bcb_juvenile::alloc(pcnt, 12, &alloc_err);
     if (newb == 0) {
         bsp_kout << "[WARN] initramfs relocation: no space, keeping at 0x"
                  << (uint64_t)ramfs->raw_data << kendl;
@@ -182,11 +225,11 @@ static void relocate_initramfs(BootInfoHeader* header, ctx_early_mem* em) {
         em->ramfs_size = asz;
         return;
     }
-    newb -= (pcnt << 12);  // top → base
     ksystemramcpy(ramfs->raw_data, (void*)newb, sz);
     bsp_kout << "[INIT] initramfs: 0x" << (uint64_t)ramfs->raw_data
              << " -> 0x" << newb << " (" << sz << " bytes)" << kendl;
 
+    init_bcb_juvenile::free((uint64_t)ramfs->raw_data, pcnt);
     page_allocator::pages_set({(uint64_t)ramfs->raw_data, asz}, page_state_t::free);
     page_allocator::pages_set({newb, asz}, page_state_t::kernel_persisit);
 
@@ -241,11 +284,11 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
         bsp_kout << "[Phase3a] initramfs_lookup failed" << kendl; init_fatal::halt(SRC_LOC());
     }
     uint64_t kelf_pages = align_up(kelf_sz, 4096) >> 12;
-    phyaddr_t kelf_top   = page_allocator::available_meminterval_probe(kelf_pages, 12);
-    if (kelf_top == 0) {
+    loc_code_t alloc_err = 0;
+    kl.kimg_pbase = init_bcb_juvenile::alloc(kelf_pages, 12, &alloc_err);
+    if (kl.kimg_pbase == 0) {
         bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; init_fatal::halt(SRC_LOC());
     }
-    kl.kimg_pbase = kelf_top - (kelf_pages << 12);  // top → base (瞬态端高→低)
     page_allocator::pages_set({kl.kimg_pbase, kelf_pages << 12}, page_state_t::kernel_persisit);
     ksystemramcpy((void*)(uint64_t)kelf_in_ramfs, (void*)(uint64_t)kl.kimg_pbase, kelf_sz);
     ksetmem_8((void*)(uint64_t)(kl.kimg_pbase + kelf_sz), 0, (kelf_pages << 12) - kelf_sz);
@@ -305,8 +348,9 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
         phyaddr_t pa;
 
         if (flags & 0x100) {
-            // ── 0x100 段：probe_keep 独立分配 ──
-            pa = page_allocator::available_meminterval_probe_keep(npg, 12);
+            // ── 0x100 段：独立分配 ──
+            loc_code_t alloc_err = 0;
+            pa = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
             if (!pa) {
                 bsp_kout << "[Phase3a] keep OOM seg " << i << " (0x" << HEX << va << ")" << DEC << kendl;
                 init_fatal::halt(SRC_LOC());
@@ -408,12 +452,13 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         bsp_kout << "[Phase3b] identity: [0x1000, 0x" << top << ") WB+RWX (transient)" << kendl;
     }
 
-    // ---- FPA_bitmaps (probe_keep) ----
+    // ---- FPA_bitmaps ----
     {
         uint64_t tp  = page_allocator::total_page_count();
         uint64_t sz  = align_up((tp*3)>>3, 4096);//一个页框3bit的预算
         uint64_t npg = sz >> 12;
-        phyaddr_t p  = page_allocator::available_meminterval_probe_keep(npg, 12);
+        loc_code_t alloc_err = 0;
+        phyaddr_t p  = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
         if (!p) { bsp_kout << "FPA OOM" << kendl; init_fatal::halt(SRC_LOC()); }
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
@@ -424,13 +469,13 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         bsp_kout << "[Phase3b] FPA_bitmaps: p=0x" << p << " v=" << (void*)v << " sz=" << (void*)sz << kendl;
     }
 
-    // ---- log_buffer (probe) ----
+    // ---- log_buffer ----
     {
         uint64_t sz  = LOGBUFFER_SIZE;
         uint64_t npg = sz >> 12;
-        phyaddr_t p  = page_allocator::available_meminterval_probe(npg, 21);
+        loc_code_t alloc_err = 0;
+        phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
         if (!p) { bsp_kout << "log OOM" << kendl; init_fatal::halt(SRC_LOC()); }
-        p -= sz;  // top → base
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
         vaddr_t v = va_alloc_up(sz, 21);
@@ -453,9 +498,9 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         } else {
             uint64_t sz  = align_up(sym_sz, 4096);
             uint64_t npg = sz >> 12;
-            phyaddr_t p  = page_allocator::available_meminterval_probe(npg, 21);
+            loc_code_t alloc_err = 0;
+            phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
             if (!p) { bsp_kout << "sym OOM" << kendl; init_fatal::halt(SRC_LOC()); }
-            p -= sz;
             page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
             ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
             vaddr_t v = va_alloc_up(sz, 21);
@@ -539,7 +584,8 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
     {
         uint64_t total_bytes    = header->logical_processor_count * GS_COMPLEX_STRIDE;
         uint64_t npg            = total_bytes >> 12;
-        phyaddr_t pbase         = page_allocator::available_meminterval_probe_keep(npg, 12);
+        loc_code_t alloc_err = 0;
+        phyaddr_t pbase         = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
         page_allocator::pages_set({pbase, npg << 12}, page_state_t::kernel_persisit);
         vaddr_t  vbase          = va_alloc_up(total_bytes, 12);
         ksetmem_8((void*)(uint64_t)pbase, 0, total_bytes);
@@ -565,7 +611,8 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t total_phys     = header->logical_processor_count * stack_stride + 4096;  // + 尾 guard
         uint64_t total_virt     = total_phys;
         uint64_t hd_pages = total_phys >> 12;
-        iv.arch_info.hdstacks_interval_pbase  = page_allocator::available_meminterval_probe_keep(hd_pages, 12);
+        loc_code_t alloc_err = 0;
+        iv.arch_info.hdstacks_interval_pbase  = init_bcb_juvenile::alloc(hd_pages, 12, &alloc_err);
         page_allocator::pages_set({iv.arch_info.hdstacks_interval_pbase, hd_pages << 12}, page_state_t::kernel_persisit);
         iv.arch_info.hdstacks_interval_vbase  = va_alloc_up(total_virt, 12);
         iv.arch_info.hdstacks_4kbpgs_count    = total_phys >> 12;
