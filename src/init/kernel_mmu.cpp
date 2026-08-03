@@ -1,5 +1,5 @@
 #include "init/kernel_mmu.h"
-#include "init/page_allocator.h"
+#include "init/pages_alloc.h"   // mem_interval（get_self_alloc_interval 返回类型）
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 // 类型别名，简化嵌套类型名的使用
 using pages_info_t = seg_to_pages_info_pakage_t::pages_info_t;
@@ -52,58 +52,22 @@ static inline uint64_t vinterval_end(const vinterval& inter)
 }
 
 /**
- * @brief mmu_specify_allocator 构造函数
+ * @brief mmu_specify_allocator — 页表页分配
  * 
- * 向 basic_allocator 申请一片默认大小的内存用于页表分配
- * 初始化逻辑:
- * 1. 调用 basic_allocator::pages_alloc 申请 default_mgr_size 大小的内存
- * 2. align_log2=12 (4KB 对齐)
- * 3. 初始化 base, size, top 成员
- */
-kernel_mmu::mmu_specify_allocator::mmu_specify_allocator()
-{
-    // 向 basic_allocator 申请内存
-    // default_mgr_size 是字节数, 需转为 4KB 页框数
-    phyaddr_t phys_addr = page_allocator::available_meminterval_probe(default_mgr_size >> 12, 12);
-    
-    if (phys_addr == 0) {
-        // 分配失败，初始化为无效值
-        base = 0;
-        size = 0;
-        top = 0;
-    } else {
-        phys_addr -= default_mgr_size;  // top → base
-        base = phys_addr;
-        size = default_mgr_size;
-        top = base;
-        
-        // 标记这片内存为已使用
-        mem_interval interval = {base, size};
-        page_allocator::pages_set(interval, page_state_t::kernel_persisit);
-    }
-}
-
-/**
- * @brief 分配一个物理页 (4KB)
+ * 直接消费纯静态 init_bcb_juvenile（首个采用者）：每张页表页即时
+ * 从幼年位图 alloc(1,12)，位图是唯一记账且可穿越至 kernel.elf，
+ * 由内核端 BFS 回收所有页表。不再自挖连续 carve-out。
  * 
- * 分配逻辑:
- * 1. 检查 top == base + size，如果相等说明内存已用尽，返回空指针
- * 2. 否则返回当前 top 值，并将 top += 4096
- * 
- * @return void* 成功返回物理地址对应的指针，失败返回 nullptr
+ * @return void* 成功返回页表页物理地址，失败返回 nullptr
  */
 void* kernel_mmu::mmu_specify_allocator::alloc()
 {
-    // 检查是否已用尽
-    if (top >= base + size) {
+    loc_code_t err = 0;
+    phyaddr_t p = init_bcb_juvenile::alloc(1, 12, &err);
+    if (p == 0) {
         return nullptr;
     }
-    
-    // 返回当前 top 并递增
-    void* result = reinterpret_cast<void*>(top);
-    top += 0x1000; // 增加 4KB
-    
-    return result;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(p));
 }
 
 /**
@@ -812,5 +776,7 @@ phyaddr_t kernel_mmu::get_root_table_base()
 
 mem_interval kernel_mmu::get_self_alloc_interval()
 {
-    return mem_interval{pgallocator->base,pgallocator->top-pgallocator->base };
+    // 页表页直接来自幼年位图（无连续 carve-out），不再存在单一自分配区间。
+    // kernel.elf 端经可穿越位图 BFS 回收所有页表页，此字段不再承载语义。
+    return mem_interval{0, 0};
 }

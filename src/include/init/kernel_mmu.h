@@ -1,5 +1,6 @@
 #include "arch/x86_64/abi/pgtable45.h"
 #include "memory/memory_base.h"
+#include "init/init_bcb_juvenile.h"
 #pragma once
 struct vinterval{
     uint64_t phybase;
@@ -17,18 +18,12 @@ class kernel_mmu{
         uint16_t arch_specify;//暂时只支持x86_64_PGLV4
         void*root_table;//根表,物理地址
         class mmu_specify_allocator{
-            //极简分配器，只分配不回收，
-            //初始化逻辑为找basic_allocator申请一片default_mgr_size,align_log2=12的内存
+            // 页表分配器：直接消费纯静态 init_bcb_juvenile（首个采用者）。
+            // 不再自挖连续 carve-out——每张页表页即时从幼年位图 alloc(1,12)，
+            // 位图是唯一记账且可穿越至 kernel.elf，由内核端 BFS 回收所有页表。
             public:
-            uint64_t base;
-            static constexpr uint64_t default_mgr_size=0x40000;
-            uint64_t size;
-            uint64_t top;
-            public:
-            mmu_specify_allocator();
-            //分配逻辑为检验top==base+size,为真返回空指针表示用尽
-            //为假返回top+=4096并返回原来的值
-            void* alloc();
+            // 从幼年分配器取 1 页 4KB；失败返回 nullptr
+            static void* alloc();
         };
         mmu_specify_allocator*pgallocator;
     public:
