@@ -7,6 +7,11 @@ struct vinterval{
     uint64_t vbase;
     uint64_t size;    
 };
+struct kmmu_entry_t{
+    vm_interval interval;
+    char* property_name;
+    uint64_t flags;
+};
 
 enum arch_enums{
     x86_64_PGLV4,

@@ -10,6 +10,10 @@ struct pass_through_device_info {
     uint16_t device_info;
     void* specify_data;
 };
+struct asset_entry_t {          // 是init.elf,kernel.elf以及中间transfer_pages共用的资产格式，虽然都是指针，在init.elf是物理指针，在transfer_pages存放的是偏移量，不过可以“链接”，也就是根据那个下面的基址重算后的可访问虚拟地址进行访问，kernel.elf处是内核虚拟地址
+    char*     name;            //多arg语法，arg0是资产本名，arg1是void*解释类型，由一张专用的路由表决定，后续arg自定 
+    void*     data;
+};
 typedef struct {
     PHY_MEM_TYPE     Type;          // 4字节
     uint32_t ReservedA;
