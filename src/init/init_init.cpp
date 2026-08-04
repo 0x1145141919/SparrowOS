@@ -1,5 +1,6 @@
 #include "abi/boot.h"
 #include "init/load_kernel.h"
+#include "init/init_asset_registry.h"
 #include "init/page_allocator.h"
 #include "init/init_bcb_juvenile.h"
 #include "init/pages_alloc.h"
@@ -198,9 +199,12 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
 }
 
 // ============================================================================
-// Phase 2.5: initramfs 高位搬迁（原地更新 ctx_early_mem）
+// Phase 2.5: initramfs 原位锚定（不再高位搬迁）
 // ============================================================================
-static void relocate_initramfs(BootInfoHeader* header, ctx_early_mem* em) {
+// 旧版 relocate_initramfs 把 initramfs 从 UEFI 加载处搬到 BCB 新分配区。
+// 现改为直接引用 UEFI 加载位置 + mark_used 钉住：BCB 纯视图里 loaded 文件已在
+// 2c mark_used，此处显式重申 + 更新 ctx_early_mem，避免搬迁造成的二次记账。
+static void initramfs_mark_used(BootInfoHeader* header, ctx_early_mem* em) {
     loaded_file_entry* ramfs = nullptr;
     for (uint64_t i = 0; i < header->loaded_file_count; i++) {
         if (strcmp_in_kernel(header->loaded_files[i].file_name, "\\initramfs.img") == 0) {
@@ -209,33 +213,18 @@ static void relocate_initramfs(BootInfoHeader* header, ctx_early_mem* em) {
         }
     }
     if (!ramfs || ramfs->raw_data == 0) {
-        bsp_kout << "[INIT] initramfs not loaded, skip relocation" << kendl;
+        bsp_kout << "[INIT] initramfs not loaded" << kendl;
+        em->ramfs_base = 0;
+        em->ramfs_size = 0;
         return;
     }
 
-    uint64_t sz   = ramfs->file_size;
-    uint64_t asz  = align_up(sz, 4096);
-    uint64_t pcnt = asz >> 12;
-    loc_code_t alloc_err = 0;
-    uint64_t newb = init_bcb_juvenile::alloc(pcnt, 12, &alloc_err);
-    if (newb == 0) {
-        bsp_kout << "[WARN] initramfs relocation: no space, keeping at 0x"
-                 << (uint64_t)ramfs->raw_data << kendl;
-        em->ramfs_base = (uint64_t)ramfs->raw_data;
-        em->ramfs_size = asz;
-        return;
-    }
-    ksystemramcpy(ramfs->raw_data, (void*)newb, sz);
-    bsp_kout << "[INIT] initramfs: 0x" << (uint64_t)ramfs->raw_data
-             << " -> 0x" << newb << " (" << sz << " bytes)" << kendl;
+    em->ramfs_base = (uint64_t)ramfs->raw_data;
+    em->ramfs_size = align_up(ramfs->file_size, 4096);
 
-    init_bcb_juvenile::free((uint64_t)ramfs->raw_data, pcnt);
-    page_allocator::pages_set({(uint64_t)ramfs->raw_data, asz}, page_state_t::free);
-    page_allocator::pages_set({newb, asz}, page_state_t::kernel_persisit);
-
-    ramfs->raw_data = (void*)newb;
-    em->ramfs_base  = newb;
-    em->ramfs_size  = asz;
+    init_bcb_juvenile::mark_used(em->ramfs_base, em->ramfs_size);
+    bsp_kout << "[INIT] initramfs in-place: base=0x" << HEX << em->ramfs_base
+             << " size=0x" << em->ramfs_size << DEC << kendl;
 }
 uint64_t g_va_alloc_base=0;
 // ============================================================================
@@ -250,32 +239,42 @@ static uint64_t va_alloc_up(uint64_t size, uint8_t align_log2) {
     return ret;
 }
 
+// 登记资产进 init 侧资产树（handoff 清单）。多arg name 的 arg1 指示路由类型，
+// 树键 = arg0（本名）。返回 false 表示同名冲突（arg0 重复）。
+static bool asset_reg_add(const char* name, void* data) {
+    if (!g_asset_registry) return false;
+    return g_asset_registry->add({ const_cast<char*>(name), data });
+}
+
 // ============================================================================
-// Phase 3a (串行): kernel.elf 基础加载 → 返回 ctx_kernel_loaded
+// Phase 3a (串行): kernel.elf 解包 → 精确狙击 4 段进 kmmu → 产出进资产容器
 // ============================================================================
+//
+// 本函数是纯"产出方"：产物全部进资产容器（隐式状态），函数只返回 loc_code_t。
+//   - 四段 kernel_code/data/rodata/bss → "kernel_* mem"（vm_interval desc）
+//   - kIMG（kernel.elf 瞬态文件映像）→ "kimg movable"（movable_file_entry_t desc）
+//   - 入口点 → "entry_vaddr scalar"
+// ctx/header 管线退居幕后（偶然复杂度），调用点从容器按 arg0 取资产。
 //
 // 设计：
-//   1. kernel.elf 完整文件 → 瞬态端分配（仅供自省，不用于执行）
-//   2. 每个 PT_LOAD 段独立处理：
-//      a. p_flags & 0x100 → probe_keep 独立分配物理页，拷贝文件内容，
-//         清零 BSS 余部，KMMU 映射，并将实际 PA 写回 ELF 的 p_paddr
-//      b. 否则 → 直接按 p_paddr 映射（PA 由链接脚本指定）
-//   3. kIMG_self_window 映射瞬态端文件映像（程序头表 p_paddr 已改写）
-//   4. kernel.elf 自省时通过 kIMG_self_window 读程序头表，p_paddr 即真实 PA
+//   1. kernel.elf 完整文件 → 瞬态端分配 kimg_pbase（kIMG 文件的家，经恒等窗口访问）
+//   2. 不再遍历所有 PT_LOAD 加载；按段名精确命中 4 个段：
+//        .text(.text_main) / .data / .rodata / .bss
+//      每段三关：名字匹配 → 确认在 PT_LOAD 内 → is_kernel_address 确认内核区间
+//   3. 独立分配物理页 + 拷贝/清零 + 进入 kmmu（kernel_code/data/rodata/bss 名字）
+//   4. 所属 LOAD 的 p_paddr 写回真实 PA（kernel.elf 经 kIMG 自省契约不变）
+//   5. kIMG 不做专用映射（恒等窗口已覆盖），登记 movable 资产即可
+//   ap_bootstrap 低地址段不做加载（本函数只管内核区间资产）
 //
-// 变更（相对于旧版非破坏性加载）：
-//   - 文件映像从 keep-end → transient
-//   - BSS 无特殊路径，统一纳入 PT_LOAD 循环
-//   - 0x100 段独立 PA 使大页映射成为可能
+// 依赖：kld.ld 下每个主段独立成 LOAD（section ⊇ LOAD 1:1），p_paddr 写回即整段真实 PA。
 //
-static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
-                                               BootInfoHeader* /*header*/) {
-    ctx_kernel_loaded kl = {};
-    kl.kmmu = kmmu;
+static loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
+                                       BootInfoHeader* /*header*/) {
+    phyaddr_t kimg_pbase = 0;
 
-    // ---- 1. 从 initramfs 定位 kernel.elf，分配瞬态端 ----
+    // ---- 1. 从 initramfs 定位 kernel.elf，拷贝到瞬态端 ----
     if (em->ramfs_base == 0) {
-        bsp_kout << "[Phase3a] initramfs not relocated" << kendl; init_fatal::halt(SRC_LOC());
+        bsp_kout << "[Phase3a] initramfs not present" << kendl; init_fatal::halt(SRC_LOC());
     }
     const initramfs_header* rh = (const initramfs_header*)(uint64_t)em->ramfs_base;
     uint64_t kelf_sz = 0;
@@ -285,150 +284,227 @@ static ctx_kernel_loaded phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_
     }
     uint64_t kelf_pages = align_up(kelf_sz, 4096) >> 12;
     loc_code_t alloc_err = 0;
-    kl.kimg_pbase = init_bcb_juvenile::alloc(kelf_pages, 12, &alloc_err);
-    if (kl.kimg_pbase == 0) {
+    kimg_pbase = init_bcb_juvenile::alloc(kelf_pages, 12, &alloc_err);
+    if (kimg_pbase == 0) {
         bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; init_fatal::halt(SRC_LOC());
     }
-    page_allocator::pages_set({kl.kimg_pbase, kelf_pages << 12}, page_state_t::kernel_persisit);
-    ksystemramcpy((void*)(uint64_t)kelf_in_ramfs, (void*)(uint64_t)kl.kimg_pbase, kelf_sz);
-    ksetmem_8((void*)(uint64_t)(kl.kimg_pbase + kelf_sz), 0, (kelf_pages << 12) - kelf_sz);
-    kl.kimg_file_size = kelf_sz;
-    bsp_kout << "[Phase3a] kernel.elf (transient) at 0x" << kl.kimg_pbase
+    page_allocator::pages_set({kimg_pbase, kelf_pages << 12}, page_state_t::kernel_persisit);
+    ksystemramcpy((void*)(uint64_t)kelf_in_ramfs, (void*)(uint64_t)kimg_pbase, kelf_sz);
+    ksetmem_8((void*)(uint64_t)(kimg_pbase + kelf_sz), 0, (kelf_pages << 12) - kelf_sz);
+    bsp_kout << "[Phase3a] kernel.elf (transient) at 0x" << kimg_pbase
              << " size=" << kelf_sz << kendl;
 
     // ---- 2. ELF header 校验 ----
-    uint8_t* elf_base = (uint8_t*)(uint64_t)kl.kimg_pbase;
+    uint8_t* elf_base = (uint8_t*)(uint64_t)kimg_pbase;
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_base;
     if (ehdr->e_ident[EI_MAG0]!=ELFMAG0||ehdr->e_ident[EI_MAG1]!=ELFMAG1||
         ehdr->e_ident[EI_MAG2]!=ELFMAG2||ehdr->e_ident[EI_MAG3]!=ELFMAG3) {
         bsp_kout << "[Phase3a] bad magic" << kendl; init_fatal::halt(SRC_LOC());
     }
-    kl.entry_vaddr = ehdr->e_entry;
-    bsp_kout << "[Phase3a] phnum=" << ehdr->e_phnum << " entry=0x" << kl.entry_vaddr << kendl;
+    bsp_kout << "[Phase3a] phnum=" << ehdr->e_phnum
+             << " shnum=" << ehdr->e_shnum
+             << " entry=0x" << HEX << ehdr->e_entry << DEC << kendl;
 
-    // ---- 3. 校验 + 加载所有 PT_LOAD 段 ----
-    //     遍历两轮：首轮校验，次轮加载
-    uint8_t* ptbl = elf_base + ehdr->e_phoff;
-    uint64_t     phent = ehdr->e_phentsize;
-    uint64_t     ptcnt = 0;
-    Elf64_Half   phnum = ehdr->e_phnum;
-
-    // 3a. 校验：至少一个 PT_LOAD，所有文件偏移/大小/地址页对齐
-    for (Elf64_Half i = 0; i < phnum; i++) {
-        Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * phent);
-        if (ph->p_type != PT_LOAD) continue;
-        ptcnt++;
-        // p_paddr 也需要页对齐（0x100 段由 init.elf 保障，非 0x100 段由链接脚本保障）
-        if ((ph->p_offset & 0xFFF) || (ph->p_filesz & 0xFFF) ||
-            (ph->p_memsz  & 0xFFF) || (ph->p_vaddr & 0xFFF) ||
-            (ph->p_paddr  & 0xFFF)) {
-            bsp_kout << "[Phase3a] align fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
-        }
-        // 校验文件数据不超出文件映像
-        if (ph->p_filesz) {
-            phyaddr_t seg_p = kl.kimg_pbase + ph->p_offset;
-            if (seg_p + ph->p_filesz > kl.kimg_pbase + kelf_pages * 4096ULL) {
-                bsp_kout << "[Phase3a] range fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
-            }
+    // 登记入口点资产（scalar，phase_4.5 跳转用；隐式状态走容器）
+    {
+        uint64_t* entry_desc = new uint64_t(ehdr->e_entry);
+        if (!asset_reg_add("entry_vaddr scalar", entry_desc)) {
+            bsp_kout << "[Phase3a] asset dup: entry_vaddr" << kendl;
+            init_fatal::halt(SRC_LOC());
         }
     }
-    if (ptcnt == 0) { bsp_kout << "[Phase3a] no PT_LOAD" << kendl; init_fatal::halt(SRC_LOC()); }
 
-    // 3b. 加载：遍历 PT_LOAD，按 0x100 标志决定分配策略
+    // ---- 3. 段表解析 + 精确狙击 4 段 ----
+    if (ehdr->e_shnum == 0 || ehdr->e_shstrndx == SHN_UNDEF) {
+        bsp_kout << "[Phase3a] no section headers" << kendl; init_fatal::halt(SRC_LOC());
+    }
+    Elf64_Shdr* shdr = (Elf64_Shdr*)(elf_base + ehdr->e_shoff);
+    Elf64_Shdr& shstr_hdr = shdr[ehdr->e_shstrndx];
+    const char* shstrtab = (const char*)(elf_base + shstr_hdr.sh_offset);
+
+    struct sec_target_t {
+        const char* name_key;    // 段名匹配键
+        bool        prefix;      // true=前缀匹配（.text 兼容 .text_main）
+        const char* kmmu_name;   // 进 kmmu 的名字（arg0 语义）
+        const char* asset_name;  // 进资产树的多arg 名字（arg0 + arg1 路由）
+    };
+    const sec_target_t k_sec_targets[] = {
+        { ".text",   true,  "kernel_code",   "kernel_code mem"   },
+        { ".data",   false, "kernel_data",   "kernel_data mem"   },
+        { ".rodata", false, "kernel_rodata", "kernel_rodata mem" },
+        { ".bss",    false, "kernel_bss",    "kernel_bss mem"    },
+    };
+    constexpr int k_sec_count = 4;
+
+    // 名字匹配：prefix ? 前缀 : 精确
+    auto sec_name_hit = [](const char* sname, const sec_target_t& tg) -> bool {
+        if (tg.prefix) {
+            return strncmp_in_kernel(sname, tg.name_key, strlen_in_kernel(tg.name_key)) == 0;
+        }
+        return strcmp_in_kernel(sname, tg.name_key) == 0;
+    };
+
     uint64_t kernel_vaddr_top = 0;
-    for (Elf64_Half i = 0; i < phnum; i++) {
-        Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * phent);
-        if (ph->p_type != PT_LOAD) continue;
 
-        uint64_t  msz   = ph->p_memsz;
-        uint64_t  fsz   = ph->p_filesz;
-        vaddr_t   va    = ph->p_vaddr;
-        uint64_t  flags = ph->p_flags;
-        uint64_t  npg   = align_up(msz, 4096) >> 12;
-        phyaddr_t pa;
+    // 加载单个命中段：PT_LOAD 确认 → 内核区间确认 → 分配/拷贝/清零 → kmmu → 资产树
+    auto load_section = [&](Elf64_Shdr& sh, const char* kmmu_name, const char* asset_name) -> int {
+        if (sh.sh_size == 0) return -12;
 
-        if (flags & 0x100) {
-            // ── 0x100 段：独立分配 ──
-            loc_code_t alloc_err = 0;
-            pa = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
-            if (!pa) {
-                bsp_kout << "[Phase3a] keep OOM seg " << i << " (0x" << HEX << va << ")" << DEC << kendl;
-                init_fatal::halt(SRC_LOC());
+        // ---- a. 确认属于某个 PT_LOAD ----
+        Elf64_Phdr* owner = nullptr;
+        for (Elf64_Half i = 0; i < ehdr->e_phnum; i++) {
+            Elf64_Phdr* ph = (Elf64_Phdr*)(elf_base + ehdr->e_phoff + i * ehdr->e_phentsize);
+            if (ph->p_type != PT_LOAD) continue;
+            if (sh.sh_addr >= ph->p_vaddr &&
+                sh.sh_addr + sh.sh_size <= ph->p_vaddr + ph->p_memsz) {
+                owner = ph;
+                break;
             }
-            page_allocator::pages_set({pa, npg << 12}, page_state_t::kernel_persisit);
-
-            // 拷贝文件内容（p_filesz 字节）
-            if (fsz) {
-                ksystemramcpy((void*)(uint64_t)(kl.kimg_pbase + ph->p_offset),
-                              (void*)(uint64_t)pa, fsz);
-            }
-            // 清零 BSS 余部（p_memsz - p_filesz 字节）
-            if (msz > fsz) {
-                ksetmem_8((void*)(uint64_t)(pa + fsz), 0, msz - fsz);
-            }
-
-            // 将实际 PA 写回 ELF 程序头表的 p_paddr
-            ph->p_paddr = pa;
-
-            bsp_kout << "[Phase3a]  seg[" << i << "] keep: v=0x" << HEX << va
-                     << " p=0x" << pa << " sz=0x" << msz << DEC << kendl;
-        } else {
-            // ── 非 0x100 段：按 p_paddr 指定的物理地址加载 ──
-            pa = ph->p_paddr;
-            // 拷贝文件内容到目标 PA
-            if (fsz) {
-                ksystemramcpy((void*)(uint64_t)(kl.kimg_pbase + ph->p_offset),
-                              (void*)(uint64_t)pa, fsz);
-            }
-            // 清零 BSS 余部
-            if (msz > fsz) {
-                ksetmem_8((void*)(uint64_t)(pa + fsz), 0, msz - fsz);
-            }
-            bsp_kout << "[Phase3a]  seg[" << i << "] paddr: v=0x" << HEX << va
-                     << " p=0x" << pa << " sz=0x" << msz << DEC << kendl;
+        }
+        if (!owner) {
+            bsp_kout << "[Phase3a] " << kmmu_name << " not in any PT_LOAD" << kendl;
+            return -13;
         }
 
-        // 跟踪最高 vaddr
-        uint64_t vend = va + msz;
-        if (vend > kernel_vaddr_top) kernel_vaddr_top = vend;
+        // ---- b. 内核区间确认（is_kernel_address） ----
+        uint64_t sz  = align_up(sh.sh_size, 4096);
+        uint64_t npg = sz >> 12;
+        pgaccess acc;
+        acc.is_kernel     = 1;
+        acc.is_writeable  = (sh.sh_flags & SHF_WRITE) ? 1 : 0;
+        acc.is_readable   = 1;
+        acc.is_executable = (sh.sh_flags & SHF_EXECINSTR) ? 1 : 0;
+        acc.is_global     = 1;
+        acc.cache_strategy = WB;
+        vm_interval iv = {.vpn = sh.sh_addr >> 12, .ppn = 0, .npages = npg, .access = acc};
+        if (!iv.is_kernel_address()) {
+            bsp_kout << "[Phase3a] " << kmmu_name << " not kernel range 0x"
+                     << HEX << sh.sh_addr << DEC << kendl;
+            return -15;
+        }
 
-        // KMMU 映射
-        pgaccess acc = {1, (uint8_t)((flags & PF_W) ? 1 : 0), 1,
-                        (uint8_t)((flags & PF_X) ? 1 : 0), 1, WB};
-        uint64_t seg_sz = align_up(msz, 4096);
-        if (kl.kmmu->map({pa, va, seg_sz}, acc)) {
-            bsp_kout << "[Phase3a] map fail seg " << i << kendl; init_fatal::halt(SRC_LOC());
+        // ---- c. 独立分配物理页 + 内容安置 ----
+        if (sh.sh_type != SHT_NOBITS) {
+            if (sh.sh_offset + sh.sh_size > kelf_pages * 4096ULL) return -17;  // 越界
+        }
+        // 物理分配对齐上调：取 min(段虚拟基址自然对齐, 段大小上界 2 的幂)，封顶 1GB。
+        // 例：.text_main sh_addr=0xFFFF800000000000 基址 2MB 对齐 → 分配也 2MB 对齐，
+        //     使 kmmu 映射能上 2MB/1GB 大页（kld.ld 中主段起始均按 ALIGN(2M) 布局）。
+        int align_log2 = 12;
+        while (align_log2 < 30 && (sh.sh_addr & (1ULL << align_log2)) == 0) {
+            align_log2++;   // sh_addr 最低置位位 → 自然基址对齐
+        }
+        int sz_log = 12;
+        while (sz_log < 30 && (sz >> sz_log) > 1) {
+            sz_log++;       // floor(log2(sz))：页面粒度上界
+        }
+        if (sz_log < align_log2) align_log2 = sz_log;
+        loc_code_t err = 0;
+        phyaddr_t pa = init_bcb_juvenile::alloc(npg, align_log2, &err);
+        if (pa == 0) {
+            bsp_kout << "[Phase3a] " << kmmu_name << " alloc OOM" << kendl;
+            return -16;
+        }
+        page_allocator::pages_set({pa, sz}, page_state_t::kernel_persisit);
+        if (sh.sh_type == SHT_NOBITS) {
+            ksetmem_8((void*)(uint64_t)pa, 0, sz);   // .bss：清零
+        } else {
+            ksystemramcpy((void*)(uint64_t)(kimg_pbase + sh.sh_offset),
+                          (void*)(uint64_t)pa, sh.sh_size);
+            if (sz > sh.sh_size) {
+                ksetmem_8((void*)(uint64_t)(pa + sh.sh_size), 0, sz - sh.sh_size);
+            }
+        }
+
+        // 写回真实 PA 到所属 LOAD 的 p_paddr（kld.ld 下段⊇LOAD 1:1，整段即真实 PA）
+        owner->p_paddr = pa;
+
+        // ---- d. 进入 kmmu（名字台账，PERSISTENT 交 kernel 认领） ----
+        int map_rc = kmmu->map(kernel_mmu::make_entry(pa, sh.sh_addr, sz, acc,
+                                                      kmmu_name, KMMU_ENTRY_FLAG_PERSISTENT));
+        if (map_rc != 0) {
+            bsp_kout << "[Phase3a] " << kmmu_name << " kmmu map fail " << map_rc << kendl;
+            return map_rc;
+        }
+
+        // ---- e. 登记资产树（handoff 清单）：与 kmmu 台账同 arg0 的持久 desc ----
+        //      desc = vm_interval（init 堆分配，随条目生命周期持久），路由 arg1 = "mem"。
+        vm_interval* adesc = new vm_interval{ .vpn   = sh.sh_addr >> 12,
+                                              .ppn   = pa >> 12,
+                                              .npages = npg,
+                                              .access = acc };
+        if (!asset_reg_add(asset_name, adesc)) {
+            bsp_kout << "[Phase3a] asset dup: " << asset_name << kendl;
+            return -18;
+        }
+
+        uint64_t vend = sh.sh_addr + sh.sh_size;
+        if (vend > kernel_vaddr_top) kernel_vaddr_top = vend;
+        bsp_kout << "[Phase3a] " << kmmu_name << ": v=0x" << HEX << sh.sh_addr
+                 << " p=0x" << pa << " sz=0x" << sz << DEC << kendl;
+        return 0;
+    };
+
+    // 对四个目标段分别命中（每个命中首个匹配段）并加载
+    for (int t = 0; t < k_sec_count; t++) {
+        const sec_target_t& tg = k_sec_targets[t];
+        bool matched = false;
+        for (Elf64_Half si = 0; si < ehdr->e_shnum; si++) {
+            if (shdr[si].sh_type == SHT_NULL) continue;
+            const char* sname = shstrtab + shdr[si].sh_name;
+            if (!sec_name_hit(sname, tg)) continue;
+            matched = true;
+            int rc = load_section(shdr[si], tg.kmmu_name, tg.asset_name);
+            if (rc != 0) {
+                bsp_kout << "[Phase3a] section load fail: " << tg.name_key << " rc=" << rc << kendl;
+                init_fatal::halt(SRC_LOC());
+            }
+            break;
+        }
+        if (!matched) {
+            bsp_kout << "[Phase3a] section not found: " << tg.name_key << kendl;
+            init_fatal::halt(SRC_LOC());
         }
     }
 
     // ---- 4. 解禁 va_alloc ----
     g_va_alloc_base = align_up(kernel_vaddr_top, 0x200000);
 
-    // ---- 5. kIMG_self_window: 瞬态端文件映像窗口（已含改写后的 p_paddr） ----
-    uint64_t ws   = align_up(kelf_sz, 4096);
-    uint64_t wpgs = ws >> 12;
-    vaddr_t  wv   = va_alloc(ws, 21);
-    pgaccess wa   = KSPACE_RW_ACCESS;
-    if (kl.kmmu->map({kl.kimg_pbase, wv, ws}, wa)) {
-        bsp_kout << "[Phase3a] kIMG_window map fail" << kendl; init_fatal::halt(SRC_LOC());
+    // ---- 5. kIMG 作为 movable 资产（不再专用映射——恒等窗口已覆盖） ----
+    //      movable_file_entry_t{ base_ppn, size }：offset 0 起即文件内容，
+    //      访问经恒等映射（[0x1000, dram_top)）/ Kspace_phyaddr_access_window。
+    {
+        movable_file_entry_t* kimg_desc = new movable_file_entry_t{
+            .base_ppn = kimg_pbase >> 12,
+            .size     = kelf_sz,
+        };
+        if (!asset_reg_add("kimg movable", kimg_desc)) {
+            bsp_kout << "[Phase3a] asset dup: kimg" << kendl;
+            init_fatal::halt(SRC_LOC());
+        }
     }
-    kl.kIMG_self_window = {.vpn = wv >> 12, .ppn = kl.kimg_pbase >> 12,
-                           .npages = wpgs, .access = wa};
 
-    bsp_kout << "[Phase3a] done: kIMG(transient) " << (void*)kl.kimg_pbase
-             << "->" << (void*)wv << " vaddr_top=" << (void*)kernel_vaddr_top << kendl;
+    bsp_kout << "[Phase3a] done: kIMG(transient) 0x" << (void*)kimg_pbase
+             << " size=" << kelf_sz << " vaddr_top=" << (void*)kernel_vaddr_top << kendl;
 
-    bsp_kout << "[Phase3a] kIMG_self_window: vaddr=" << (void*)(uint64_t)kl.kIMG_self_window.vbase()
-             << " paddr=" << (void*)(uint64_t)kl.kIMG_self_window.pbase()
-             << " size=0x" << (uint64_t)(kl.kIMG_self_window.npages << 12)
-             << " entry=" << (void*)(uint64_t)kl.entry_vaddr << kendl;
-    return kl;
+    // 资产树 dump（handoff 清单，字典序）
+    if (g_asset_registry) {
+        bsp_kout << "[Phase3a] asset tree (" << g_asset_registry->size() << "):";
+        for (auto it = g_asset_registry->begin(); it != g_asset_registry->end(); ++it) {
+            bsp_kout << " [" << it->name << "]";
+        }
+        bsp_kout << kendl;
+    }
+    return 0;
 }
 
 // ============================================================================
-// Phase 3b (串行): 恒等映射 + 区间分配 + 架构信息收集 → 返回 ctx_intervals
+// Phase 3b (串行): 恒等映射 + 区间分配 + 架构信息收集 → 产出进资产容器 + ctx_intervals
 // ============================================================================
-static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ctx_early_mem* em) {
+// 返回 loc_code_t（0 成功）；内部失败 return SRC_LOC()，由 init_main init_fatal。
+// ctx_intervals 经 out-param 输出（过渡；资产本体已在容器内，iv 供 info_fill/4.5 过渡用）。
+static loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
+                           const ctx_early_mem* em, ctx_intervals* iv_out) {
     ctx_intervals iv = {};
 
     // --- 清空 extra VM 数组 ---
@@ -441,52 +517,62 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
 
     bsp_kout << "[Phase3b] start..." << kendl;
 
-    // ---- 恒等映射: [4KB, dram_top) WB+RWX（短暂存在，不进 info header） ----
+    // ---- 恒等映射: [4KB, dram_top) WB+RWX（短暂存在，不进 info header / 资产容器） ----
     //     仅用于 init.elf 自身 CR3 切换的极小窗口 + 跳转 kernel.elf 后访问信息包。
     //     kernel.elf 接手后通过 Kspace_phyaddr_access_window 访问物理地址。
     {
         phyaddr_t top = page_allocator::dram_top();
         uint64_t  sz  = top - 0x1000;
         pgaccess id_a = KSPACE_RWX_NG_ACCESS;
-        kmmu->map({0x1000, 0x1000, sz}, id_a);
+        kmmu->map(kernel_mmu::make_entry(0x1000, 0x1000, sz, id_a,
+                                         "identity_map", KMMU_ENTRY_FLAG_TRANSIENT));
         bsp_kout << "[Phase3b] identity: [0x1000, 0x" << top << ") WB+RWX (transient)" << kendl;
     }
 
-    // ---- FPA_bitmaps ----
+    // ---- FPA_bitmaps（mem 资产：保留提前映射，让 kernel 免重映射改 BCB 状态） ----
+    //      例外：FPA_bitmaps 描述 BCB 自身的位图区，从 basic_allocator 分配，
+    //      不经过 init_bcb_juvenile（避免自描述自消费）。
     {
         uint64_t tp  = page_allocator::total_page_count();
         uint64_t sz  = align_up((tp*3)>>3, 4096);//一个页框3bit的预算
         uint64_t npg = sz >> 12;
-        loc_code_t alloc_err = 0;
-        phyaddr_t p  = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
-        if (!p) { bsp_kout << "FPA OOM" << kendl; init_fatal::halt(SRC_LOC()); }
+        phyaddr_t p  = basic_allocator::pages_alloc(sz, 12);
+        if (!p) { bsp_kout << "FPA OOM" << kendl; return SRC_LOC(); }
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
         vaddr_t v = va_alloc_up(sz, 12);
-        kmmu->map({p, v, sz}, KSPACE_RW_ACCESS);
+        kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
+                                         "fpa_bitmaps", KMMU_ENTRY_FLAG_PERSISTENT));
         iv.FPA_bitmaps = {.vpn = v >> 12, .ppn = p >> 12,
                           .npages = npg, .access = KSPACE_RW_ACCESS};
+        asset_reg_add("fpa_bitmaps mem",
+                      new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
+                                       .npages = npg, .access = KSPACE_RW_ACCESS });
         bsp_kout << "[Phase3b] FPA_bitmaps: p=0x" << p << " v=" << (void*)v << " sz=" << (void*)sz << kendl;
     }
 
-    // ---- log_buffer ----
+    // ---- log_buffer（mem 资产：日志输出连续性，保留提前映射） ----
     {
         uint64_t sz  = LOGBUFFER_SIZE;
         uint64_t npg = sz >> 12;
         loc_code_t alloc_err = 0;
         phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
-        if (!p) { bsp_kout << "log OOM" << kendl; init_fatal::halt(SRC_LOC()); }
+        if (!p) { bsp_kout << "log OOM" << kendl; return SRC_LOC(); }
         page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
         ksetmem_8((void*)(uint64_t)p, 0, sz);
         vaddr_t v = va_alloc_up(sz, 21);
-        kmmu->map({p, v, sz}, KSPACE_RW_ACCESS);
+        kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
+                                         "log_buffer", KMMU_ENTRY_FLAG_PERSISTENT));
         iv.log_buffer = {.vpn = v >> 12, .ppn = p >> 12,
                          .npages = npg, .access = KSPACE_RW_ACCESS};
+        asset_reg_add("log_buffer mem",
+                      new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
+                                       .npages = npg, .access = KSPACE_RW_ACCESS });
         bsp_kout << "[Phase3b] log_buffer: p=0x" << p << " v=" << (void*)v << kendl;
     }
-    // （kernel_entry_stack 已废弃——Phase 4.5 跳转时直接用 BSP 的 rsp0 栈）
 
     // ---- symtable_file (probe + initramfs_lookup) → movable_file_entry_t ----
+    //      movable = 纯物理描述符 {base_ppn, size}，不做 KMMU 映射（经恒等/high 窗口访问）
     {
         phyaddr_t sym_in_ramfs = 0; uint64_t sym_sz = 0;
         if (em->ramfs_base) {
@@ -500,44 +586,27 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
             uint64_t npg = sz >> 12;
             loc_code_t alloc_err = 0;
             phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
-            if (!p) { bsp_kout << "sym OOM" << kendl; init_fatal::halt(SRC_LOC()); }
+            if (!p) { bsp_kout << "sym OOM" << kendl; return SRC_LOC(); }
             page_allocator::pages_set({p, sz}, page_state_t::kernel_persisit);
             ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
-            vaddr_t v = va_alloc_up(sz, 21);
-            kmmu->map({p, v, sz}, KSPACE_RW_ACCESS);  // RW, no X
-            iv.symtable_file = {
-                .interval = {.vpn = v >> 12, .ppn = p >> 12,
-                             .npages = npg, .access = KSPACE_RW_ACCESS},
-                .offset = 0,
-                .size   = sym_sz
-            };
-            bsp_kout << "[Phase3b] symtable: p=0x" << p << " v=" << (void*)v << kendl;
+            iv.symtable_file = { .base_ppn = p >> 12, .size = sym_sz };
+            asset_reg_add("ksymbols movable",
+                          new movable_file_entry_t{ .base_ppn = p >> 12, .size = sym_sz });
+            bsp_kout << "[Phase3b] symtable: p=0x" << p << " size=" << sym_sz << kendl;
         }
     }
 
-    // ---- initramfs_file (va_alloc + KMMU) → movable_file_entry_t ----
+    // ---- initramfs_file → movable_file_entry_t（纯物理描述符，不做 KMMU 映射） ----
     {
         if (em->ramfs_base && em->ramfs_size) {
-            uint64_t sz  = align_up(em->ramfs_size, 4096);
-            uint64_t npg = sz >> 12;
-            vaddr_t  v   = va_alloc_up(sz, 21);
-            kmmu->map({em->ramfs_base, v, sz}, KSPACE_RW_ACCESS);
-            iv.initramfs_file = {
-                .interval = {.vpn = v >> 12, .ppn = em->ramfs_base >> 12,
-                             .npages = npg, .access = KSPACE_RW_ACCESS},
-                .offset = 0,
-                .size   = em->ramfs_size
-            };
-            bsp_kout << "[Phase3b] initramfs: p=" << (void*)em->ramfs_base << " v=" << (void*)v << kendl;
+            iv.initramfs_file = { .base_ppn = em->ramfs_base >> 12,
+                                  .size     = em->ramfs_size };
+            asset_reg_add("initramfs movable",
+                          new movable_file_entry_t{ .base_ppn = em->ramfs_base >> 12,
+                                                    .size     = em->ramfs_size });
+            bsp_kout << "[Phase3b] initramfs: p=" << (void*)em->ramfs_base
+                     << " size=" << em->ramfs_size << kendl;
         }
-    }
-
-    // ---- pages_arr 预分配 vaddr ----
-    {
-        uint64_t tp  = page_allocator::total_page_count();
-        uint64_t sz  = align_up(tp, 4096);
-        iv.pages_arr_vbase = va_alloc_up(sz, 21);
-        bsp_kout << "[Phase3b] pages_arr vaddr=" << (void*)(uint64_t)iv.pages_arr_vbase << kendl;
     }
 
     // ---- x86 arch_specify ----
@@ -551,8 +620,12 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
         uint64_t fb_npg = fb_sz >> 12;
         phyaddr_t fb_p  = (phyaddr_t)gfx->FrameBufferBase;
         vaddr_t fb_v    = va_alloc_up(fb_sz, 21);
-        kmmu->map({fb_p, fb_v, fb_sz}, KSPACE_RW_WC_ACCESS);
+        kmmu->map(kernel_mmu::make_entry(fb_p, fb_v, fb_sz, KSPACE_RW_WC_ACCESS,
+                                         "gop_framebuffer", KMMU_ENTRY_FLAG_PERSISTENT));
         iv.arch_info.Gop_vbase = fb_v;
+        asset_reg_add("gop_framebuffer mem",
+                      new vm_interval{ .vpn = fb_v >> 12, .ppn = fb_p >> 12,
+                                       .npages = fb_npg, .access = KSPACE_RW_WC_ACCESS });
         bsp_kout << HEX << "[Phase3b] GOP fb: p=0x" << fb_p << " v=0x" << fb_v << kendl;
         break;
     }
@@ -569,9 +642,13 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
                 phyaddr_t hp = ht->Base_Address;
                 if (hp) {
                     vaddr_t hv = va_alloc_up(0x1000, 12);
-                    kmmu->map({hp, hv, 0x1000}, KSPACE_RW_UC_ACCESS);
+                    kmmu->map(kernel_mmu::make_entry(hp, hv, 0x1000, KSPACE_RW_UC_ACCESS,
+                                                     "hpet_mmio", KMMU_ENTRY_FLAG_PERSISTENT));
                     iv.arch_info.hpet_mmio = {.vpn = hv >> 12, .ppn = hp >> 12,
                                               .npages = 1, .access = KSPACE_RW_UC_ACCESS};
+                    asset_reg_add("hpet_mmio mem",
+                                  new vm_interval{ .vpn = hv >> 12, .ppn = hp >> 12,
+                                                   .npages = 1, .access = KSPACE_RW_UC_ACCESS });
                     bsp_kout  << "[Phase3b] HPET MMIO: p=" << (void*)hp << " v=" << (void*)hv << kendl;
                 }
                 break;
@@ -595,102 +672,89 @@ static ctx_intervals phase_3b(kernel_mmu* kmmu, BootInfoHeader* header, const ct
             .npages = npg,
             .access = KSPACE_RW_ACCESS
         };
-        vinterval v;
-        v.vbase    = vbase;
-        v.size     = total_bytes;
-        v.phybase  = pbase;
-        kmmu->map(v, KSPACE_RW_ACCESS);
+        kmmu->map(kernel_mmu::make_entry(pbase, vbase, total_bytes, KSPACE_RW_ACCESS,
+                                         "gs_complexes", KMMU_ENTRY_FLAG_PERSISTENT));
+        asset_reg_add("gs_complexes mem",
+                      new vm_interval{ .vpn = vbase >> 12, .ppn = pbase >> 12,
+                                       .npages = npg, .access = KSPACE_RW_ACCESS });
         bsp_kout << "[Phase3b] conjunc_GSs: vaddr=" << (void*)(uint64_t)vbase
                  << " paddr=" << (void*)(uint64_t)pbase
                  << " size=0x" << (uint64_t)(npg << 12) << kendl;
     }
 
-    // hardware stacks: 每处理器栈区含 guard 页，各处理器固定硬件栈
+    // hardware stacks: 降级为纯物理区间（p_interval 穿越，无 KMMU 映射、不链入 GS 复合体）
+    //     kernel.elf 自行决断如何映射 + 链接到 conjunc_GSs 的 TSS。
     {
         uint64_t stack_stride   = sizeof(per_processor_hardware_stack_t);  // 含 5 guard 页
         uint64_t total_phys     = header->logical_processor_count * stack_stride + 4096;  // + 尾 guard
-        uint64_t total_virt     = total_phys;
-        uint64_t hd_pages = total_phys >> 12;
+        uint64_t hd_pages       = total_phys >> 12;
         loc_code_t alloc_err = 0;
-        iv.arch_info.hdstacks_interval_pbase  = init_bcb_juvenile::alloc(hd_pages, 12, &alloc_err);
-        page_allocator::pages_set({iv.arch_info.hdstacks_interval_pbase, hd_pages << 12}, page_state_t::kernel_persisit);
-        iv.arch_info.hdstacks_interval_vbase  = va_alloc_up(total_virt, 12);
-        iv.arch_info.hdstacks_4kbpgs_count    = total_phys >> 12;
-        bsp_kout << "[Phase3b] hdstacks:   vaddr=" << (void*)(uint64_t)iv.arch_info.hdstacks_interval_vbase
-                 << " paddr=" << (void*)(uint64_t)iv.arch_info.hdstacks_interval_pbase
-                 << " pages=" << (uint64_t)iv.arch_info.hdstacks_4kbpgs_count << kendl;
-
-        // 逐处理器映射栈页（跳过 guard 页），并设置 GS slot 0 和 stacks_ptr
-        phyaddr_t gs_pbase = iv.arch_info.conjunc_GSs.pbase();
-        for (uint32_t p = 0; p < header->logical_processor_count; p++) {
-            // 本处理器的栈区在物理/虚拟区间的偏移
-            uint64_t proc_off   = p * stack_stride;
-            phyaddr_t proc_pphy = iv.arch_info.hdstacks_interval_pbase + proc_off;
-            vaddr_t   proc_pvir = iv.arch_info.hdstacks_interval_vbase + proc_off;
-
-            // 映射 stack_rsp0 (跳过 guard1)
-            kmmu->map({proc_pphy + RSP0_BASE_OFF,
-                       proc_pvir + RSP0_BASE_OFF,
-                       RSP0_STACKSIZE},
-                       KSPACE_RW_ACCESS);
-            // 映射 stack_ist1 (跳过 guard2)
-            kmmu->map({proc_pphy + IST1_BASE_OFF,
-                       proc_pvir + IST1_BASE_OFF,
-                       DF_STACKSIZE},
-                       KSPACE_RW_ACCESS);
-            // 映射 stack_ist2 (跳过 guard3)
-            kmmu->map({proc_pphy + IST2_BASE_OFF,
-                       proc_pvir + IST2_BASE_OFF,
-                       MC_STACKSIZE},
-                       KSPACE_RW_ACCESS);
-            // 映射 stack_ist3 (跳过 guard4)
-            kmmu->map({proc_pphy + IST3_BASE_OFF,
-                       proc_pvir + IST3_BASE_OFF,
-                       NMI_STACKSIZE},
-                       KSPACE_RW_ACCESS);
-            // 映射 idle task 栈 (跳过 guard5)
-            kmmu->map({proc_pphy + IDLE_TASK_STACK_BASE_OFF,
-                       proc_pvir + IDLE_TASK_STACK_BASE_OFF,
-                       IDLE_TASK_STACKSIZE},
-                       KSPACE_RW_ACCESS);
-
-            // 在 GS 复合体中设置 slot 0 = rsp0 栈顶（syscall 快速入口）和 stacks_ptr
-            gs_complex_t* complex = (gs_complex_t*)(uint64_t)(gs_pbase + p * GS_COMPLEX_STRIDE);
-            complex->slots[PROCESSOR_RSP0_STACK_BTM_IDX] = proc_pvir+RSP0_BOTTOM_OFF;
-            complex->stacks_ptr = (per_processor_hardware_stack_t*)(uint64_t)proc_pvir;
-        }
+        phyaddr_t hd_pbase      = init_bcb_juvenile::alloc(hd_pages, 12, &alloc_err);
+        if (!hd_pbase) { bsp_kout << "hdstacks OOM" << kendl; return SRC_LOC(); }
+        page_allocator::pages_set({hd_pbase, hd_pages << 12}, page_state_t::kernel_persisit);
+        // arch_info 字段暂留（vbase=0：降级为物理区间无 VA）；容器以 "hdstacks pint" 承载 p_interval
+        iv.arch_info.hdstacks_interval_pbase  = hd_pbase;
+        iv.arch_info.hdstacks_4kbpgs_count    = hd_pages;
+        iv.arch_info.hdstacks_interval_vbase  = 0;
+        asset_reg_add("hdstacks pint",
+                      new p_interval{ .ppn = hd_pbase >> 12, .pages_count = hd_pages });
+        bsp_kout << "[Phase3b] hdstacks: paddr=0x" << HEX << hd_pbase
+                 << " pages=" << hd_pages << DEC << kendl;
     }
-    // ---- [0, dram_top) va_alloc 窗口 ----
+
+    // ---- bsp_entry_stack（mem 资产）：BSP 跳入内核的入口栈，复用 VM_ID_BSP_INIT_STACK 32KB 语义 ----
+    {
+        constexpr uint64_t stack_sz = BSP_INIT_STACK_SIZE;      // 32KB
+        uint64_t npg = stack_sz >> 12;
+        loc_code_t alloc_err = 0;
+        phyaddr_t p  = init_bcb_juvenile::alloc(npg, BSP_INIT_STACK_ALIGN_LOG2, &alloc_err);
+        if (!p) { bsp_kout << "bsp_entry_stack OOM" << kendl; return SRC_LOC(); }
+        page_allocator::pages_set({p, stack_sz}, page_state_t::kernel_persisit);
+        ksetmem_8((void*)(uint64_t)p, 0, stack_sz);
+        vaddr_t v = va_alloc_up(stack_sz, 21);
+        kmmu->map(kernel_mmu::make_entry(p, v, stack_sz, KSPACE_RW_ACCESS,
+                                         "bsp_entry_stack", KMMU_ENTRY_FLAG_PERSISTENT));
+        asset_reg_add("bsp_entry_stack mem",
+                      new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
+                                       .npages = npg, .access = KSPACE_RW_ACCESS });
+        bsp_kout << "[Phase3b] bsp_entry_stack: p=0x" << p << " v=" << (void*)v << kendl;
+    }
+    // ---- high_window: [0, dram_top) → 1GB 对齐高 VA（kernel 物理访问主窗口） ----
     {
         phyaddr_t top = page_allocator::dram_top();
         uint64_t  sz  = align_up(top, 0x40000000ULL);
         vaddr_t   v   = va_alloc_up(sz, 30);
-        kmmu->map({0, v, sz}, KSPACE_RW_ACCESS);  // flat RW window, no X
-        bsp_kout << "[Phase3b] identity_va_window: [0," << (void*)top << ") at" << (void*)v << kendl;
+        kmmu->map(kernel_mmu::make_entry(0, v, sz, KSPACE_RW_ACCESS,
+                                         "phyaddr_window", KMMU_ENTRY_FLAG_PERSISTENT));
+        bsp_kout << "[Phase3b] high_window: [0," << (void*)top << ") at" << (void*)v << kendl;
         iv.Kspace_phyaddr_access_window={
             .vpn    = v >> 12,
             .ppn    = 0,
             .npages = sz >> 12,
             .access = KSPACE_RW_ACCESS
         };
+        asset_reg_add("phyaddr_window mem",
+                      new vm_interval{ .vpn = v >> 12, .ppn = 0,
+                                       .npages = sz >> 12, .access = KSPACE_RW_ACCESS });
         (void)v;
     }
     // ---- Kspace_phyaddr_access_window: [0, dram_top) → Kspace VA ----
     //     不是恒等映射！将整个物理地址区间映射到内核高位空间（1GB 对齐），
     //     供 kernel.elf 的 PhyAddrAccessor / 页表重建时访问任意物理地址。
     bsp_kout << "[Phase3b] done: " << iv.extra_vm_count << " extra VM entries" << kendl;
-    return iv;
+    *iv_out = iv;
+    return 0;
 }
 
 // ============================================================================
 // Phase 4 (串行): 构建 init_to_kernel_header（extern，定义在 info_fill.cpp）
 // ============================================================================
-// 签名变更：ctx 参数替代全局变量
+// 签名：kl（ctx_kernel_loaded 已废弃）→ kmmu 直接传参；kIMG 字段从资产容器取
 extern phyaddr_t build_init_to_kernel_header(
     phyaddr_t                pkt_pbase,
     uint64_t                 pkt_pages,
     BootInfoHeader*          header,
-    const ctx_kernel_loaded* kl,
+    kernel_mmu*              kmmu,
     const ctx_intervals*     iv,
     phymem_segment*          seg_view,
     uint64_t                 seg_count);
@@ -699,7 +763,7 @@ extern phyaddr_t build_init_to_kernel_header(
 // Phase 4.5 (自裁 → CR3 切换 → gs_complex_load_gdt_tss → iretq)
 // ============================================================================
 static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
-                              vaddr_t entry_vaddr, const ctx_intervals* iv) {
+                              const ctx_intervals* iv) {
     // 4.5-1: relinquish
     phyaddr_t mm_pb; uint64_t mm_pc;
     page_allocator::relinquish_mem_map(&mm_pb, &mm_pc);
@@ -772,6 +836,14 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     
     // 4.5-6: init_jump_to_kernel — 用 BSP 的 rsp0 栈构建 x64_standard_context 后跳入 kernel.elf
     {
+        // entry_vaddr 隐式状态：从资产容器读 scalar
+        const asset_entry_t* ev = g_asset_registry->read("entry_vaddr");
+        if (!ev || !ev->data) {
+            bsp_kout << "[Phase4.5] entry_vaddr asset missing" << kendl;
+            init_fatal::halt(SRC_LOC());
+        }
+        uint64_t entry_vaddr = *(uint64_t*)ev->data;
+
         // kernel_entry_stack 已废弃，改用 BSP GS 复合体内嵌的 rsp0 栈
         gs_complex_t* bsp = (gs_complex_t*)(uint64_t)iv->arch_info.conjunc_GSs.vbase();
         vaddr_t bsp_rsp0  = bsp->tss.rsp0;
@@ -800,12 +872,18 @@ extern "C" void init_main(BootInfoHeader* header) {
     // 注意: init_memory_early 返回空 struct 时 xsdt_base=0 属于正常（ACPI 找不到），
     // 不 halt。只有 basic_allocator/page_allocator 失败才会内部 halt。
 
-    relocate_initramfs(header, &em);
+    // Phase 2.5：initramfs 不再高位搬迁——原位 mark_used 钉住，直接引用 UEFI 加载位置
+    initramfs_mark_used(header, &em);
 
     // Phase 3a + 3b 共享同一 KMMU，由 Phase 3a 初始化，Phase 3b 使用
     kernel_mmu* kmmu = new kernel_mmu(arch_enums::x86_64_PGLV4);
-    auto kl = phase_3a_load_kernel(kmmu, &em, header);
-    auto iv = phase_3b(kl.kmmu, header, &em);
+
+    // 资产树（handoff 清单）显式构造——全局裸指针零动态初始化
+    g_asset_registry = new init_asset_registry_t();
+
+    if (phase_3a_load_kernel(kmmu, &em, header) != 0) init_fatal::halt(SRC_LOC());
+    ctx_intervals iv;
+    if (phase_3b(kmmu, header, &em, &iv) != 0) init_fatal::halt(SRC_LOC());
     
     // Phase 4: 构造信息包
     uint64_t segcnt = 0;
@@ -818,7 +896,7 @@ extern "C" void init_main(BootInfoHeader* header) {
     page_allocator::pages_set({pkt, PKT_PAGES * 4096}, page_state_t::kernel_persisit);
 
     if (!build_init_to_kernel_header(pkt, PKT_PAGES, header,
-                                     &kl, &iv, pure_view, segcnt)) {
+                                     kmmu, &iv, pure_view, segcnt)) {
         bsp_kout << "build_init_to_kernel_header failed" << kendl; init_fatal::halt(SRC_LOC());
     }
 
@@ -828,6 +906,6 @@ extern "C" void init_main(BootInfoHeader* header) {
              << " processors=" << (uint32_t)header->logical_processor_count << kendl;
 
     // Phase 4.5
-    phase_45_finalize(kmmu, pkt, kl.entry_vaddr, &iv);
+    phase_45_finalize(kmmu, pkt, &iv);
     init_fatal::halt(SRC_LOC());
 }

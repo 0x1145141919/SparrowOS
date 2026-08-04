@@ -1,8 +1,31 @@
 #include "init/kernel_mmu.h"
 #include "init/pages_alloc.h"   // mem_interval（get_self_alloc_interval 返回类型）
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
+// 注意：不直接 include 任何 OS_utils.h。strcmp_in_kernel 经
+// memory_base.h → util/lock.h → util/OS_utils.h 传递声明（与 init_init.cpp 同法）。
+// init/util/OS_utils.h 与 kernel 侧 util/OS_utils.h 内容同源，直接 include 会在本 TU 重复定义。
 // 类型别名，简化嵌套类型名的使用
 using pages_info_t = seg_to_pages_info_pakage_t::pages_info_t;
+
+// 红黑树比较器：仅按 property_name 字典序。树键 = 名字（arg0 语义），区间不参与排序。
+int kmmu_entry_name_cmp(const kmmu_entry_t& a, const kmmu_entry_t& b)
+{
+    return strcmp_in_kernel(a.property_name, b.property_name);
+}
+
+// 工厂：字节区间 → vm_interval（vpn/ppn/npages），name 以 const_cast 存入 char*。
+kmmu_entry_t kernel_mmu::make_entry(phyaddr_t pbase, vaddr_t vbase, uint64_t size,
+                                    pgaccess access, const char* name, uint64_t flags)
+{
+    kmmu_entry_t e = {};
+    e.interval.vpn = vbase >> 12;
+    e.interval.ppn = pbase >> 12;
+    e.interval.npages = size >> 12;
+    e.interval.access = access;
+    e.property_name = const_cast<char*>(name);
+    e.flags = flags;
+    return e;
+}
 
 /**
  * @brief 将缓存策略转换为 PAT/PCD/PWT 索引
@@ -44,14 +67,6 @@ cache_table_idx_struct_t cache_strategy_to_idx(cache_strategy_t cache_strategy)
 }
 
 /**
- * @brief vinterval 类的 end() 方法，返回区间结束地址
- */
-static inline uint64_t vinterval_end(const vinterval& inter)
-{
-    return inter.vbase + inter.size;
-}
-
-/**
  * @brief mmu_specify_allocator — 页表页分配
  * 
  * 直接消费纯静态 init_bcb_juvenile（首个采用者）：每张页表页即时
@@ -68,6 +83,31 @@ void* kernel_mmu::mmu_specify_allocator::alloc()
         return nullptr;
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(p));
+}
+
+void kernel_mmu::mmu_specify_allocator::free(void* page)
+{
+    if (!page) {
+        return;
+    }
+    // 恒等映射环境下页表页指针值 == 物理地址，直接按 1 页归还幼年位图。
+    init_bcb_juvenile::free(reinterpret_cast<phyaddr_t>(page), 1);
+}
+
+/**
+ * @brief 检查一张页表页是否全空（512 项全零），供 unmap 回收判断。
+ * 
+ * 恒等映射环境下 page 指针值 == 物理地址，可安全解引用。
+ */
+static bool page_table_page_empty(const void* page)
+{
+    const uint64_t* entries = reinterpret_cast<const uint64_t*>(page);
+    for (int i = 0; i < 512; i++) {
+        if (entries[i] != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -233,7 +273,7 @@ static int split_vinterval_to_pages(seg_to_pages_info_pakage_t& result, const vi
 }
 
 /**
- * @brief 建立虚拟地址到物理地址的映射（仅支持x86_64 PGLV4）
+ * @brief 建立虚拟地址到物理地址的映射（仅支持x86_64 PGLV4），并入名字台账
  * 
  * 仿照 AddressSpace::enable_low_half_vm_interval 的实现逻辑，
  * 先按同余等级拆分区间（优先大页），再逐级建立映射。
@@ -243,38 +283,53 @@ static int split_vinterval_to_pages(seg_to_pages_info_pakage_t& result, const vi
  * 2. 按同余等级分发映射策略
  * 3. 1GB 页可能跨 PDPT 边界，需要循环处理
  * 
+ * 台账语义:
+ * - 内部红黑树以 property_name 字典序为键（非区间序）
+ * - 同名条目拒绝重复 map（先查重，避免页表落地后入树失败）
+ * - 页表落地成功后才入树，保证台账与页表一致
+ * 
  * 假设条件:
  * - 运行在恒等映射环境，页表指针可直接解引用
  * - 只支持x86_64 PGLV4 架构
  * 
- * @param inter 虚拟地址区间信息
- * @param access 访问权限控制
+ * @param entry 映射条目（vm_interval + 名字 + flags）
  * @return int 成功返回 0，失败返回负值错误码
  */
-int kernel_mmu::map(vinterval inter, pgaccess access)
+int kernel_mmu::map(const kmmu_entry_t& entry)
 {
     // 参数校验
     if (!root_table || !pgallocator) {
         return -1;
     }
-    
-    if (inter.vbase % 0x1000 != 0 || inter.phybase % 0x1000 != 0) {
-        return -2; // 未对齐
+    if (!entry.property_name) {
+        return -10; // 名字为 null，无法入台账
     }
-    
-    if (inter.size % 0x1000 != 0) {
-        return -3; // 大小不是 4KB 倍数
+    if (entry.interval.npages == 0) {
+        return -11; // 空区间
     }
-    
+
+    // 同名查重（名字为树键，禁止重复）
+    kmmu_entry_t probe = {};
+    probe.property_name = entry.property_name;
+    if (m_tree.contains(probe)) {
+        return -9; // 重名
+    }
+
+    // vm_interval（vpn/ppn/npages 页对齐）→ 字节区间
+    vaddr_t   vbase  = entry.interval.vbase();
+    phyaddr_t pbase  = entry.interval.pbase();
+    uint64_t  size   = entry.interval.byte_cnt();
+    const pgaccess access = entry.interval.access;
+
     // 将缓存策略转换为 PAT/PCD/PWT 索引
     cache_table_idx_struct_t cache_table_idx = cache_strategy_to_idx(access.cache_strategy);
     
     // 拆分区间（按同余等级）
     seg_to_pages_info_pakage_t package;
     VM_DESC vmentry = {};
-    vmentry.start = inter.vbase;
-    vmentry.end = vinterval_end(inter);
-    vmentry.phys_start = inter.phybase;
+    vmentry.start = vbase;
+    vmentry.end = vbase + size;
+    vmentry.phys_start = pbase;
     vmentry.access = access;
     int status = vm_interval_to_pages_info(package, vmentry);
     if (status != 0) {
@@ -537,41 +592,58 @@ int kernel_mmu::map(vinterval inter, pgaccess access)
         return -8;
     }
 
+    // 页表落地成功 → 入台账（前面已查重，此处 insert 不应失败）
+    if (!m_tree.insert(entry)) {
+        return -9;
+    }
     return 0;
 }
 
 /**
- * @brief 解除虚拟地址映射（仅支持x86_64 PGLV4）
+ * @brief 解除虚拟地址映射（仅支持x86_64 PGLV4），按名字出台账
  * 
- * 只清除 inter指定的叶子节点页表项，不回收页表本身。
+ * 清除台账条目 interval 指定的叶子节点页表项，并适时回收空页表页。
  * 
  * unmapping 策略:
- * 1. 同样调用 split_vinterval_to_pages 拆分区间为 1GB/2MB/4KB
- * 2. 对每种大小的页面清除对应的叶子节点页表项
- * 3. 不清除中间级页表（PML4/PDPT/PD），也不回收物理内存
+ * 1. 按 property_name 查红黑树取回 kmmu_entry_t
+ * 2. 同样调用 split_vinterval_to_pages 拆分区间为 1GB/2MB/4KB
+ * 3. 对每种大小的页面清除对应的叶子节点页表项
+ * 4. 回收：自下而上检查 PT/PD/PDPT，全空则 free 回 init_bcb_juvenile 并清父项
+ *    （PML4 根表不回收；数据物理页不属于本模块，不回收）
+ * 5. 尾段重载 CR3 击落 TLB（init.elf 单核，无广播需求）
  * 
  * 假设条件:
  * - 运行在恒等映射环境，页表指针可直接解引用
  * - 只支持x86_64 PGLV4 架构
  * 
- * @param inter 待解除映射的虚拟地址区间
+ * @param property_name 台账条目名字（树键）
  * @return int 成功返回 0，失败返回负值错误码
  */
-int kernel_mmu::unmap(vinterval inter)
+int kernel_mmu::unmap(const char* property_name)
 {
     // 参数校验
     if (!root_table || !pgallocator) {
         return -1;
     }
-    
-    if (inter.vbase % 0x1000 != 0 || inter.phybase % 0x1000 != 0) {
-        return -2; // 未对齐
+    if (!property_name) {
+        return -10; // 名字为 null
     }
-    
-    if (inter.size % 0x1000 != 0) {
-        return -3; // 大小不是 4KB 倍数
+
+    // 按名字查台账；未映射直接失败
+    kmmu_entry_t probe = {};
+    probe.property_name = const_cast<char*>(property_name);
+    kmmu_entry_t* found = m_tree.find(probe);
+    if (!found) {
+        return -1; // 未映射
     }
-    
+
+    // vm_interval（vpn/ppn/npages 页对齐）→ vinterval 字节区间
+    vinterval inter = {
+        found->interval.pbase(),
+        found->interval.vbase(),
+        found->interval.byte_cnt()
+    };
+
     // 拆分区间
     seg_to_pages_info_pakage_t package;
     int status = split_vinterval_to_pages(package, inter);
@@ -649,6 +721,20 @@ int kernel_mmu::unmap(vinterval inter)
                     // 清除 PTE（清零）
                     pte.raw = 0;
                 }
+
+                // 回收：PT 全空 → 释放并清 PDE；PD 变空 → 释放并清 PDPTE；PDPT 变空 → 释放并清 PML4E
+                if (page_table_page_empty(pt_ptr)) {
+                    pd_ptr[pde_index].raw = 0;
+                    pgallocator->free(pt_ptr);
+                    if (page_table_page_empty(pd_ptr)) {
+                        pdpt_ptr[pdpte_index].raw = 0;
+                        pgallocator->free(pd_ptr);
+                        if (page_table_page_empty(pdpt_ptr)) {
+                            pml4_ptr[pml4_index].raw = 0;
+                            pgallocator->free(pdpt_ptr);
+                        }
+                    }
+                }
                 break;
             }
             
@@ -707,6 +793,16 @@ int kernel_mmu::unmap(vinterval inter)
                     // 清除 PDE（清零）
                     pde.raw = 0;
                 }
+
+                // 回收：PD 全空 → 释放并清 PDPTE；PDPT 变空 → 释放并清 PML4E
+                if (page_table_page_empty(pd_ptr)) {
+                    pdpt_ptr[pdpte_index].raw = 0;
+                    pgallocator->free(pd_ptr);
+                    if (page_table_page_empty(pdpt_ptr)) {
+                        pml4_ptr[pml4_index].raw = 0;
+                        pgallocator->free(pdpt_ptr);
+                    }
+                }
                 break;
             }
             
@@ -753,6 +849,12 @@ int kernel_mmu::unmap(vinterval inter)
                         // 清除 PDPTE（清零）
                         pdpte.raw = 0;
                     }
+
+                    // 回收：本 PDPT 页全空 → 释放并清对应 PML4E（PML4 根表不回收）
+                    if (page_table_page_empty(pdpt_ptr)) {
+                        pml4_ptr[pml4_index].raw = 0;
+                        pgallocator->free(pdpt_ptr);
+                    }
                     
                     count_to_assign_left -= this_count;
                     processed_pages += this_count;
@@ -765,8 +867,27 @@ int kernel_mmu::unmap(vinterval inter)
                 return -8; // 未知的页面大小
         }
     }
-    
+
+    // 页表清理成功 → 出台账
+    m_tree.erase(probe);
+
+    // init.elf 阶段无多核广播需求，直接读回原值重载 CR3 击落 TLB。
+    // 不写成 root_table：phase 3a/3b 时 CR3 仍是 UEFI 恒等映射表，
+    // 此时 root_table 并非活动页表，写它会错误切换。
+    uint64_t cr3_value;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3_value) : : "memory");
+    asm volatile("mov %0, %%cr3" :: "r"(cr3_value) : "memory");
     return 0;
+}
+
+const kmmu_entry_t* kernel_mmu::lookup(const char* property_name) const
+{
+    if (!property_name) {
+        return nullptr;
+    }
+    kmmu_entry_t probe = {};
+    probe.property_name = const_cast<char*>(property_name);
+    return m_tree.find(probe);
 }
 
 phyaddr_t kernel_mmu::get_root_table_base()

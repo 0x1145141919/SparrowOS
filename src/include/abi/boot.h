@@ -94,9 +94,8 @@ constexpr uint8_t UP_KSPACE_PDPT_ALIGN_LOG2 = 12;             // 4KB 对齐
 constexpr uint32_t VM_ID_HPET_MMIO = 0x2003;
 
 struct movable_file_entry_t{
-    vm_interval interval;//严格表示那个文件所在的物理地址区间以及访问虚拟地址区间
-    uint64_t offset;//在这个区间内文件起始的偏移量
-    uint64_t size;//文件真正的大小
+    uint64_t base_ppn;//基址物理页框号，默认页4k,并且是偏移量为0的地方开始就是文件内容
+    uint64_t size;//文件真正的大小，向上取整到4k就是实际占用的页框数目
 };
 struct init_to_kernel_header {//这个信息包的头也应该是使用available_meminterval_probe分配的
     uint64_t magic;

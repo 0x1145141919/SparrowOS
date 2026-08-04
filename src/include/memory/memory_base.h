@@ -359,6 +359,10 @@ struct vm_interval_payload{
     vm_interval interval;
     uint64_t is_fixed_property:1;
 };
+struct p_interval{//默认4k页
+    uint64_t ppn;
+    uint64_t pages_count;
+};
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, VM_DESC vmentry);
 int vm_interval_to_pages_info(seg_to_pages_info_pakage_t &result, vm_interval interval);
 extern loaded_VM_interval* VM_intervals;

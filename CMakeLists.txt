@@ -190,6 +190,7 @@ add_executable(kernel.elf
 add_executable(init.elf
     src/init/init_init.cpp
     src/init/kernel_mmu.cpp
+    src/init/init_asset_registry.cpp
     src/init/init_entry.asm
     src/init/Interrupts/Sysdef_exception_entries.asm
     src/init/Interrupts/exceptions_handler.cpp

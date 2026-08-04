@@ -16,17 +16,14 @@ struct ctx_early_mem {
     uint64_t  ramfs_size;
 };
 
-// Phase 3a 产物 → 供 Phase 3b / Phase 4 消费
-struct ctx_kernel_loaded {
-    kernel_mmu*   kmmu;
-    phyaddr_t     kimg_pbase;           // 瞬态端 kernel.elf 文件映像物理基址
-    uint64_t      kimg_file_size;       // 文件原始字节数（非对齐）
-    vm_interval   kIMG_self_window;     // 瞬态端文件映像的 VA 窗口（仅供自省）
-    vaddr_t       entry_vaddr;          // kernel.elf 入口点
-};
-// 注：kBSS_interval 已移除——BSS 作为普通 PT_LOAD(有 0x100 标志) 处理，
-//     物理地址直接写入 ELF 程序头表 p_paddr。kernel.elf 自省时
-//     扫描程序头表即得所有段的 PA，无需 kBSS_interval 专门路径。
+// ctx_kernel_loaded 已废弃（退居幕后）——Phase 3a 改为纯产出方：
+//   产物（四段 / kimg / entry_vaddr）全部进资产容器（g_asset_registry，隐式状态），
+//   函数只返回 loc_code_t；下游调用点从容器按 arg0 取资产。
+//   原 kl 字段去向：
+//     kmmu          → init_main 直接持有
+//     kimg_pbase / kimg_file_size / kIMG_self_window → "kimg"（movable_file_entry_t）
+//     entry_vaddr   → "entry_vaddr"（scalar）
+
 
 // Phase 3b 产物 → 供 Phase 4 / Phase 4.5 消费
 // kernel_entry_stack 已移除——Phase 4.5 跳转时用 BSP GS 复合体的 rsp0 栈

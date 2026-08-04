@@ -1,0 +1,10 @@
+基于draft以及phase 3b的基础，我做出如下部署
+1.首先是要准备两个物理地址访问窗口，但是分别为low_identity_window和high_window
+其中low_identity_window是va[0x1000,dram_top)->pa[0x1000,dram_top),RWX+WB,是init.elf切换页表后的瞬态运行需求，kernel.elf显然要丢弃
+而high_window则是va[window_base,window_base+dram_top)->pa[0,dram_top),显然window_base是地址分配器分配的，并且在x86_64上得是1GB对齐，并且是kernel.elf接手后访问物理地址的重要窗口，策略为RW+WB+G+S
+2.FPA_bitmaps 理论上可以只穿物理区间，但是让kernel.elf多映射，改内部BCB状态，多此一举，所以说还是走mem资产，log_buffer由于日志输出的连续性，应该是mem资产
+3.symtable_file是可移动文件，不过现在可移动文件已经改制了，同理initramfs_file
+4.pages_arr因为init_bcb_juvenile的存在完全下岗
+5.x86 arch_specify 的两个资产都是mem型，kernel.elf侧期望开箱即用
+6.conjunc_GSs的依赖链在phase 45就依赖上了，尤其是切换到kmmu的瞬态依赖中bsp的lgdt点火指令的硬性依赖，所以必须映射
+7.hardware stacks 现在虽然是硬依赖的，因为直接用bsp的rsp 0作为跳入的栈入口，但是与现在的字符锚点枚举资产+kmmu模型不符合，遂降级为一个物理区间，以及phase 4 5的时候不把栈复合体链入conjunc_GSs的TSSs,当然，给bsp的跳入内核时使用的栈新开一个mem资产，bsp_entry_stack,至于后续的怎么链hardware stacks到conjunc_GSs里面就给kernel.elf头疼去吧。不过hardware stacks用memory_base.h里面的p_interval数据结构描述资产，ppn<<12+0开始的物理地址就是hd_stacks数组

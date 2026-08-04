@@ -3,6 +3,7 @@
 #include "init/load_kernel.h"
 #include "init/pages_alloc.h"
 #include "init/init_phase_ctx.h"
+#include "init/init_asset_registry.h"
 #include "init/util/kout.h"
 #include "init/init_linker_symbols.h"
 #include "16x32AsciiCharacterBitmapSet.h"
@@ -83,7 +84,7 @@ static void dump_header(const init_to_kernel_header* h, phyaddr_t pkt_base) {
 //   pkt_pbase  — 信息包的物理基址
 //   pkt_pages  — 信息包总页数
 //   header     — BootInfoHeader（UEFI 传递）
-//   kl         — Phase 3a 上下文（kIMG_self_window, entry 等）
+//   kmmu       — Phase 3a/3b 共享的 MMU（kmmu_interval 用）
 //   iv         — Phase 3b 上下文（各驱动区间列表）
 //   seg_view   — phymem_segment 视图
 //   seg_count  — 视图条目数
@@ -94,7 +95,7 @@ phyaddr_t build_init_to_kernel_header(
     phyaddr_t                pkt_pbase,
     uint64_t                 pkt_pages,
     BootInfoHeader*          header,
-    const ctx_kernel_loaded* kl,
+    kernel_mmu*              kmmu,
     const ctx_intervals*     iv,
     phymem_segment*          seg_view,
     uint64_t                 seg_count)
@@ -151,8 +152,8 @@ phyaddr_t build_init_to_kernel_header(
     init_to_kernel_header* h = reinterpret_cast<init_to_kernel_header*>(base);
     h->magic                         = 0x494E494B524E4C48ULL; // "INIKRNLH"
     h->self_pages_count              = pkt_pages;
-    h->kmmu_interval                 = {kl->kmmu->get_self_alloc_interval().start,
-                                        kl->kmmu->get_self_alloc_interval().size,
+    h->kmmu_interval                 = {kmmu->get_self_alloc_interval().start,
+                                        kmmu->get_self_alloc_interval().size,
                                         PHY_MEM_TYPE::OS_PGTB_SEGS};
     h->phymem_segment_count          = seg_count;
     h->memory_map_offset             = map_off;
@@ -162,9 +163,22 @@ phyaddr_t build_init_to_kernel_header(
     h->pass_through_devices_offset   = pt_off;
     h->logical_processor_count       = header->logical_processor_count;
 
-    // 一等字段由 ctx 参数提供
-    h->kIMG_self_window  = kl->kIMG_self_window;
-    h->kIMG_self_size    = kl->kimg_file_size;
+    // 一等字段：kIMG 从资产容器取（隐式状态）
+    //   "kimg" movable = { base_ppn, size }。kernel 经恒等映射直读，
+    //   header 的 kIMG_self_window 填 identity 语义（vpn==ppn==base_ppn，vbase()==物理基址）
+    {
+        const asset_entry_t* kimg_ae = g_asset_registry->read("kimg");
+        if (!kimg_ae || !kimg_ae->data) {
+            bsp_kout << "[BUILD_HEADER] FATAL: kimg asset missing" << kendl;
+            return 0;
+        }
+        const movable_file_entry_t* kimg = (const movable_file_entry_t*)kimg_ae->data;
+        h->kIMG_self_window = {.vpn   = kimg->base_ppn,
+                               .ppn   = kimg->base_ppn,
+                               .npages = align_up(kimg->size, 4096) >> 12,
+                               .access = KSPACE_RW_ACCESS};
+        h->kIMG_self_size = kimg->size;
+    }
     h->kBSS_interval     = {};  // 已归入 PT_LOAD 通用处理，kernel 应扫描程序头表
     h->pages_arr         = {0, 0, 0, {}};     // Phase 4.5 填入
     h->FPA_bitmaps       = iv->FPA_bitmaps;
