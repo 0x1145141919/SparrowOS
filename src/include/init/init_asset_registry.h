@@ -49,3 +49,9 @@ private:
 // 全局单例指针（init.elf 侧）。在 init_main 用 new 显式构造——全局裸指针
 // 零动态初始化，不违反"禁止全局 C++ 构造"纪律。
 extern init_asset_registry_t* g_asset_registry;
+
+// 资产 desc blob 字节数（info_fill 序列化用）。
+// 路由 = arg1 查表（通用表 abi/asset_route.h + arch 表 arch/x86_64/abi/asset_route.h 合并），
+// blob 类型的大小看路由 desc_size，缺失时看 arg2（hex）。
+// 未知路由 / data 空 / blob 缺大小 → 返回 0。
+uint64_t asset_desc_size(const asset_entry_t& entry);

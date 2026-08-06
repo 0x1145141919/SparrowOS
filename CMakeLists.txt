@@ -189,7 +189,10 @@ add_executable(kernel.elf
 )
 add_executable(init.elf
     src/init/init_init.cpp
+    src/init/phase_3a.cpp
+    src/init/phase_3b.cpp
     src/init/kernel_mmu.cpp
+    src/init/init_bcb_juvenile.cpp
     src/init/init_asset_registry.cpp
     src/init/init_entry.asm
     src/init/Interrupts/Sysdef_exception_entries.asm
@@ -199,7 +202,6 @@ add_executable(init.elf
     src/init/core_hardwares/PortDriver.cpp
     src/init/util/textConsole.cpp
     src/init/pages_alloc.cpp
-    src/init/page_allocator.cpp
     src/init/initramfs_lookup.cpp
     src/init/util/kout.cpp
     src/init/init_fatal.cpp
@@ -209,7 +211,6 @@ add_executable(init.elf
     src/arch/x86_64/Processor/runtime_processor_regist.asm
     src/arch/x86_64/wheels.asm
     src/init/info_fill.cpp
-    src/init/mem_loads.cpp
 )
 
 # =====================================================

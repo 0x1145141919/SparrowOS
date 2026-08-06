@@ -76,7 +76,7 @@ uint64_t    init_bcb_juvenile::bcb_count_     = 0;
 phyaddr_t   init_bcb_juvenile::region_pbase_  = 0;
 uint64_t    init_bcb_juvenile::region_size_   = 0;
 uint64_t    init_bcb_juvenile::scan_hint_bcb_ = 0;
-bcb_desc_t* init_bcb_juvenile::descs_         = nullptr;
+bcb_desc_v2_t* init_bcb_juvenile::descs_      = nullptr;
 
 // ================================================================
 // plan_and_setup — 算 plan → 铺叶子（全空闲）→ 活
@@ -215,7 +215,7 @@ loc_code_t init_bcb_juvenile::plan_and_setup(bcb_juvenile_init_config* cfg)
 
     // ---- 7. 建立 bcbs_ / descs_（池内 8B 对齐逐 BCB 切片） ----
     bcbs_  = new bcb_state[plan_count];
-    descs_ = new bcb_desc_t[plan_count];
+    descs_ = new bcb_desc_v2_t[plan_count];
     if (!bcbs_ || !descs_) {
         delete[] plan;
         return fail_cleanup();
@@ -239,9 +239,11 @@ loc_code_t init_bcb_juvenile::plan_and_setup(bcb_juvenile_init_config* cfg)
         bcbs_[i].free_leaves   = 1ull << ord;
         bcbs_[i].scan_hint_off_ = 0;
 
-        descs_[i].managed_base_phyaddr_base = plan[i].base;
-        descs_[i].bitmap_region_base_pa     = slice;
-        descs_[i].order                     = ord;
+        // v2 描述打包：bcb_district_descriptor = [0:5]order | [12:63]base_pa[12:63]
+        // base 页对齐（低 12bit 恒 0），order 限 6 bit（N ≤ 63，实际远小于）
+        descs_[i].bcb_district_descriptor = (plan[i].base & ~0xFFFull) |
+                                            (static_cast<uint64_t>(ord) & 0x3Full);
+        descs_[i].bitmap_region_base_pa   = slice;
 
         cursor = slice + need;
     }
@@ -427,5 +429,8 @@ uint64_t init_bcb_juvenile::total_page_count()
     return s;
 }
 
-const bcb_desc_t* init_bcb_juvenile::get_descs() { return descs_; }
+const bcb_desc_v2_t* init_bcb_juvenile::get_descs() { return descs_; }
 uint64_t          init_bcb_juvenile::get_desc_count() { return bcb_count_; }
+
+phyaddr_t init_bcb_juvenile::get_region_pbase() { return region_pbase_; }
+uint64_t  init_bcb_juvenile::get_region_size()  { return region_size_; }

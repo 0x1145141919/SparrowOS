@@ -1,14 +1,7 @@
 #include "abi/boot.h"
-#include "init/page_allocator.h"
-#include "init/load_kernel.h"
-#include "init/pages_alloc.h"
-#include "init/init_phase_ctx.h"
 #include "init/init_asset_registry.h"
+#include "init/init_bcb_juvenile.h"
 #include "init/util/kout.h"
-#include "init/init_linker_symbols.h"
-#include "16x32AsciiCharacterBitmapSet.h"
-#include "arch/x86_64/core_hardwares/primitive_gop_types.h"
-#include "arch/x86_64/boot.h"
 #include "memory/memory_base.h"
 
 // ============================================================================
@@ -36,212 +29,208 @@ static const char* memtype_str(PHY_MEM_TYPE t) {
     }
 }
 
-static void dump_header(const init_to_kernel_header* h, phyaddr_t pkt_base) {
+static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base) {
     bsp_kout <<HEX<< kendl
-             << "=== init_to_kernel_header @ phys 0x" << pkt_base << " ===" << kendl;
+             << "=== init_to_kernel_header_v2 @ phys 0x" << pkt_base << " ===" << kendl;
     bsp_kout << "  magic=0x" << h->magic
              << "  self_pages=" << h->self_pages_count << kendl;
-    bsp_kout << "  kmmu_interval: 0x" << h->kmmu_interval.start
-             << " +0x" << h->kmmu_interval.size << kendl;
-    bsp_kout << "  phymem_seg_count=" << h->phymem_segment_count
-             << "  map_offset=0x" << h->memory_map_offset << kendl;
-    bsp_kout << "  VM_interval_count=" << h->loaded_VM_interval_count
-             << "  vm_offset=0x" << h->loaded_VM_intervals_offset << kendl;
-    bsp_kout << "  pt_device_count=" << h->pass_through_device_info_count
-             << "  pt_offset=0x" << h->pass_through_devices_offset << kendl;
+    bsp_kout << "  phymem_segments=" << h->phymem_segment_count
+             << " @off 0x" << h->phymem_segments << kendl;
+    bsp_kout << "  properties=" << h->properties_count
+             << " @off 0x" << h->properties_table << kendl;
+    bsp_kout << "  bcbs=" << h->bcbs_count
+             << " @off 0x" << h->bcb_table << kendl;
     bsp_kout << "  logical_processor_count=" << h->logical_processor_count << kendl;
-    bsp_kout << "  arch_specify_offset=0x" << h->arch_specify_offset << kendl;
 
-
-    // memory_map
-    if (h->memory_map_offset) {
-        phymem_segment* map = (phymem_segment*)(pkt_base + h->memory_map_offset);
-        bsp_kout << "  -- memory_map (" << h->phymem_segment_count << ") --" << kendl;
+    // phymem_segments
+    if (h->phymem_segment_count) {
+        const phymem_segment* map = (const phymem_segment*)(pkt_base + h->phymem_segments);
+        bsp_kout << "  -- phymem_segments (" << h->phymem_segment_count << ") --" << kendl;
         for (uint64_t i = 0; i < h->phymem_segment_count; i++)
             bsp_kout << "    [" << i << "] 0x" << map[i].start
                      << " +0x" << map[i].size
                      << " " << memtype_str(map[i].type) << kendl;
     }
 
-    // VM_intervals
-    if (h->loaded_VM_intervals_offset && h->loaded_VM_interval_count) {
-        loaded_VM_interval* vm = (loaded_VM_interval*)(pkt_base + h->loaded_VM_intervals_offset);
-        bsp_kout << "  -- VM_intervals (" << h->loaded_VM_interval_count << ") --" << kendl;
-        for (uint64_t i = 0; i < h->loaded_VM_interval_count; i++)
-            bsp_kout << "    [" << i << "] id=0x" << vm[i].VM_interval_specifyid
-                     << " p=0x" << vm[i].pbase << " v=0x" << vm[i].vbase
-                     << " sz=0x" << vm[i].size << kendl;
+    // properties（name/data 存包内偏移，这里按包基址重链打印）
+    if (h->properties_count) {
+        const asset_entry_t* props = (const asset_entry_t*)(pkt_base + h->properties_table);
+        bsp_kout << "  -- properties (" << h->properties_count << ") --" << kendl;
+        for (uint64_t i = 0; i < h->properties_count; i++)
+            bsp_kout << "    [" << i << "] '" << (const char*)(pkt_base + (uint64_t)props[i].name)
+                     << "' data@off 0x" << (uint64_t)props[i].data << kendl;
+    }
+
+    // bcbs（bcb_district_descriptor 解包：order [0:5] / base [12:63]；
+    //      bitmap 区在包内已是 fpa_bitmaps 池内偏移）
+    if (h->bcbs_count) {
+        const bcb_desc_v2_t* descs = (const bcb_desc_v2_t*)(pkt_base + h->bcb_table);
+        bsp_kout << "  -- bcb_table (" << h->bcbs_count << ") --" << kendl;
+        for (uint64_t i = 0; i < h->bcbs_count; i++) {
+            const uint64_t dd = descs[i].bcb_district_descriptor;
+            const uint8_t  order  = static_cast<uint8_t>(dd & 0x3F);
+            const uint64_t base_pa = dd & ~static_cast<uint64_t>(0xFFF);
+            bsp_kout << "    [" << i << "] order=" << (uint32_t)order
+                     << " base=0x" << base_pa
+                     << " bitmap_off=0x" << descs[i].bitmap_region_base_pa << kendl;
+        }
     }
 
     bsp_kout << "========================================" << kendl << kendl;
 }
 
 // ============================================================================
-// 构建 init_to_kernel_header — 使用偏移量
+// 构建 init_to_kernel_header_v2 — 偏移式 + 注册表 + BCB 描述
 // ============================================================================
 //
-// 输入:
-//   pkt_pbase  — 信息包的物理基址
-//   pkt_pages  — 信息包总页数
-//   header     — BootInfoHeader（UEFI 传递）
-//   kmmu       — Phase 3a/3b 共享的 MMU（kmmu_interval 用）
-//   iv         — Phase 3b 上下文（各驱动区间列表）
-//   seg_view   — phymem_segment 视图
-//   seg_count  — 视图条目数
+// v2 契约（见 abi/boot.h init_to_kernel_header_v2）：
+//   一等字段只剩 phymem_segments / properties_table / bcb_table 三个 offset，
+//   其余全部进 properties_table（资产注册表序列化）。pages_arr / kmmu_interval /
+//   arch_specify / pass_through / loaded_VM_intervals 等 v1 一等字段全部移除：
+//   - pages_arr：彻底废除，职能由 bcb_table（跨世界位图）接替
+//   - kmmu_interval / arch_specify：资产树已覆盖（kmmu 树 / 各 mem 资产）
 //
-// 输出: pkt_pbase 处填充完整的 header + payload，pages_arr 除外
+// 包布局（8 字节对齐逐段推进）：
+//   [0, HDR)                    init_to_kernel_header_v2
+//   [names_off, +)              name 串（每资产含 '\0'）
+//   [entries_off, +)            asset_entry_t[]      ← properties_table
+//   [blobs_off, +)              desc blob（每资产 data 拷贝入包）
+//   [segs_off, +)               phymem_segment[]     ← phymem_segments
+//   [bcbs_off, +)               bcb_desc_v2_t[]      ← bcb_table
+//
+// 一级重链：name/data 在包内存"包基址相对偏移"（info_offset_t 语义），
+// kernel 端用包基址自加还原可访问线性地址。
+//
+// 输入:
+//   pkt_pbase — 信息包物理基址（init_bcb_juvenile::alloc，位图已置占用）
+//   pkt_pages — 信息包总页数
+//   header    — BootInfoHeader（UEFI 传递，取 logical_processor_count）
+//   seg_view  — phymem_segment 视图（pure view）
+//   seg_count — 视图条目数
+//
+// 输出: pkt_pbase 处填充 v2 header + 各 payload 段；失败返回 0
 //
 phyaddr_t build_init_to_kernel_header(
     phyaddr_t                pkt_pbase,
     uint64_t                 pkt_pages,
     BootInfoHeader*          header,
-    kernel_mmu*              kmmu,
-    const ctx_intervals*     iv,
     phymem_segment*          seg_view,
     uint64_t                 seg_count)
 {
     uint8_t* base = reinterpret_cast<uint8_t*>(pkt_pbase);
 
-    // --- 布局计算 ---
-    //  [0, header_size): header
-    //  [header_size, ...): 4KB 对齐填充
-    //  [hdr_off, +):       memory_map[]
-    //  [vm_off,  +):       loaded_VM_interval[]
-    //  [pt_off,  +):       pass_through_device_info[]
-    //  [pt_off + pt_sz, +): pass_through specify_data blobs
-    //  [arch_off,+):       x86_specify_init_to_kernel_info
+    const uint64_t props_count = g_asset_registry ? g_asset_registry->size() : 0;
+    const uint64_t bcbs_count  = init_bcb_juvenile::get_desc_count();
+    const bcb_desc_v2_t* bcbs  = init_bcb_juvenile::get_descs();
 
-    uint64_t hdr_sz      = sizeof(init_to_kernel_header);
-    uint64_t hdr_off     = align_up(hdr_sz, 4096);       // header → 4KB 对齐
+    const uint64_t hdr_sz = sizeof(init_to_kernel_header_v2);
+    const uint64_t seg_sz = seg_count * sizeof(phymem_segment);
+    const uint64_t bcb_sz = bcbs_count * sizeof(bcb_desc_v2_t);
+    const uint64_t ent_sz = props_count * sizeof(asset_entry_t);
 
-    uint64_t extra_vm_count = iv->extra_vm_count;
-    uint64_t map_sz      = seg_count * sizeof(phymem_segment);
-    uint64_t vm_sz       = extra_vm_count * sizeof(loaded_VM_interval);
-    uint64_t pt_sz       = header->pass_through_device_info_count * sizeof(pass_through_device_info);
-    uint64_t arch_sz     = sizeof(x86_specify_init_to_kernel_info);
+    // ---- 第一遍：name 区 / blob 区 累计，逐资产记 name_off + blob_sz ----
+    struct prop_plan_t { uint64_t name_off; uint64_t blob_sz; };
+    prop_plan_t* plan = nullptr;
+    if (props_count) plan = new prop_plan_t[props_count];
 
-    // pass_through specify_data 需要拷贝到包内
-    uint64_t pt_data_sz = 0;
-    for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {
-        if (header->pass_through_devices[i].specify_data) {
-            switch (header->pass_through_devices[i].device_info) {
-            case PASS_THROUGH_DEVICE_GRAPHICS_INFO:
-                pt_data_sz += align_up(sizeof(GlobalBasicGraphicInfoType), 8);
-                break;
+    uint64_t names_cursor = align_up(hdr_sz, 8);
+    uint64_t blobs_total  = 0;
+    {
+        uint64_t i = 0;
+        if (g_asset_registry) {
+            for (auto it = g_asset_registry->begin(); it != g_asset_registry->end(); ++it, ++i) {
+                const uint64_t bsz = asset_desc_size(*it);
+                if (!it->name || !it->data || bsz == 0) {
+                    bsp_kout << "[BUILD_HEADER] FATAL: bad asset '"
+                             << (it->name ? it->name : "(null)") << "'" << kendl;
+                    if (plan) delete[] plan;
+                    return SRC_LOC();
+                }
+                const uint64_t name_off = align_up(names_cursor, 8);
+                names_cursor = name_off + strlen_in_kernel(it->name) + 1;
+                plan[i] = { name_off, bsz };
+                blobs_total += align_up(bsz, 8);
             }
         }
     }
 
-    uint64_t map_off     = hdr_off;
-    uint64_t vm_off      = map_off + map_sz;
-    uint64_t pt_off      = vm_off  + vm_sz;
-    uint64_t pt_data_off = pt_off  + pt_sz;
-    uint64_t arch_off    = align_up(pt_data_off + pt_data_sz, 8);
+    const uint64_t entries_off = align_up(names_cursor, 8);
+    const uint64_t blobs_off   = align_up(entries_off + ent_sz, 8);
+    const uint64_t segs_off    = align_up(blobs_off + blobs_total, 8);
+    const uint64_t bcbs_off    = align_up(segs_off + seg_sz, 8);
+    const uint64_t total       = bcbs_off + bcb_sz;
 
-    uint64_t total       = arch_off + arch_sz;
-    uint64_t allocated   = pkt_pages * 4096;
-    (void)allocated;
-
+    const uint64_t allocated = pkt_pages * 4096;
     if (total > allocated) {
         bsp_kout << "[BUILD_HEADER] FATAL: pkt too small: need 0x"
-                 << total << " but have 0x" << allocated << kendl;
+                 << HEX << total << " but have 0x" << allocated << DEC << kendl;
+        if (plan) delete[] plan;
         return 0;
     }
 
-    // --- 填充 header ---
-    init_to_kernel_header* h = reinterpret_cast<init_to_kernel_header*>(base);
-    h->magic                         = 0x494E494B524E4C48ULL; // "INIKRNLH"
-    h->self_pages_count              = pkt_pages;
-    h->kmmu_interval                 = {kmmu->get_self_alloc_interval().start,
-                                        kmmu->get_self_alloc_interval().size,
-                                        PHY_MEM_TYPE::OS_PGTB_SEGS};
-    h->phymem_segment_count          = seg_count;
-    h->memory_map_offset             = map_off;
-    h->loaded_VM_interval_count      = extra_vm_count;
-    h->loaded_VM_intervals_offset    = vm_off;
-    h->pass_through_device_info_count= header->pass_through_device_info_count;
-    h->pass_through_devices_offset   = pt_off;
-    h->logical_processor_count       = header->logical_processor_count;
+    // ---- 填充 header ----
+    init_to_kernel_header_v2* h = reinterpret_cast<init_to_kernel_header_v2*>(base);
+    h->magic                   = 0x494E494B524E4C48ULL; // "INIKRNLH"
+    h->self_pages_count        = pkt_pages;
+    h->phymem_segment_count    = seg_count;
+    h->phymem_segments         = segs_off;
+    h->properties_count        = props_count;
+    h->properties_table        = entries_off;
+    h->bcbs_count              = bcbs_count;
+    h->bcb_table               = bcbs_off;
+    h->logical_processor_count = header->logical_processor_count;
 
-    // 一等字段：kIMG 从资产容器取（隐式状态）
-    //   "kimg" movable = { base_ppn, size }。kernel 经恒等映射直读，
-    //   header 的 kIMG_self_window 填 identity 语义（vpn==ppn==base_ppn，vbase()==物理基址）
-    {
-        const asset_entry_t* kimg_ae = g_asset_registry->read("kimg");
-        if (!kimg_ae || !kimg_ae->data) {
-            bsp_kout << "[BUILD_HEADER] FATAL: kimg asset missing" << kendl;
+    // ---- phymem_segments ----
+    if (seg_sz && seg_view)
+        ksystemramcpy(seg_view, base + segs_off, seg_sz);
+
+    // ---- bcb_table：bitmap 区地址按 fpa_bitmaps 资产重定位（绝对 PA → 池内偏移）----
+    // init 侧（init_bcb_juvenile）填的是绝对物理基址——UEFI 恒等映射下 bitmap_region_base_pa
+    // 即 init.elf 世界的访问地址；kernel 接手后恒等映射不复存在，须经 fpa_bitmaps 资产
+    // （位图池的 kernel VA 区间）重定位：bitmap_kernel_va = fpa_bitmaps.vbase() + offset。
+    // 故此处把包内 desc 改写为相对位图池基址的偏移（同时校验落在池内）。
+    if (bcb_sz && bcbs) {
+        const asset_entry_t* fpa = g_asset_registry ? g_asset_registry->read("fpa_bitmaps") : nullptr;
+        if (!fpa || !fpa->data) {
+            bsp_kout << "[BUILD_HEADER] FATAL: fpa_bitmaps asset missing for bcb_table" << kendl;
+            if (plan) delete[] plan;
             return 0;
         }
-        const movable_file_entry_t* kimg = (const movable_file_entry_t*)kimg_ae->data;
-        h->kIMG_self_window = {.vpn   = kimg->base_ppn,
-                               .ppn   = kimg->base_ppn,
-                               .npages = align_up(kimg->size, 4096) >> 12,
-                               .access = KSPACE_RW_ACCESS};
-        h->kIMG_self_size = kimg->size;
-    }
-    h->kBSS_interval     = {};  // 已归入 PT_LOAD 通用处理，kernel 应扫描程序头表
-    h->pages_arr         = {0, 0, 0, {}};     // Phase 4.5 填入
-    h->FPA_bitmaps       = iv->FPA_bitmaps;
-    h->log_buffer        = iv->log_buffer;
-    h->kernel_entry_stack= {};  // 已废弃——Phase 4.5 跳转时用 BSP GS 复合体的 rsp0 栈
-    h->symtable_file     = iv->symtable_file;
-    h->initramfs_file    = iv->initramfs_file;
-    h->Kspace_phyaddr_access_window = iv->Kspace_phyaddr_access_window;
-    h->arch_specify_offset = arch_off;
-
-    // --- 填充 memory_map ---
-    if (map_sz && seg_view) {
-        phymem_segment* dst = reinterpret_cast<phymem_segment*>(base + map_off);
-        ksystemramcpy(seg_view, dst, map_sz);
-    }
-
-    // --- 填充额外 VM_intervals ---
-    if (vm_sz && iv->extra_vm_arr) {
-        loaded_VM_interval* dst = reinterpret_cast<loaded_VM_interval*>(base + vm_off);
-        ksystemramcpy(iv->extra_vm_arr, dst, vm_sz);
-    }
-
-    // --- 填充 pass_through_devices ---
-    for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {
-        pass_through_device_info* dst_pt =
-            reinterpret_cast<pass_through_device_info*>(base + pt_off);
-        dst_pt[i].device_info = header->pass_through_devices[i].device_info;
-        dst_pt[i].specify_data = nullptr;
-    }
-
-    {
-        uint64_t cur_data_off = 0;
-        for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {
-            if (!header->pass_through_devices[i].specify_data) continue;
-            uint64_t data_sz = 0;
-            switch (header->pass_through_devices[i].device_info) {
-            case PASS_THROUGH_DEVICE_GRAPHICS_INFO:
-                data_sz = sizeof(GlobalBasicGraphicInfoType);
-                break;
+        const uint64_t pool_pbase = ((const vm_interval*)fpa->data)->pbase();
+        bcb_desc_v2_t* dst = reinterpret_cast<bcb_desc_v2_t*>(base + bcbs_off);
+        for (uint64_t i = 0; i < bcbs_count; i++) {
+            if (bcbs[i].bitmap_region_base_pa < pool_pbase) {
+                bsp_kout << "[BUILD_HEADER] FATAL: bcb bitmap outside fpa pool" << kendl;
+                if (plan) delete[] plan;
+                return 0;
             }
-            if (data_sz == 0) continue;
-
-            void* dst_data = base + pt_data_off + cur_data_off;
-            ksystemramcpy(header->pass_through_devices[i].specify_data, dst_data, data_sz);
-
-            // 写入偏移量而非指针
-            pass_through_device_info* dst_pt =
-                reinterpret_cast<pass_through_device_info*>(base + pt_off);
-            dst_pt[i].specify_data = reinterpret_cast<void*>(pkt_pbase + pt_data_off + cur_data_off);
-
-            cur_data_off += align_up(data_sz, 8);
+            dst[i] = bcbs[i];
+            dst[i].bitmap_region_base_pa -= pool_pbase;   // → fpa_bitmaps 池内偏移
+            dst[i].bitmap_region_base_pa += ((const vm_interval*)fpa->data)->vbase();//换成线性地址
         }
     }
 
-    // --- 填充 arch_specify ---
-    {
-        x86_specify_init_to_kernel_info* dst_arch =
-            reinterpret_cast<x86_specify_init_to_kernel_info*>(base + arch_off);
-        ksystemramcpy((void*)&iv->arch_info, dst_arch, sizeof(iv->arch_info));
+    // ---- properties：name 串 + entries + desc blob（name/data 存包内偏移） ----
+    if (props_count && g_asset_registry) {
+        uint64_t i = 0;
+        uint64_t blob_cursor = blobs_off;
+        asset_entry_t* dst_ent = reinterpret_cast<asset_entry_t*>(base + entries_off);
+        for (auto it = g_asset_registry->begin(); it != g_asset_registry->end(); ++it, ++i) {
+            const uint64_t name_off = plan[i].name_off;
+            const uint64_t blob_off = blob_cursor;
+            const uint64_t bsz      = plan[i].blob_sz;
+
+            ksystemramcpy(it->name, base + name_off, strlen_in_kernel(it->name) + 1);
+            ksystemramcpy(it->data, base + blob_off, bsz);
+
+            dst_ent[i].name = reinterpret_cast<char*>(name_off);
+            dst_ent[i].data = reinterpret_cast<void*>(blob_off);
+
+            blob_cursor += align_up(bsz, 8);
+        }
     }
+    if (plan) delete[] plan;
 
-    // --- 调试打印 ---
-    dump_header(h, pkt_pbase);
-
+    dump_header_v2(h, pkt_pbase);
     return pkt_pbase;
 }

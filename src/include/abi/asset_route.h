@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include "memory/memory_base.h"
 #include "abi/boot.h"
-
 // ════════════════════════════════════════════════════════════════
 // asset_route — 多arg name 的 arg1 路由表（纯数据字典，init/kernel 两世界共用）
 //
@@ -26,7 +25,10 @@ enum asset_kind : uint8_t {
     ASSET_KIND_SCALAR       = 4,   // data → uint64 标量
     ASSET_KIND_PINTERVAL    = 5,   // data → p_interval（物理区间：ppn<<12 + 0 即资产本体；hd_stacks 用）
 };
-
+struct asset_entry_t {          // 是init.elf,kernel.elf以及中间transfer_pages共用的资产格式，虽然都是指针，在init.elf是物理指针，在transfer_pages存放的是偏移量，不过可以“链接”，也就是根据那个下面的基址重算后的可访问虚拟地址进行访问，kernel.elf处是内核虚拟地址
+    char*     name;            //多arg语法，arg0是资产本名，arg1是void*解释类型，由一张专用的路由表决定，后续arg自定 
+    void*     data;
+};
 struct asset_route_entry_t {
     const char* type_name;    // 多arg name 的 arg1
     uint8_t     kind;

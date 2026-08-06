@@ -14,6 +14,7 @@ struct ctx_early_mem {
     phyaddr_t xsdt_base;
     phyaddr_t ramfs_base;
     uint64_t  ramfs_size;
+    uint64_t  dram_top;    // freeSystemRam 物理上界（2d 纯视图快照算好，替代 page_allocator::dram_top）
 };
 
 // ctx_kernel_loaded 已废弃（退居幕后）——Phase 3a 改为纯产出方：

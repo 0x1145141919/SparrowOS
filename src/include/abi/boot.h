@@ -10,10 +10,6 @@ struct pass_through_device_info {
     uint16_t device_info;
     void* specify_data;
 };
-struct asset_entry_t {          // 是init.elf,kernel.elf以及中间transfer_pages共用的资产格式，虽然都是指针，在init.elf是物理指针，在transfer_pages存放的是偏移量，不过可以“链接”，也就是根据那个下面的基址重算后的可访问虚拟地址进行访问，kernel.elf处是内核虚拟地址
-    char*     name;            //多arg语法，arg0是资产本名，arg1是void*解释类型，由一张专用的路由表决定，后续arg自定 
-    void*     data;
-};
 typedef struct {
     PHY_MEM_TYPE     Type;          // 4字节
     uint32_t ReservedA;
@@ -59,11 +55,6 @@ typedef struct {
 // 内存类型枚举与常量定义 (与 kernel.elf 保持一致)
 // ============================================
 constexpr uint32_t VM_ID_architecture_agnostic_base = 0x1000;
-// BSP 初始栈：32KB, 对齐 4KB(2^12)
-constexpr uint32_t VM_ID_BSP_INIT_STACK = 0x1001;
-constexpr uint64_t BSP_INIT_STACK_SIZE = 32 * 1024;           // 32KB
-constexpr uint8_t BSP_INIT_STACK_ALIGN_LOG2 = 12;             // 4KB 对齐
-
 // 第一堆：4MB, 对齐 2MB(2^21)
 constexpr uint32_t VM_ID_FIRST_HEAP = 0x1003;
 constexpr uint64_t FIRST_HEAP_SIZE_CONST = 4 * 1024 * 1024;   // 4MB
@@ -120,6 +111,7 @@ struct init_to_kernel_header {//这个信息包的头也应该是使用available
     vm_interval Kspace_phyaddr_access_window;  // [0,dram_top) → Kspace VA 窗口
     uint64_t arch_specify_offset;//相较于头的偏移量
 };
+
 /**
  *  init_to_kernel_info信息包规范：init.elf传递给kernel.elf的信息包唯一一个物理地址
  * 其指向的是一个连续的物理地址区间，规定这个物理地址区间的头部必然是init_to_kernel_header结构体。
@@ -127,4 +119,17 @@ struct init_to_kernel_header {//这个信息包的头也应该是使用available
  * 其中的_offset变量是相对于p的偏移量，比如loaded_VM_interval*physegs_arr=(loaded_VM_interval*)(p+head->loaded_VM_intervals_offset)
  * 由是，若将相应的物理地址区间映射到一个虚拟地址区间，且虚拟地址区间基址为v时，则可以更换基址却照样可以映射
  */
-
+using info_offset_t=uint64_t;
+//新的类型名设计，在init_to_kernel_header_v2里面用了这个的字段，
+//则是通过一个地址重计算工作，在消费端的kernel.elf里面通过arg1传来的信息包基址自加上去算出实际可访问的线性地址
+struct init_to_kernel_header_v2{
+    uint64_t magic;
+    uint64_t self_pages_count;
+    uint64_t phymem_segment_count;
+    info_offset_t phymem_segments;//相较于头的偏移量
+    uint64_t properties_count;
+    info_offset_t properties_table;
+    uint64_t bcbs_count;
+    info_offset_t bcb_table;
+    uint32_t logical_processor_count;
+};

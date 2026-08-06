@@ -39,3 +39,11 @@ struct bcb_desc_t {
     uint64_t bitmap_region_base_pa;       // 该 BCB 全布局位图区的物理基址（绝对 PA，各自独立分配）
     uint8_t  order;                       // 最大 order（span = 2^order × 4KB）
 };
+struct bcb_desc_v2_t {
+    uint64_t bcb_district_descriptor;   // [0:5]是order[6:11]目前保留，[12:63]是描述物理基址的[12:63],
+    // 位图区基址，双世界语义：
+    //   init.elf 侧（源 desc，init_bcb_juvenile 产出）：绝对物理基址（UEFI 恒等映射下即访问地址）
+    //   packet 内（info_fill 序列化）：重定位为相对 fpa_bitmaps 位图池基址的偏移
+    //   kernel 侧：bitmap_va = fpa_bitmaps.vbase() + offset
+    uint64_t bitmap_region_base_pa;       // 该 BCB 全布局位图区的位图池内偏移（packet 内语义）
+};

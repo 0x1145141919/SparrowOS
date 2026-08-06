@@ -60,7 +60,7 @@ public:
     static phyaddr_t   region_pbase_;  // 位图池物理基址（恒等映射）；0 = plan-only
     static uint64_t    region_size_;   // 位图池预算：3bit × 总空闲页（上取整到页）
     static uint64_t    scan_hint_bcb_; // 跨 BCB first-fit 游标
-    static bcb_desc_t* descs_;         // 堆上升序描述数组，get_descs/get_desc_count 暴露
+    static bcb_desc_v2_t* descs_;      // 堆上升序 v2 描述数组，get_descs/get_desc_count 暴露
 
     // 生命周期：按传入 config 的纯视图（segs）算 plan → 铺叶子（全空闲）→ 活
     // 排他性（init 镜像/header/loaded files/low-1MB/位图区）由调用方标记，
@@ -82,9 +82,15 @@ public:
     static uint64_t free_page_count();
     static uint64_t total_page_count();
 
-    // 交接
-    static const bcb_desc_t* get_descs();   // 堆上升序描述数组
+    // 交接（v2 描述，见 abi/bcb_handoff.h）：
+    //   bcb_district_descriptor  = [0:5] order | [12:63] base_pa[12:63]（低 12bit 隐式 0）
+    //   bitmap_region_base_pa    = 全布局位图区物理基址（绝对 PA）
+    static const bcb_desc_v2_t* get_descs();   // 堆上升序描述数组
     static uint64_t get_desc_count();
+
+    // 位图元数据池交接（隐式状态穿越给 kernel.elf 作 FPA_bitmaps）
+    static phyaddr_t get_region_pbase();    // 池物理基址（恒等映射）
+    static uint64_t  get_region_size();     // 池字节数（3bit × 总空闲页，上取整到页）
 
 private:
     // 叶子位图访问（复用 layout 常量，位偏移 = 2^(N+1) + offset）
