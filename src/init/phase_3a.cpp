@@ -12,7 +12,7 @@
 // 本函数是纯"产出方"：产物全部进资产容器（隐式状态），函数只返回 loc_code_t。
 //   - 四段 kernel_code/data/rodata/bss → "kernel_* mem"（vm_interval desc）
 //   - kIMG（kernel.elf 瞬态文件映像）→ "kimg movable"（movable_file_entry_t desc）
-//   - 入口点 → "entry_vaddr scalar"
+//   - 入口点 → 经 entry_vaddr_out 直出（init 内部消费，不进 handoff 资产注册表）
 // ctx/header 管线退居幕后（偶然复杂度），调用点从容器按 arg0 取资产。
 //
 // 设计：
@@ -28,7 +28,7 @@
 // 依赖：kld.ld 下每个主段独立成 LOAD（section ⊇ LOAD 1:1），p_paddr 写回即整段真实 PA。
 //
 loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
-                                BootInfoHeader* /*header*/) {
+                                BootInfoHeader* /*header*/, uint64_t* entry_vaddr_out) {
     phyaddr_t kimg_pbase = 0;
 
     // ---- 1. 从 initramfs 定位 kernel.elf，拷贝到瞬态端 ----
@@ -63,14 +63,9 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
              << " shnum=" << ehdr->e_shnum
              << " entry=0x" << HEX << ehdr->e_entry << DEC << kendl;
 
-    // 登记入口点资产（scalar，phase_4.5 跳转用；隐式状态走容器）
-    {
-        uint64_t* entry_desc = new uint64_t(ehdr->e_entry);
-        if (!asset_reg_add("entry_vaddr scalar", entry_desc)) {
-            bsp_kout << "[Phase3a] asset dup: entry_vaddr" << kendl;
-            init_fatal::halt(SRC_LOC());
-        }
-    }
+    // 入口点经 out-param 直出（仅 init 侧 phase_4.5 跳转消费，kernel.elf 无此消费方，
+    // 不进 handoff 资产注册表）
+    if (entry_vaddr_out) *entry_vaddr_out = ehdr->e_entry;
 
     // ---- 3. 段表解析 + 精确狙击 4 段 ----
     if (ehdr->e_shnum == 0 || ehdr->e_shstrndx == SHN_UNDEF) {

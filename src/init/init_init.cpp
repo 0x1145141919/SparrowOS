@@ -238,7 +238,26 @@ extern phyaddr_t build_init_to_kernel_header(
 // Phase 4.5 (自裁 → CR3 切换 → gs_complex_load_gdt_tss → iretq)
 // ============================================================================
 static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
-                              const ctx_intervals* iv) {
+                              const ctx_intervals* iv, uint64_t entry_vaddr,
+                              BootInfoHeader* header) {
+    // 4.5-0: 自裁——init.elf 的财产不穿越。
+    //   移交资产（注册表 + bcb_table 位图）不含 init.elf 自身信息，kernel 无从
+    //   回收 init 镜像与 BootInfoHeader；故 init 在移交位图里抹除这两个区域，
+    //   归还为可用页。free 只翻叶子位不改映射——init 仍在其上执行直至跳转完成。
+    {
+        auto erase_pages = [](phyaddr_t base, uint64_t byte_size) {
+            if (base == 0 || byte_size == 0) return;
+            const phyaddr_t lo = base & ~0xFFFull;
+            const phyaddr_t hi = (base + byte_size + 0xFFFull) & ~0xFFFull;
+            for (phyaddr_t p = lo; p < hi; p += 0x1000)
+                init_bcb_juvenile::free(p, 1);  // 逐页归还：容忍跨 BCB / 已归还 / 不在 BCB
+        };
+        const uint64_t init_img_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_text_start;
+        erase_pages((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
+        erase_pages((uint64_t)header, (uint64_t)header->total_pages_count * 4096);
+        bsp_kout << "[Phase4.5] self-eliminated: init image + BootInfoHeader erased from BCB" << kendl;
+    }
+
     // 4.5-1: CR3
     // pages_arr 已彻底废除（relinquish + 映射删除）：回收职能由 bcb_table
     // （init_bcb_juvenile 跨世界位图）接替，kernel 收养 BCB 后正常回收。
@@ -298,13 +317,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     
     // 4.5-4: init_jump_to_kernel — 用 BSP 的 rsp0 栈构建 x64_standard_context 后跳入 kernel.elf
     {
-        // entry_vaddr 隐式状态：从资产容器读 scalar
-        const asset_entry_t* ev = g_asset_registry->read("entry_vaddr");
-        if (!ev || !ev->data) {
-            bsp_kout << "[Phase4.5] entry_vaddr asset missing" << kendl;
-            init_fatal::halt(SRC_LOC());
-        }
-        uint64_t entry_vaddr = *(uint64_t*)ev->data;
+        // entry_vaddr：phase_3a out-param 直出（init 内部消费，不进资产注册表/handoff 包）
 
         // kernel_entry_stack 已废弃，改用 BSP GS 复合体内嵌的 rsp0 栈
         gs_complex_t* bsp = (gs_complex_t*)(uint64_t)iv->arch_info.conjunc_GSs.vbase();
@@ -357,7 +370,8 @@ extern "C" void init_main(BootInfoHeader* header) {
         break;
     }
 
-    if (phase_3a_load_kernel(kmmu, &em, header) != 0) init_fatal::halt(SRC_LOC());
+    uint64_t entry_vaddr = 0;
+    if (phase_3a_load_kernel(kmmu, &em, header, &entry_vaddr) != 0) init_fatal::halt(SRC_LOC());
     ctx_intervals iv;
     if (phase_3b(kmmu, header, &em, &iv) != 0) init_fatal::halt(SRC_LOC());
     
@@ -382,6 +396,6 @@ extern "C" void init_main(BootInfoHeader* header) {
              << " processors=" << (uint32_t)header->logical_processor_count << kendl;
 
     // Phase 4.5
-    phase_45_finalize(kmmu, pkt, &iv);
+    phase_45_finalize(kmmu, pkt, &iv, entry_vaddr, header);
     init_fatal::halt(SRC_LOC());
 }

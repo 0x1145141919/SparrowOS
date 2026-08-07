@@ -18,12 +18,12 @@ struct ctx_early_mem {
 };
 
 // ctx_kernel_loaded 已废弃（退居幕后）——Phase 3a 改为纯产出方：
-//   产物（四段 / kimg / entry_vaddr）全部进资产容器（g_asset_registry，隐式状态），
+//   产物（四段 / kimg）全部进资产容器（g_asset_registry，隐式状态），
 //   函数只返回 loc_code_t；下游调用点从容器按 arg0 取资产。
 //   原 kl 字段去向：
 //     kmmu          → init_main 直接持有
 //     kimg_pbase / kimg_file_size / kIMG_self_window → "kimg"（movable_file_entry_t）
-//     entry_vaddr   → "entry_vaddr"（scalar）
+//     entry_vaddr   → phase_3a out-param 直出（init 内部 phase_4.5 消费）
 
 
 // Phase 3b 产物 → 供 Phase 4 / Phase 4.5 消费

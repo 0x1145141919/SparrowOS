@@ -18,9 +18,10 @@
 // VA 分配器基址（唯一定义在 init_init.cpp）
 extern uint64_t g_va_alloc_base;
 
-// Phase 3a (串行): kernel.elf 解包 → 精确狙击 4 段进 kmmu → 产出进资产容器
+// Phase 3a (串行): kernel.elf 解包 → 精确狙击 4 段进 kmmu → 产出进资产容器。
+// entry_vaddr_out（可空）接收 kernel.elf 入口点（init 内部 phase_4.5 消费，不进资产树）。
 loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
-                                BootInfoHeader* header);
+                                BootInfoHeader* header, uint64_t* entry_vaddr_out);
 
 // Phase 3b (串行): 恒等映射 + 区间分配 + 架构信息收集 → 产出进资产容器 + ctx_intervals
 loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
