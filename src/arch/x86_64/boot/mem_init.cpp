@@ -14,20 +14,8 @@ uint64_t VM_intervals_count;
 phymem_segment *phymem_segments;
 uint64_t phymem_segments_count; 
 uint32_t logical_processor_count;
-vm_interval kIMG_self_window;
-uint64_t kIMG_size;
-vm_interval pages_arr;
-vm_interval FPA_bitmaps;
-vm_interval log_buffer;
-movable_file_entry_t symtable_file;
-movable_file_entry_t initramfs_file;
 vm_interval Kspace_phyaddr_access_window;
-vm_interval hpet_mmio;
-vm_interval gop_buffer;
-vm_interval conjucnt_GSs;
-vm_interval hw_stacks;
 phyaddr_t g_xsdt_base;
-phymem_segment legacy_mmu_interval;
 // 从 kIMG_self_window 解析 ELF 程序头表，标记所有 PT_LOAD 段为持久页
 // 替换旧版对 kBSS_interval 的单独标记——BSS 已是普通 PT_LOAD
 static KURD_t persist_elf_segments() {

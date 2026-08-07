@@ -46,6 +46,9 @@ extern idt_descriptor_rm
 extern idt_descriptor_pe
 extern global_idtr
 extern ap_bootstrap_init
+extern exec_env_prepare
+extern basic_init
+extern main
 
 
 global g_gs_by_apicid
@@ -229,9 +232,13 @@ _kernel_Init:
     mov cr4, rax
     mov rax, ap_init_patch_idt_pe
     call rax
-    mov rax, kernel_start
+    mov rax, exec_env_prepare
     mov rdi, r15
-    call  rax
+    call rax
+    mov rax, basic_init
+    call rax
+    mov rax, main
+    call rax
     hlt
 secure_hlt:
     sti 

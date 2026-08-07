@@ -226,7 +226,7 @@ extern "C" void broadcast_shutdown()
 loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
 XSDT_Table *XSDT;
-void very_early_init(init_to_kernel_header* transfer){
+void very_early_init(init_to_kernel_header_v2* transfer){
     g_env = probe_env();
     GlobalKernelStatus=kernel_state::EARLY_BOOT;
     kpoolmemmgr_t::Init();
@@ -261,7 +261,7 @@ void very_early_init(init_to_kernel_header* transfer){
     hw_stacks.npages=arch->hdstacks_4kbpgs_count;
 }
 extern "C" void fred_enable(gs_complex_t*gs_complex);
-extern "C" void kernel_start(init_to_kernel_header* transfer) 
+extern "C" void kernel_start() 
 {   
     very_early_init(transfer);
     ksetmem_8(transfer,0,transfer->self_pages_count*0x1000);
