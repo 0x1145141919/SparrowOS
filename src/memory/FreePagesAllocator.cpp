@@ -83,8 +83,6 @@ KURD_t FreePagesAllocator::default_fatal()
     return set_fatal_result_level(default_kurd());
 }
 
-FreePagesAllocator::flags_t FreePagesAllocator::flags;
-fpa_state_t FreePagesAllocator::state = FPA_STATE_SEED;
 uint64_t FreePagesAllocator::BCB_count;
 FreePagesAllocator::BuddyControlBlock*FreePagesAllocator::BCBS;
 all_pages_arr::free_segs_t* FreePagesAllocator::memory_crumbs;
@@ -101,7 +99,6 @@ namespace {
 }
 KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bcbs_bitmap)
 {
-    flags.allow_new_BCB = false;
     g_all_avaliable_mem_accumulate = 0;
 
     KURD_t success(
@@ -393,8 +390,6 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     ksetmem_8(statistics_arr, 0, processor_count * sizeof(fpa_stats));
     ksetmem_64(processors_preffered_bcb_idx, ~0ULL, processor_count * sizeof(uint64_t));
 
-    state = FPA_STATE_SEED;
-    flags.allow_new_BCB = true;
     return success;
 }
 all_pages_arr::free_segs_t* FreePagesAllocator::get_memory_crumbs()
@@ -449,14 +444,6 @@ phyaddr_t FreePagesAllocator::alloc
     success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
     fail.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
     retry.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
-
-    if (state != FPA_STATE_ACTIVE) {
-        KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_ALLOC;
-        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
-        violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::alloc] called before unlock()", nullptr, nullptr, kurd_get_raw(violation_kurd));
-    }
 
     using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::alloc_results;
 
@@ -558,15 +545,32 @@ phyaddr_t FreePagesAllocator::alloc
             return INVALID_ALLOC_BASE;
         }
 
-        phyaddr_t alloc_base = bcb.allocate_buddy_way(size, kurd, params.align_log2);
-        if (error_kurd(kurd)) {
-            mark_permanent_fail(idx);
-            return INVALID_ALLOC_BASE;
+        phyaddr_t alloc_base = 0;
+        if (bcb.is_juvenile()) {
+            // 幼年态：连续叶顺序分配（无对齐无合并）
+            tmp_error_locator jk = 0;
+            alloc_base = bcb.juvenile_alloc(jk, page_count);
+            if (jk != 0 || alloc_base == 0) {
+                mark_permanent_fail(idx);
+                kurd = fail;
+                return INVALID_ALLOC_BASE;
+            }
+        } else {
+            // 成年态：完整 buddy 路径
+            alloc_base = bcb.allocate_buddy_way(size, kurd, params.align_log2);
+            if (error_kurd(kurd)) {
+                mark_permanent_fail(idx);
+                return INVALID_ALLOC_BASE;
+            }
         }
 
         kurd = all_pages_arr::simp_pages_set(alloc_base, page_count, interval_type);
         if (error_kurd(kurd)) {
-            (void)bcb.free_buddy_way(alloc_base, size);
+            if (bcb.is_juvenile()) {
+                (void)bcb.juvenile_free((alloc_base - bcb.get_base()) >> 12, page_count);
+            } else {
+                (void)bcb.free_buddy_way(alloc_base, size);
+            }
             mark_permanent_fail(idx);
             return INVALID_ALLOC_BASE;
         }
@@ -652,14 +656,6 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
     fail.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
 
-    if (state != FPA_STATE_ACTIVE) {
-        KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
-        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
-        violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] called before unlock()", nullptr, nullptr, kurd_get_raw(violation_kurd));
-    }
-
     using namespace MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::free_results;
     auto make_not_belong = [&]() -> KURD_t {
         KURD_t r = fail;
@@ -703,16 +699,18 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     }
 
     { spintrylock_spin_guard _g(bcb.lock);
-    if (bcb.dirty_count != 0) {
-        KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_FREE;
-        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
-        violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::free] freeing into dirty BCB", nullptr, nullptr, kurd_get_raw(violation_kurd));
-    }
-    KURD_t bcb_kurd = bcb.free_buddy_way(base, size);
-    if (error_kurd(bcb_kurd)) {
-        return bcb_kurd;
+    if (bcb.is_juvenile()) {
+        // 幼年态：连续叶归还（无合并）
+        tmp_error_locator jk = bcb.juvenile_free((base - bcb_base) >> 12,
+                                                 (size + 4095) >> 12);
+        if (jk != 0) {
+            return make_not_belong();
+        }
+    } else {
+        KURD_t bcb_kurd = bcb.free_buddy_way(base, size);
+        if (error_kurd(bcb_kurd)) {
+            return bcb_kurd;
+        }
     }
     }
 
@@ -763,117 +761,95 @@ fpa_stats FreePagesAllocator::get_fpa_stats_all()
     return total;
 }
 
-void FreePagesAllocator::activate()
+// ================================================================
+// Inherit_bcbs — 收养路径（继承 init.elf 穿越的 BCB 生态）
+//
+// 不做任何规划/切分/池挖取：BCB 的 order/base/位图全由 init.elf 决定并穿越。
+// 收养后全部幼年态（顺序分配、无对齐无合并），供 pages_arr 等全局大数组利用；
+// 大数组分配完后再调 Adopt_all_adult 全量催熟。
+//
+// 关键语义：
+//   - desc.bcb_district_descriptor = [0:5]order | [12:63]base_pa[12:63]（低12bit隐式0）
+//   - desc.bitmap_region_base_pa 已是线性地址（info_fill 序列化时重定位为
+//     fpa_bitmaps.vbase() + 池内偏移），收养时直接可用
+//   - BCBS 按 base 升序（init 侧已排好），alloc/free 的二分查找继续有效
+// ================================================================
+
+KURD_t FreePagesAllocator::Inherit_bcbs(const inherit_bcbs_config* cfg)
 {
-    if (state != FPA_STATE_SEED) {
-        return;  // ACTIVE 下调无操作
+    KURD_t success = default_success();
+    KURD_t fatal = default_fatal();
+
+    if (!cfg || !cfg->descs || cfg->count == 0) {
+        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+        return fatal;
     }
-    state = FPA_STATE_ACTIVE;
+
+    const uint64_t count = cfg->count;
+
+    // 分配 BCB 存储：raw bytes → placement-new（与旧 Init 一致的手法）
+    uint8_t* bcb_storage = new uint8_t[count * sizeof(BuddyControlBlock)];
+    if (bcb_storage == nullptr) {
+        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+        return fatal;
+    }
+    BuddyControlBlock* new_bcbs = reinterpret_cast<BuddyControlBlock*>(bcb_storage);
+
+    // 逐 BCB 收养：解包 descriptor → 构造 → 置幼年态
+    for (uint64_t i = 0; i < count; ++i) {
+        const bcb_desc_v2_t& desc = cfg->descs[i];
+        const uint64_t dd = desc.bcb_district_descriptor;
+        const uint8_t  order  = static_cast<uint8_t>(dd & 0x3F);
+        const phyaddr_t base  = dd & ~static_cast<phyaddr_t>(0xFFF);
+        const vaddr_t   bitmap_va = static_cast<vaddr_t>(desc.bitmap_region_base_pa);
+
+        new (new_bcbs + i) BuddyControlBlock(base, order);
+        new_bcbs[i].corebcb_init_from_leaves(bitmap_va);   // JUVENILE + free_count[0]
+    }
+
+    BCBS      = new_bcbs;
+    BCB_count = count;
+
+    // 每CPU台账（逻辑CPU数来自 cfg，显式传入不依赖隐式状态）
+    uint64_t processor_count = cfg->logical_processor_count;
+    if (processor_count == 0) processor_count = 1;
+    statistics_arr = new fpa_stats[processor_count];
+    processors_preffered_bcb_idx = new uint64_t[processor_count];
+    if (!statistics_arr || !processors_preffered_bcb_idx) {
+        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+        return fatal;
+    }
+    ksetmem_8(statistics_arr, 0, processor_count * sizeof(fpa_stats));
+    ksetmem_64(processors_preffered_bcb_idx, ~0ULL, processor_count * sizeof(uint64_t));
+
+    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+    return success;
 }
 
-void FreePagesAllocator::interval_pollute(phymem_segment seg)
+// ================================================================
+// Adopt_all_adult — 全量催熟（JUVENILE → ADULT）
+// 在 pages_arr 等全局大数组分配完成后再调用，恢复完整 buddy 语义
+// ================================================================
+
+KURD_t FreePagesAllocator::Adopt_all_adult()
 {
-    if (state != FPA_STATE_SEED) {
-        KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = 0;
-        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
-        violation_kurd.result = result_code::FATAL;
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_pollute] called in ACTIVE state, data consistency hazard", nullptr, nullptr, kurd_get_raw(violation_kurd));
-    }
-    if (BCBS == nullptr || BCB_count == 0) return;
-    if (seg.size == 0) return;
+    KURD_t success = default_success();
+    KURD_t fatal = default_fatal();
 
-    const phyaddr_t seg_end = seg.start + seg.size;
-
-    // 二分查找第一个 base > seg.start 的 BCB，取前一个作为起始
-    uint64_t lo = 0, hi = BCB_count;
-    while (lo < hi) {
-        uint64_t mid = lo + ((hi - lo) >> 1);
-        if (BCBS[mid].get_base() <= seg.start)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    if (lo == 0) return;  // seg 在所有 BCB 之下
-    uint64_t i = lo - 1;
-
-    for (; i < BCB_count; ++i) {
-        BuddyControlBlock& bcb = BCBS[i];
-        const phyaddr_t bcb_base = bcb.get_base();
-        const uint8_t  bcb_order = bcb.get_max_order();
-        const uint64_t bcb_span  = (bcb_order < 52)
-                                     ? (1ULL << (bcb_order + 12)) : 0;
-        if (bcb_span == 0) continue;
-        const phyaddr_t bcb_end = bcb_base + bcb_span;
-
-        // seg 与 BCB 无交集
-        if (seg.start >= bcb_end) continue;
-        if (seg_end <= bcb_base) break;
-
-        { spintrylock_spin_guard _g(bcb.lock); ++bcb.dirty_count; }
-    }
-}
-
-void FreePagesAllocator::interval_clean(phymem_segment seg)
-{
-    KURD_t violation_kurd = default_fatal();
-        violation_kurd.event_code = 0;
-        violation_kurd.reason = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::call_violation_results::FATAL_REASONS::CALL_VIOLATION;
-        violation_kurd.result = result_code::FATAL;
-    if (state != FPA_STATE_ACTIVE) {
-        
-        Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called in SEED state", nullptr, nullptr, kurd_get_raw(violation_kurd));
-    }
-    if (BCBS == nullptr || BCB_count == 0) return;
-    if (seg.size == 0) return;
-
-    const phyaddr_t seg_end = seg.start + seg.size;
-
-    uint64_t lo = 0, hi = BCB_count;
-    while (lo < hi) {
-        uint64_t mid = lo + ((hi - lo) >> 1);
-        if (BCBS[mid].get_base() <= seg.start)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    if (lo == 0) return;
-    uint64_t i = lo - 1;
-
-    for (; i < BCB_count; ++i) {
-        BuddyControlBlock& bcb = BCBS[i];
-        const phyaddr_t bcb_base = bcb.get_base();
-        const uint8_t  bcb_order = bcb.get_max_order();
-        const uint64_t bcb_span  = (bcb_order < 52)
-                                     ? (1ULL << (bcb_order + 12)) : 0;
-        if (bcb_span == 0) continue;
-        const phyaddr_t bcb_end = bcb_base + bcb_span;
-
-        if (seg.start >= bcb_end) continue;
-        if (seg_end <= bcb_base) break;
-
-        { spintrylock_spin_guard _g(bcb.lock);
-        if (bcb.dirty_count == 0) {
-            Panic::panic(default_panic_behaviors_flags, (char*)"[FATAL][FPA::interval_clean] called but out_of_number", nullptr, nullptr, kurd_get_raw(violation_kurd));
-            continue;
-        }
-        --bcb.dirty_count;
-        }
-}
-}
-void FreePagesAllocator::print_all_bcb_pollution_counts()
-{
     if (BCBS == nullptr || BCB_count == 0) {
-        bsp_kout << "[FPA] BCBS is null or empty, no BCB to print" << kendl;
-        return;
+        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+        return fatal;
     }
 
-    bsp_kout << "[FPA] BCB pollution (dirty_count) report: " << (uint64_t)BCB_count << " BCBs" << kendl;
-    for (uint64_t i = 0; i < BCB_count; i++) {
-        BuddyControlBlock& bcb = BCBS[i];
-        bsp_kout << "  BCB[" << (uint64_t)i << "] "
-                 << "base=0x" << HEX << (uint64_t)bcb.get_base()
-                 << " dirty=" << DEC << (uint64_t)bcb.dirty_count
-                 << kendl;
+    for (uint64_t i = 0; i < BCB_count; ++i) {
+        KURD_t k = BCBS[i].corebcb_fold_adult();
+        if (error_kurd(k)) {
+            fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+            return fatal;
+        }
     }
+
+    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
+    return success;
 }
+

@@ -67,12 +67,6 @@ void fpa_properties_deal(){
     phymem_segment KImg_pinterval;
     KImg_pinterval.start=kIMG_self_window.pbase();
     KImg_pinterval.size=kIMG_self_window.byte_cnt();
-    FreePagesAllocator::interval_pollute(legacy_mmu_interval);
-    FreePagesAllocator::interval_pollute(symboltable);
-    FreePagesAllocator::interval_pollute(initramfs);
-    FreePagesAllocator::interval_pollute(log_interval);
-    FreePagesAllocator::interval_pollute(KImg_pinterval);
-    FreePagesAllocator::activate();
 }
 KURD_t KImage_map_rebuild(){
     KURD_t success(
@@ -242,8 +236,8 @@ KURD_t properties_modify_stage1(){
             bsp_kout << name << " phyaddr_direct_map Failed" << kendl;
             return kurd;
         }
-        // 释放旧物理页
-        FreePagesAllocator::interval_clean({old_pbase, old_size});
+        // 释放旧物理页（收养后位图直接归还）
+        FreePagesAllocator::free(old_pbase, old_size);
         return kurd;
     };
 
@@ -273,8 +267,6 @@ KURD_t properties_modify_stage1(){
                          "kIMG_self_window");
     if (error_kurd(kurd)) return kurd;
 
-    FreePagesAllocator::interval_clean(legacy_mmu_interval);
-    FreePagesAllocator::print_all_bcb_pollution_counts();
     return {result_code::SUCCESS, 0, module_code::MEMORY,
             MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
             0, level_code::INFO, err_domain::CORE_MODULE};

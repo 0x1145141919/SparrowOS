@@ -3,6 +3,7 @@
 #include "util/kout.h"
 #include "util/OS_utils.h"
 #include "panic.h"
+#include "abi/src_loc.h"
 
 // ════════════════════════════════════════════════════════════════
 // BCB_v4 移植: BuddyControlBlock_foundation 适配
@@ -105,8 +106,11 @@ bool FreePagesAllocator::BuddyControlBlock::cache_pick(uint8_t order, uint64_t& 
 
 bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
 {
-    if (dirty_count != 0) return false;
-    // 检查 >= order 的任意阶是否有空闲块（允许从高阶分裂）
+    // 状态自适应：幼年态只有 free_count[0] 有意义（所需页数 = 1<<order）；
+    // 成年态按 per-order 检查（允许从高阶分裂）
+    if (fnd.is_juvenile()) {
+        return fnd.get_free_count(0) >= (1ull << order);
+    }
     for (uint8_t o = order; o <= max_supprt_order; o++) {
         if (fnd.order_exist_check(o)) return true;
     }
@@ -154,7 +158,60 @@ void FreePagesAllocator::BuddyControlBlock::corebcb_init_from_leaves(vaddr_t bit
 }
 
 // ================================================================
-// allocate_buddy_way — 先试缓存，miss 则 fallback 底座
+// corebcb_fold_adult — 成年仪式（JUVENILE → ADULT）
+// 自底向上填内部节点 + 全 free_count 重算（→ fnd.fold_up_from_leaves）
+// ================================================================
+
+KURD_t FreePagesAllocator::BuddyControlBlock::corebcb_fold_adult()
+{
+    tmp_error_locator e = fnd.fold_up_from_leaves();
+    if (e != 0) return default_fatal();
+    return default_success();
+}
+
+// ================================================================
+// juvenile_alloc — 幼年态专用分配（仅 JUVENILE 态可调）
+// 扫 order0 叶子位图找 acquire_count 个连续空闲页，成功返回本 BCB 内
+// 页偏移对应的物理地址；失败返回 0 并填 kurd。状态不符即 error。
+// ================================================================
+
+phyaddr_t FreePagesAllocator::BuddyControlBlock::juvenile_alloc(
+    tmp_error_locator& kurd, uint64_t acquire_count)
+{
+    kurd = 0;
+    if (!fnd.is_juvenile()) {
+        kurd = SRC_LOC();
+        statistics.alloc_times_fail++;
+        return 0;
+    }
+    uint64_t off = fnd.juvenile_alloc_order0(kurd, acquire_count);
+    if (kurd != 0 || off == INVALID_INBCB_INDEX) {
+        statistics.alloc_times_fail++;
+        return 0;
+    }
+    statistics.alloc_times_success++;
+    return base + (off << 12);
+}
+
+// ================================================================
+// juvenile_free — 幼年态专用释放（仅 JUVENILE 态可调）
+// 清 return_count 个叶子 → 维护 free_count[0]。状态不符即 error。
+// ================================================================
+
+tmp_error_locator FreePagesAllocator::BuddyControlBlock::juvenile_free(
+    uint64_t offset, uint64_t return_count)
+{
+    if (!fnd.is_juvenile()) {
+        return SRC_LOC();
+    }
+    tmp_error_locator e = fnd.juvenile_free_order0(offset, return_count);
+    if (e == 0) statistics.free_times_success++;
+    return e;
+}
+
+// ================================================================
+// allocate_buddy_way — 成年态专用分配（仅 ADULT 态可调）
+// 先试缓存，miss 则 fallback 底座。幼年态请走 juvenile_alloc。
 // ================================================================
 
 phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(
@@ -162,19 +219,11 @@ phyaddr_t FreePagesAllocator::BuddyControlBlock::allocate_buddy_way(
 {
     KURD_t error = default_error();
 
-    // ── 幼年态：order-0 连续叶扫描，放弃对齐（纯内存语义由本层翻译） ──
-    if (fnd.is_juvenile()) {
-        tmp_error_locator jkurd = 0;
-        uint64_t pages = (size + _4KB_PAGESIZE - 1) / _4KB_PAGESIZE;
-        uint64_t off = fnd.juvenile_alloc_order0(jkurd, pages);
-        if (jkurd != 0 || off == INVALID_INBCB_INDEX) {
-            result = error;
-            statistics.alloc_times_fail++;
-            return 0;
-        }
-        statistics.alloc_times_success++;
-        result = default_success();
-        return base + (off << 12);
+    // ── 状态校验：仅成年态允许（幼年态请走 juvenile_alloc） ──
+    if (!fnd.is_adult()) {
+        result = error;
+        statistics.alloc_times_fail++;
+        return 0;
     }
 
     uint8_t order = size_to_order(size);
@@ -264,13 +313,9 @@ KURD_t FreePagesAllocator::BuddyControlBlock::free_buddy_way(phyaddr_t addr, uin
         return error;
     }
 
-    // ── 幼年态：order-0 连续叶归还，无合并 ──
-    if (fnd.is_juvenile()) {
-        uint64_t pages = (size + _4KB_PAGESIZE - 1) / _4KB_PAGESIZE;
-        tmp_error_locator jkurd = fnd.juvenile_free_order0((addr - this->base) >> 12, pages);
-        if (jkurd != 0) return error;
-        statistics.free_times_success++;
-        return default_success();
+    // ── 状态校验：仅成年态允许（幼年态请走 juvenile_free） ──
+    if (!fnd.is_adult()) {
+        return error;
     }
 
     uint8_t order = size_to_order(size);

@@ -39,6 +39,9 @@
 #include "KImage_Introspection.h"
 #include "Scheduler/task_pool.h"
 #include "exec_env_detect.h"
+#include "kernel_boot_functions.h"
+#include "boot/info_pkg_link.h"
+#include "boot/asset_table.h"
 
 
 
@@ -226,41 +229,38 @@ extern "C" void broadcast_shutdown()
 loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
 XSDT_Table *XSDT;
-void very_early_init(init_to_kernel_header_v2* transfer){
-    g_env = probe_env();
-    GlobalKernelStatus=kernel_state::EARLY_BOOT;
-    kpoolmemmgr_t::Init();
-    kIMG_self_window=transfer->kIMG_self_window;
-    pages_arr=transfer->pages_arr;
-    FPA_bitmaps=transfer->FPA_bitmaps;
-    kIMG_size=transfer->kIMG_self_size;
-    log_buffer=transfer->log_buffer;
-    symtable_file=transfer->symtable_file;
-    initramfs_file=transfer->initramfs_file;
-    x86_specify_init_to_kernel_info* arch=(x86_specify_init_to_kernel_info*)(uint64_t(transfer)+transfer->arch_specify_offset);
-    hpet_mmio=arch->hpet_mmio;
-    conjucnt_GSs=arch->conjunc_GSs;
-    gop_info=arch->gop_info;
-    g_xsdt_base      = arch->XSDT_base;
-    gop_buffer.vpn   = arch->Gop_vbase >> 12;
-    gop_buffer.ppn   = arch->gop_info.FrameBufferBase >> 12;
-    gop_buffer.npages= align_up(arch->gop_info.FrameBufferSize, 4096) >> 12;
-    gop_buffer.access={1,1,1,0,1,WC};
-    Kspace_phyaddr_access_window = transfer->Kspace_phyaddr_access_window;
-    logical_processor_count=transfer->logical_processor_count;
-    self_introspection_init();  // 读取 kIMG_self_window 全局，内部缓存 BSS 程序头
-    if(transfer->loaded_VM_interval_count)
-    VM_intervals=new loaded_VM_interval[transfer->loaded_VM_interval_count];
-    ksystemramcpy((void*)(uint64_t(transfer)+transfer->loaded_VM_intervals_offset),VM_intervals,transfer->loaded_VM_interval_count*sizeof(loaded_VM_interval));
-    phymem_segments=new phymem_segment[transfer->phymem_segment_count];
-    ksystemramcpy((void*)(uint64_t(transfer)+transfer->memory_map_offset),phymem_segments,transfer->phymem_segment_count*sizeof(phymem_segment));
-    VM_intervals_count=transfer->loaded_VM_interval_count;
-    phymem_segments_count=transfer->phymem_segment_count;
-    hw_stacks.vpn=arch->hdstacks_interval_vbase>>12;
-    hw_stacks.ppn=arch->hdstacks_interval_pbase>>12;
-    hw_stacks.npages=arch->hdstacks_4kbpgs_count;
-}
+
 extern "C" void fred_enable(gs_complex_t*gs_complex);
+
+// ── basic_init（下一轮实现）──
+// 职责（资产表消费后半段 + 输出子系统 + 内存收养）：
+//   从 asset_table read/deal 剩余资产（kimg/initramfs/ksymbols/hpet_mmio/
+//   gs_complexes/hdstacks/phyaddr_window/kernel_* mem），焚包（ksetmem_8 已由
+//   exec_env_prepare 完成 pour 后可执行），初始化 textconsole/serial/kout/
+//   HPET/ksymmanager，收养 BCB（g_bcbs → FreePagesAllocator），执行 mem_init。
+// 旧 kernel_start 的逻辑体已移入下面注释（v1 全局字段布局，施工时按 v2 资产表改写）。
+extern "C" void basic_init()
+{
+    // TODO(设计方确认)：见上面职责注释。旧 kernel_start 主体 = 施工蓝图。
+}
+
+// ── truly_start（下一轮实现）──
+// 职责：mem_init 之后的复杂业务初始化——调度器就绪前的收尾（ACPI/APIC 分析、
+//       全局调度器数组、AP 启动、task_pool、中断接管），随后进入调度
+//       （create_first_kthread）。
+// 返回 int 以规避 C++ 对全局 main 的签名限制；asm 侧 call 后忽略返回值。
+extern "C" int truly_start()
+{
+    // TODO(设计方确认)：旧 kernel_start 尾部（kernel_start 注释块）为施工蓝图。
+    for (;;) asm volatile("hlt");
+    return 0;
+}
+
+#if 0
+// ════════════════════════════════════════════════════════════════
+// [存档] 旧 kernel_start — v1 交接包全局布局的初始化主体（施工蓝图）
+// 已被 exec_env_prepare / basic_init / main 三阶段取代。保留逻辑备迁移。
+// ════════════════════════════════════════════════════════════════
 extern "C" void kernel_start() 
 {   
     very_early_init(transfer);
@@ -294,13 +294,7 @@ extern "C" void kernel_start()
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"mem_init Failed"<<kendl;
         return;
-    }/*
-    if(g_env==ENV_BARE_METAL){
-        global_pt_blackboxes= new pt_blackbox[logical_processor_count];
-        ksetmem_8(global_pt_blackboxes,0,sizeof(pt_blackbox)*logical_processor_count);
-        prepare_blackbox(global_pt_blackboxes);
-        enable_blackbox(global_pt_blackboxes);
-    }*/
+    }
     gAcpiVaddrSapceMgr.Init(g_xsdt_base);
     if(fred_support_catch_bit){
         fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
@@ -349,6 +343,7 @@ extern "C" void kernel_start()
     global_container=new ecams_container_t((MCFG_Table*)gAcpiVaddrSapceMgr.get_acpi_table("MCFG"));
     create_first_kthread();
 }
+#endif
 extern "C" void ap_final_work();
 check_point init_finish_checkpoint;
 extern void apply_umwait_control(void);

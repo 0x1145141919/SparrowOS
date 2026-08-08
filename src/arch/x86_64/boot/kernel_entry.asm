@@ -48,7 +48,7 @@ extern global_idtr
 extern ap_bootstrap_init
 extern exec_env_prepare
 extern basic_init
-extern main
+extern truly_start
 
 
 global g_gs_by_apicid
@@ -237,7 +237,7 @@ _kernel_Init:
     call rax
     mov rax, basic_init
     call rax
-    mov rax, main
+    mov rax, truly_start
     call rax
     hlt
 secure_hlt:

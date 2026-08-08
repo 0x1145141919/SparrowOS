@@ -6,6 +6,7 @@
 #include "util/Ktemplats.h"
 #include "util/BCB_fnd_DeepFirst.h"
 #include "memory/all_pages_arr.h"
+#include "abi/bcb_handoff.h"
 class KspacePageTable;
 struct fpa_stats {
     uint64_t alloc_count;
@@ -16,10 +17,6 @@ struct fpa_stats {
     uint64_t free_count;
 };
 
-enum fpa_state_t : uint8_t {
-    FPA_STATE_SEED,   // Init 完成，BCB 就绪，仅 interval_pollute 可用
-    FPA_STATE_ACTIVE  // unlock() 后，alloc/free/interval_clean 可用
-};
 namespace MEMMODULE_LOCATIONS{
     constexpr uint8_t LOCATION_CODE_FREEPAGES_ALLOCATOR=28;
     
@@ -132,13 +129,7 @@ enum second_stage_init_strategy{
 };
 class FreePagesAllocator {
 public:
-    struct flags_t {
-        uint64_t allow_new_BCB : 1;
-    };
-
-public:
     static constexpr uint16_t _4KB_PAGESIZE = 4096;
-    static flags_t flags;
 
     class BuddyControlBlock {
     private:
@@ -182,7 +173,6 @@ public:
 
     public:
         bool is_bcb_avaliable();
-        uint64_t dirty_count;
         uint8_t get_max_order();
         friend all_pages_arr;
         void print_basic_info();
@@ -198,6 +188,20 @@ public:
         BuddyControlBlock();
         void corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr = 0);
         void corebcb_init_from_leaves(vaddr_t bitmap_base_addr);   // 收养路径：叶子已写实，置幼年态
+        KURD_t corebcb_fold_adult();                               // 成年仪式：JUVENILE → ADULT（→ fnd.fold_up_from_leaves）
+
+        // ── 状态确认（穿透 fnd） ──
+        bool is_juvenile() const { return fnd.is_juvenile(); }
+        bool is_adult()    const { return fnd.is_adult(); }
+
+        // ── 幼年态专用分配/释放：仅 JUVENILE 态可调，违规即 error ──
+        // acquire_count = 连续页数；成功返回 base 页偏移对应物理地址，失败返回 0 并填 kurd
+        phyaddr_t      juvenile_alloc(tmp_error_locator& kurd, uint64_t acquire_count);
+        // offset = 本 BCB 内页偏移；return_count = 归还连续页数
+        tmp_error_locator juvenile_free(uint64_t offset, uint64_t return_count);
+
+        // ── 成年态专用分配/释放：仅 ADULT 态可调，违规即 error ──
+        // （幼年态分配/释放请走 juvenile_alloc / juvenile_free）
         phyaddr_t allocate_buddy_way(
             uint64_t size,
             KURD_t& result,
@@ -239,7 +243,6 @@ public:
     static KURD_t default_error();
     static KURD_t default_fatal();
     static KURD_t default_retry();
-    static fpa_state_t state;
     public:
     static KURD_t Init(strategy_t strategy,vm_interval* VM_intervals_bcbs_bitmap);
     static all_pages_arr::free_segs_t* get_memory_crumbs();
@@ -248,13 +251,24 @@ public:
     static fpa_stats get_fpa_stats();//当前本地 CPU 的统计数据，必须在 second_stage 初始化完成后才可以调用，否则行为未定义
     static fpa_stats get_fpa_stats(uint64_t pid);//pid 为处理器 id，必须在 second_stage 初始化完成后才可以调用，否则行为未定义，不提供锁保护
     static fpa_stats get_fpa_stats_all();//所有统计信息的总计，除 bcb_scan_max 是取最大，其他字段是求和，不在锁保护下
-    static void activate();       // SEED → ACTIVE；ACTIVE 下调无操作
-    static void interval_pollute(phymem_segment seg);
-    static void interval_clean(phymem_segment seg);
     static constexpr uint64_t INVALID_ALLOC_BASE = ~0ULL;
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();
-    // 打印每个 BCB 的污染计数 (dirty_count)
-    static void print_all_bcb_pollution_counts();
+
+    // ── 收养路径（继承 init.elf 穿越的 BCB 生态，不做任何规划/切分/池挖取）──
+
+    // 收养配置：显式传参，不依赖全局隐式状态（利于移植测试）
+    struct inherit_bcbs_config {
+        const bcb_desc_v2_t* descs;   // 收养源描述数组（base 升序，init 已排好）
+        uint64_t              count;  // BCB 个数
+        uint64_t              logical_processor_count;  // 每CPU统计数组分配用
+    };
+
+    // 收养：遍历 descs → 构造 BCBS + corebcb_init_from_leaves 置幼年态。
+    // 收养后全部幼年（顺序分配、无对齐无合并），供 pages_arr 等全局大数组利用；
+    // 大数组分配完后再调 Adopt_all_adult 全量催熟。
+    static KURD_t Inherit_bcbs(const inherit_bcbs_config* cfg);
+    // 全量催熟：遍历 BCBS 逐一 corebcb_fold_adult()（JUVENILE → ADULT）
+    static KURD_t Adopt_all_adult();
 };
 extern spinlock_cpp_t FPA_modify;
