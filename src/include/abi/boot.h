@@ -129,7 +129,7 @@ struct init_to_kernel_header_v2{
     info_offset_t phymem_segments;//相较于头的偏移量
     uint64_t properties_count;
     info_offset_t properties_table;
-    uint64_t bcbs_count;
-    info_offset_t bcb_table;
+    uint64_t free_segs_count;
+    info_offset_t free_segs_descriptors_table;
     uint32_t logical_processor_count;
 };

@@ -27,7 +27,7 @@ struct init_to_kernel_header_analyzed{
     phymem_segment* phymem_segments;     // 包内 phymem_segment[]（重链后指针）
     uint64_t properties_count;
     asset_entry_t* properties_table;     // 包内 asset_entry_t[]（name/data 已重链）
-    uint64_t bcbs_count;
-    bcb_desc_v2_t* bcb_table;            // 包内 bcb_desc_v2_t[]（注意：v2，非 bcb_desc_t）
+    uint64_t free_segs_count;
+    free_seg_descriptor_t* free_segs_descriptors_table;            // 包内 bcb_desc_v2_t[]（注意：v2，非 bcb_desc_t）
     uint32_t logical_processor_count;
 };

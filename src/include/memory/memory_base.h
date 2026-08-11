@@ -4,13 +4,15 @@
 #include <util/lock.h>
 enum class page_state_t : uint8_t { 
     free = 0, 
-    kernel_persisit = 1, 
-    kernel_anonymous = 2, 
     user_file = 3, 
     user_anonymous = 4, 
     dma = 5,
     kernel_pinned = 10,
     reserved = 15
+};
+struct free_seg_descriptor_t{
+    uint64_t in_pure_memview_idx;//纯洁内存视角里面的对应freeSystemRam型内存的位置
+    uint64_t baseidx_in_memmap; // 区间起始页在 mem_map 中的条目下标
 };
 struct page{
     page_state_t state;
