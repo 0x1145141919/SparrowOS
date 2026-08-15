@@ -2,7 +2,7 @@
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "firmware/gSTResloveAPIs.h"
-#include "init/init_bcb_juvenile.h"
+#include "init/page_allocator_v2.h"
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
 #include "init/util/kout.h"
@@ -13,8 +13,15 @@
 static uint64_t va_alloc_up(uint64_t size, uint8_t align_log2) {
     uint64_t align = 1ULL << align_log2;
     if (align < 4096) align = 4096;
-    size = align_up(size, align);
     uint64_t ret = align_up(g_va_alloc_base, align);
+    g_va_alloc_base = ret + size;
+    return ret;
+}
+static uint64_t va_alloc_up_off(uint64_t size, uint8_t align_log2,uint64_t offset) {
+    uint64_t align = 1ULL << align_log2;
+    if (align < 4096) align = 4096;
+    uint64_t ret = align_up(g_va_alloc_base, align);
+    ret += (offset%align);
     g_va_alloc_base = ret + size;
     return ret;
 }
@@ -34,15 +41,19 @@ struct p3b_ctx {
     ctx_intervals*       iv;
 };
 
-// ---- FPA_bitmaps（mem）：init_bcb_juvenile 位图元数据池的交接，隐式状态穿越 ----
-//      FPA_bitmaps 即 BCB 位图池本身（get_region_pbase/get_region_size）。池由
-//      plan_and_setup 自保护（step 8c 池页在所属 BCB 叶子置占用），不额外分配/记账；
-//      此处只映射 + 塞入资产，kernel 收养路径后续据此重建 BCBS。
+// ---- FPA_bitmaps（mem）：kernel FPA::Init 的位图雕刻池，纯预留穿越 ----
+//      池预算 = 3bit × 总空闲页（与 BCB 时代同款），从 page_allocator_v2 挖取并
+//      pages_set(kernel_persisit) 钉住（kernel 侧 free_segs 不包含池页，不会双分配），
+//      再清零。此处只映射 + 塞入资产，kernel FPA 在池上自行规划/雕刻自己的位图。
 static loc_code_t build_fpa_bitmaps(p3b_ctx& ctx, const char* name) {
-    phyaddr_t p  = init_bcb_juvenile::get_region_pbase();
-    uint64_t sz  = init_bcb_juvenile::get_region_size();
-    if (!p || !sz) { bsp_kout << "[Phase3b] FPA pool not ready" << kendl; return SRC_LOC(); }
+    const uint64_t total_pages = page_allocator_v2::total_page_count();
+    uint64_t sz  = align_up((total_pages * 3 + 7) >> 3, 0x1000);   // 3bit × 总空闲页
+    if (sz == 0) { bsp_kout << "[Phase3b] fpa pool size 0" << kendl; return SRC_LOC(); }
     uint64_t npg = sz >> 12;
+    phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 12);
+    if (!p) { bsp_kout << "fpa pool OOM" << kendl; return SRC_LOC(); }
+    if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
+    ksetmem_8((void*)(uint64_t)p, 0, sz);   // 纯预留池清零：kernel FPA 自行雕刻
     vaddr_t v = va_alloc_up(sz, 12);
     ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
                                          "fpa_bitmaps", KMMU_ENTRY_FLAG_PERSISTENT));
@@ -55,13 +66,32 @@ static loc_code_t build_fpa_bitmaps(p3b_ctx& ctx, const char* name) {
     return 0;
 }
 
+// ---- pages_arr（mem）：page_allocator_v2 的 mem_map 状态数组缓冲，整体穿越 ----
+//      mem_map 是唯一物理内存账本（1B/页，语义态 = page_state_t）。init() 内已 self-mark
+//      kernel_persisit；此处只映射 + 塞入资产，kernel 收养后按语义态自建分配器。
+static loc_code_t build_pages_arr(p3b_ctx& ctx, const char* name) {
+    phyaddr_t p  = page_allocator_v2::get_mem_map_pbase();
+    uint64_t  sz = align_up(page_allocator_v2::total_page_count(), 0x1000);  // sizeof(page)==1
+    if (!p || sz == 0) { bsp_kout << "[Phase3b] pages_arr not ready" << kendl; return SRC_LOC(); }
+    uint64_t npg = sz >> 12;
+    vaddr_t v = va_alloc_up_off(sz, 21,p);
+    ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
+                                         "pages_arr", KMMU_ENTRY_FLAG_PERSISTENT));
+    ctx.iv->pages_arr_vbase = v;
+    asset_reg_add(name, new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
+                                         .npages = npg, .access = KSPACE_RW_ACCESS });
+    bsp_kout << "[Phase3b] pages_arr: p=0x" << p << " v=" << (void*)v
+             << " sz=0x" << sz << kendl;
+    return 0;
+}
+
 // ---- log_buffer（mem）：日志输出连续性，保留提前映射 ----
 static loc_code_t build_log_buffer(p3b_ctx& ctx, const char* name) {
     uint64_t sz  = LOGBUFFER_SIZE;
     uint64_t npg = sz >> 12;
-    loc_code_t alloc_err = 0;
-    phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
+    phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 21);
     if (!p) { bsp_kout << "log OOM" << kendl; return SRC_LOC(); }
+    if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     ksetmem_8((void*)(uint64_t)p, 0, sz);
     vaddr_t v = va_alloc_up(sz, 21);
     ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
@@ -87,9 +117,10 @@ static loc_code_t build_ksymbols(p3b_ctx& ctx, const char* name) {
     }
     uint64_t sz  = align_up(sym_sz, 4096);
     uint64_t npg = sz >> 12;
-    loc_code_t alloc_err = 0;
-    phyaddr_t p  = init_bcb_juvenile::alloc(npg, 21, &alloc_err);
+    phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 21);
     if (!p) { bsp_kout << "sym OOM" << kendl; return SRC_LOC(); }
+    // ksymbols = 从 initramfs 解包出的文件 → kernel_file_property
+    if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_file_property) != 0) return SRC_LOC();
     ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
     ctx.iv->symtable_file = { .base_ppn = p >> 12, .size = sym_sz };
     asset_reg_add(name, new movable_file_entry_t{ .base_ppn = p >> 12, .size = sym_sz });
@@ -121,7 +152,7 @@ static loc_code_t build_gop(p3b_ctx& ctx, const char* name) {
         uint64_t fb_sz  = align_up(gfx->FrameBufferSize, 4096);
         uint64_t fb_npg = fb_sz >> 12;
         phyaddr_t fb_p  = (phyaddr_t)gfx->FrameBufferBase;
-        vaddr_t fb_v    = va_alloc_up(fb_sz, 21);
+        vaddr_t fb_v    = va_alloc_up_off(fb_sz, 21,fb_p);
         ctx.kmmu->map(kernel_mmu::make_entry(fb_p, fb_v, fb_sz, KSPACE_RW_WC_ACCESS,
                                              "gop_framebuffer", KMMU_ENTRY_FLAG_PERSISTENT));
         ctx.iv->arch_info.Gop_vbase = fb_v;
@@ -167,9 +198,10 @@ static loc_code_t build_hpet(p3b_ctx& ctx, const char* name) {
 // ---- conjunc_GSs（mem）：每个处理器一块 gs_complex_t ----
 static loc_code_t build_gs_complexes(p3b_ctx& ctx, const char* name) {
     uint64_t total_bytes    = ctx.header->logical_processor_count * GS_COMPLEX_STRIDE;
-    uint64_t npg            = total_bytes >> 12;
-    loc_code_t alloc_err = 0;
-    phyaddr_t pbase         = init_bcb_juvenile::alloc(npg, 12, &alloc_err);
+    uint64_t npg            = total_bytes >> 12;   // GS_COMPLEX_STRIDE 已页对齐
+    phyaddr_t pbase         = page_allocator_v2::free_ram_explore(npg, 12);
+    if (!pbase) { bsp_kout << "gs OOM" << kendl; return SRC_LOC(); }
+    if (page_allocator_v2::pages_set({pbase, total_bytes}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     vaddr_t  vbase          = va_alloc_up(total_bytes, 12);
     ksetmem_8((void*)(uint64_t)pbase, 0, total_bytes);
     ctx.iv->arch_info.conjunc_GSs = {
@@ -195,9 +227,9 @@ static loc_code_t build_hdstacks(p3b_ctx& ctx, const char* name) {
     uint64_t stack_stride   = sizeof(per_processor_hardware_stack_t);  // 含 5 guard 页
     uint64_t total_phys     = ctx.header->logical_processor_count * stack_stride + 4096;  // + 尾 guard
     uint64_t hd_pages       = total_phys >> 12;
-    loc_code_t alloc_err = 0;
-    phyaddr_t hd_pbase      = init_bcb_juvenile::alloc(hd_pages, 12, &alloc_err);
+    phyaddr_t hd_pbase      = page_allocator_v2::free_ram_explore(hd_pages, 12);
     if (!hd_pbase) { bsp_kout << "hdstacks OOM" << kendl; return SRC_LOC(); }
+    if (page_allocator_v2::pages_set({hd_pbase, hd_pages << 12}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     vaddr_t  hd_vbase       = va_alloc_up(total_phys, 12);
     ctx.kmmu->map(kernel_mmu::make_entry(hd_pbase, hd_vbase, total_phys, KSPACE_RW_ACCESS,
                                          "hdstacks", KMMU_ENTRY_FLAG_PERSISTENT));
@@ -240,6 +272,7 @@ static const struct {
     loc_code_t (*build)(p3b_ctx&, const char*);
 } k_p3b_assets[] = {
     { "fpa_bitmaps mem",     build_fpa_bitmaps },
+    { "pages_arr mem",       build_pages_arr },
     { "log_buffer mem",      build_log_buffer },
     { "ksymbols movable",    build_ksymbols },
     { "initramfs movable",   build_initramfs },

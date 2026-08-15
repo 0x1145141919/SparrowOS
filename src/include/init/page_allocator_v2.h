@@ -43,6 +43,7 @@ static_assert(sizeof(page) == 1, "page 必须恰为 1 字节：mem_map 缓冲字
  * 生命周期（单 BSP、无锁、单调）：
  *   phase 2    init() → 后续 alloc()/pages_set()
  *   phase 3b   把 mem_map 缓冲 + fpa_bitmaps 池登记为 mem 资产（本类只暴露 getter）
+ *   phase 4    构建 free_segs_descriptors_table 一等字段：get_free_segs()/get_free_segs_count()
  *   phase 4.5  自裁归还：init 镜像/header/init 堆页 经 pages_set(_, free) 翻回空闲
  *              （替代旧 init_bcb_juvenile::free；"归还"在状态数组上就是翻状态）
  *   kernel     收养数组 → 状态冻结为权威账本
@@ -126,6 +127,14 @@ public:
      */
     static phyaddr_t get_mem_map_pbase();
 
+    /**
+     * @brief 区间描述数组（phase_4 构建 free_segs_descriptors_table 一等字段的源）。
+     *        每个 freeSystemRam 段一个 free_seg_descriptor_t，升序固定、Init 后不可变，
+     *        1:1 对应纯洁视图条目（in_pure_memview_idx → phymem_segments 下标，
+     *        baseidx_in_memmap → pages_arr 下标，索引式无需重定位）。
+     */
+    static free_seg_descriptor_t* get_free_segs();
+    static uint64_t               get_free_segs_count();
 private:
 
     // ---------- 内部状态（纯静态，无实例，单 BSP 无锁） ----------
@@ -133,7 +142,7 @@ private:
     static uint64_t   mem_map_page_count;    // 条目数 == 总 freeSystemRam 页数
     static phyaddr_t  mem_map_pbase;         // 缓冲物理基址（basic_allocator 分配）
     static uint64_t   mem_map_bytes;         // = mem_map_page_count × sizeof(page)
-    static free_seg_descriptor_t* mem_map_intervals; // 区间数组（升序，不穿越）
+    static free_seg_descriptor_t* mem_map_intervals; // 区间数组（升序；phase_4 穿越为 free_segs_descriptors_table）
     static uint64_t       mem_map_intervals_count;
     static uint64_t       free_pages;        // 记账（pages_set 维护）
     static phyaddr_t      dram_top_addr;     // freeSystemRam 物理上界

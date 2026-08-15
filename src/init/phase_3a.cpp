@@ -1,5 +1,5 @@
 #include "init/phase_3.h"
-#include "init/init_bcb_juvenile.h"
+#include "init/page_allocator_v2.h"
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
 #include "init/util/kout.h"
@@ -9,7 +9,9 @@
 // Phase 3a (串行): kernel.elf 解包 → 精确狙击 4 段进 kmmu → 产出进资产容器
 // ============================================================================
 //
-// 本函数是纯"产出方"：产物全部进资产容器（隐式状态），函数只返回 loc_code_t。
+// 本函数是纯"产出方"：产物全部进资产容器（隐式状态）。
+// 失败语义统一为 fatal：任一环节出错（无 initramfs / ELF 损坏 / OOM / 段缺失 /
+// kmmu 失败 / 资产重复）都直接 init_fatal::halt(SRC_LOC())，仅成功路径返回 0。
 //   - 四段 kernel_code/data/rodata/bss → "kernel_* mem"（vm_interval desc）
 //   - kIMG（kernel.elf 瞬态文件映像）→ "kimg movable"（movable_file_entry_t desc）
 //   - 入口点 → 经 entry_vaddr_out 直出（init 内部消费，不进 handoff 资产注册表）
@@ -42,10 +44,14 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
         bsp_kout << "[Phase3a] initramfs_lookup failed" << kendl; init_fatal::halt(SRC_LOC());
     }
     uint64_t kelf_pages = align_up(kelf_sz, 4096) >> 12;
-    loc_code_t alloc_err = 0;
-    kimg_pbase = init_bcb_juvenile::alloc(kelf_pages, 12, &alloc_err);
+    kimg_pbase = page_allocator_v2::free_ram_explore(kelf_pages, 12);
     if (kimg_pbase == 0) {
         bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; init_fatal::halt(SRC_LOC());
+    }
+    // kimg = 从 initramfs 解包出的 kernel.elf 瞬态文件 → kernel_file_property
+    if (page_allocator_v2::pages_set({kimg_pbase, kelf_pages << 12},
+                                     page_state_t::kernel_file_property) != 0) {
+        bsp_kout << "[Phase3a] kimg pages_set failed" << kendl; init_fatal::halt(SRC_LOC());
     }
     ksystemramcpy((void*)(uint64_t)kelf_in_ramfs, (void*)(uint64_t)kimg_pbase, kelf_sz);
     ksetmem_8((void*)(uint64_t)(kimg_pbase + kelf_sz), 0, (kelf_pages << 12) - kelf_sz);
@@ -100,8 +106,13 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
     uint64_t kernel_vaddr_top = 0;
 
     // 加载单个命中段：PT_LOAD 确认 → 内核区间确认 → 分配/拷贝/清零 → kmmu → 资产树
-    auto load_section = [&](Elf64_Shdr& sh, const char* kmmu_name, const char* asset_name) -> int {
-        if (sh.sh_size == 0) return -12;
+    // 失败即 halt（无降级路径）：打印出错点 + 位置戳后停机，仅成功路径正常返回。
+    auto load_section = [&](Elf64_Shdr& sh, const char* kmmu_name, const char* asset_name) -> void {
+        auto fail_halt = [&](const char* why) {
+            bsp_kout << "[Phase3a] " << kmmu_name << ": " << why << kendl;
+            init_fatal::halt(SRC_LOC());
+        };
+        if (sh.sh_size == 0) fail_halt("section size 0");
 
         // ---- a. 确认属于某个 PT_LOAD ----
         Elf64_Phdr* owner = nullptr;
@@ -114,10 +125,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
                 break;
             }
         }
-        if (!owner) {
-            bsp_kout << "[Phase3a] " << kmmu_name << " not in any PT_LOAD" << kendl;
-            return -13;
-        }
+        if (!owner) fail_halt("not in any PT_LOAD");
 
         // ---- b. 内核区间确认（is_kernel_address） ----
         uint64_t sz  = align_up(sh.sh_size, 4096);
@@ -133,12 +141,13 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
         if (!iv.is_kernel_address()) {
             bsp_kout << "[Phase3a] " << kmmu_name << " not kernel range 0x"
                      << HEX << sh.sh_addr << DEC << kendl;
-            return -15;
+            init_fatal::halt(SRC_LOC());
         }
 
         // ---- c. 独立分配物理页 + 内容安置 ----
         if (sh.sh_type != SHT_NOBITS) {
-            if (sh.sh_offset + sh.sh_size > kelf_pages * 4096ULL) return -17;  // 越界
+            if (sh.sh_offset + sh.sh_size > kelf_pages * 4096ULL)
+                fail_halt("offset out of kIMG range");
         }
         // 物理分配对齐上调：取 min(段虚拟基址自然对齐, 段大小上界 2 的幂)，封顶 1GB。
         // 例：.text_main sh_addr=0xFFFF800000000000 基址 2MB 对齐 → 分配也 2MB 对齐，
@@ -152,12 +161,12 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
             sz_log++;       // floor(log2(sz))：页面粒度上界
         }
         if (sz_log < align_log2) align_log2 = sz_log;
-        loc_code_t err = 0;
-        phyaddr_t pa = init_bcb_juvenile::alloc(npg, align_log2, &err);
-        if (pa == 0) {
-            bsp_kout << "[Phase3a] " << kmmu_name << " alloc OOM" << kendl;
-            return -16;
-        }
+        phyaddr_t pa = page_allocator_v2::free_ram_explore(npg, align_log2);
+        if (pa == 0) fail_halt("alloc OOM");
+        // kernel.elf 四大核心段 = 内核持久元数据 → kernel_persisit
+        if (page_allocator_v2::pages_set({pa, npg << 12},
+                                         page_state_t::kernel_persisit) != 0)
+            fail_halt("pages_set failed");
         if (sh.sh_type == SHT_NOBITS) {
             ksetmem_8((void*)(uint64_t)pa, 0, sz);   // .bss：清零
         } else {
@@ -172,12 +181,9 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
         owner->p_paddr = pa;
 
         // ---- d. 进入 kmmu（名字台账，PERSISTENT 交 kernel 认领） ----
-        int map_rc = kmmu->map(kernel_mmu::make_entry(pa, sh.sh_addr, sz, acc,
-                                                      kmmu_name, KMMU_ENTRY_FLAG_PERSISTENT));
-        if (map_rc != 0) {
-            bsp_kout << "[Phase3a] " << kmmu_name << " kmmu map fail " << map_rc << kendl;
-            return map_rc;
-        }
+        if (kmmu->map(kernel_mmu::make_entry(pa, sh.sh_addr, sz, acc,
+                                             kmmu_name, KMMU_ENTRY_FLAG_PERSISTENT)) != 0)
+            fail_halt("kmmu map fail");
 
         // ---- e. 登记资产树（handoff 清单）：与 kmmu 台账同 arg0 的持久 desc ----
         //      desc = vm_interval（init 堆分配，随条目生命周期持久），路由 arg1 = "mem"。
@@ -185,16 +191,12 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
                                               .ppn   = pa >> 12,
                                               .npages = npg,
                                               .access = acc };
-        if (!asset_reg_add(asset_name, adesc)) {
-            bsp_kout << "[Phase3a] asset dup: " << asset_name << kendl;
-            return -18;
-        }
+        if (!asset_reg_add(asset_name, adesc)) fail_halt("asset dup");
 
         uint64_t vend = sh.sh_addr + sh.sh_size;
         if (vend > kernel_vaddr_top) kernel_vaddr_top = vend;
         bsp_kout << "[Phase3a] " << kmmu_name << ": v=0x" << HEX << sh.sh_addr
                  << " p=0x" << pa << " sz=0x" << sz << DEC << kendl;
-        return 0;
     };
 
     // 对四个目标段分别命中（每个命中首个匹配段）并加载
@@ -206,11 +208,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
             const char* sname = shstrtab + shdr[si].sh_name;
             if (!sec_name_hit(sname, tg)) continue;
             matched = true;
-            int rc = load_section(shdr[si], tg.kmmu_name, tg.asset_name);
-            if (rc != 0) {
-                bsp_kout << "[Phase3a] section load fail: " << tg.name_key << " rc=" << rc << kendl;
-                init_fatal::halt(SRC_LOC());
-            }
+            load_section(shdr[si], tg.kmmu_name, tg.asset_name);   // 失败内部 halt
             break;
         }
         if (!matched) {

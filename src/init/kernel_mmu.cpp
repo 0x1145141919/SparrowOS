@@ -69,17 +69,19 @@ cache_table_idx_struct_t cache_strategy_to_idx(cache_strategy_t cache_strategy)
 /**
  * @brief mmu_specify_allocator — 页表页分配
  * 
- * 直接消费纯静态 init_bcb_juvenile（首个采用者）：每张页表页即时
- * 从幼年位图 alloc(1,12)，位图是唯一记账且可穿越至 kernel.elf，
- * 由内核端 BFS 回收所有页表。不再自挖连续 carve-out。
+ * 直接消费纯静态 page_allocator_v2：每张页表页即时 free_ram_explore(1,12) +
+ * pages_set(kernel_pinned) 提交，mem_map 是唯一记账且可穿越至 kernel.elf，
+ * 由内核端回收所有页表。不再自挖连续 carve-out。
  * 
  * @return void* 成功返回页表页物理地址，失败返回 nullptr
  */
 void* kernel_mmu::mmu_specify_allocator::alloc()
 {
-    loc_code_t err = 0;
-    phyaddr_t p = init_bcb_juvenile::alloc(1, 12, &err);
+    phyaddr_t p = page_allocator_v2::free_ram_explore(1, 12);
     if (p == 0) {
+        return nullptr;
+    }
+    if (page_allocator_v2::pages_set({p, 0x1000}, page_state_t::kernel_pinned) != 0) {
         return nullptr;
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(p));
@@ -90,8 +92,9 @@ void kernel_mmu::mmu_specify_allocator::free(void* page)
     if (!page) {
         return;
     }
-    // 恒等映射环境下页表页指针值 == 物理地址，直接按 1 页归还幼年位图。
-    init_bcb_juvenile::free(reinterpret_cast<phyaddr_t>(page), 1);
+    // 恒等映射环境下页表页指针值 == 物理地址，直接按 1 页归还账本。
+    page_allocator_v2::pages_set({reinterpret_cast<phyaddr_t>(page), 0x1000},
+                                 page_state_t::free);
 }
 
 /**
@@ -608,7 +611,7 @@ int kernel_mmu::map(const kmmu_entry_t& entry)
  * 1. 按 property_name 查红黑树取回 kmmu_entry_t
  * 2. 同样调用 split_vinterval_to_pages 拆分区间为 1GB/2MB/4KB
  * 3. 对每种大小的页面清除对应的叶子节点页表项
- * 4. 回收：自下而上检查 PT/PD/PDPT，全空则 free 回 init_bcb_juvenile 并清父项
+ * 4. 回收：自下而上检查 PT/PD/PDPT，全空则 free 回 page_allocator_v2 并清父项
  *    （PML4 根表不回收；数据物理页不属于本模块，不回收）
  * 5. 尾段重载 CR3 击落 TLB（init.elf 单核，无广播需求）
  * 

@@ -1,7 +1,7 @@
 #include "abi/boot.h"
 #include "init/load_kernel.h"
 #include "init/init_asset_registry.h"
-#include "init/init_bcb_juvenile.h"
+#include "init/page_allocator_v2.h"
 #include "init/pages_alloc.h"
 #include "init/util/textConsole.h"
 #include "init/util/kout.h"
@@ -144,8 +144,10 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
             PHY_MEM_TYPE::OS_KERNEL_DATA);
     }
 
-    // 2d. init_bcb_juvenile 顶替 page_allocator —— 幼年 BCB 位图分配器（分配职责唯一来源）
-    //     位图池从 basic_allocator 预挖（POOL_SOURCE_BASIC_ALLOCATOR，生产路径）
+    // 2d. page_allocator_v2 顶替 init_bcb_juvenile —— 可穿越页级分配器（分配职责唯一来源）
+    //     纯洁视图 → mem_map 状态数组（1B/页）；mem_map 终态整体作为 pages_arr 资产穿越，
+    //     kernel 收养后按语义态（kernel_persisit/kernel_file_property/free...）自建分配器。
+    //     与 BCB 路线的根本区别：穿越的是"每页物理事实"，不是分配器拓扑。
     {
         uint64_t segcnt = 0;
         phymem_segment* view = basic_allocator::get_pure_memory_view(&segcnt);
@@ -161,34 +163,35 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
             if (end > em.dram_top) em.dram_top = end;
         }
 
-        bcb_juvenile_init_config cfg = bcb_juvenile_init_config::BEST_FIT();
-        cfg.segs                    = view;
-        cfg.segs_count              = segcnt;
-        cfg.logical_processor_count = header->logical_processor_count;
-        cfg.pool                    = bcb_juvenile_init_config::POOL_SOURCE_BASIC_ALLOCATOR;
-        if (init_bcb_juvenile::plan_and_setup(&cfg) != 0) {
-            bsp_kout << "[INIT] init_bcb_juvenile::plan_and_setup failed" << kendl; return em;
+        if (page_allocator_v2::init() != 0) {
+            bsp_kout << "[INIT] page_allocator_v2::init failed" << kendl; return em;
         }
-        bsp_kout << "[INIT] BCB up: managed=" << init_bcb_juvenile::total_page_count()
-                 << " free=" << init_bcb_juvenile::free_page_count()
-                 << " pool=0x" << HEX << init_bcb_juvenile::region_pbase_ << DEC << kendl;
+        bsp_kout << "[INIT] page_allocator_v2 up: managed=" << page_allocator_v2::total_page_count()
+                 << " free=" << page_allocator_v2::free_page_count()
+                 << " mem_map@0x" << HEX << page_allocator_v2::get_mem_map_pbase() << DEC << kendl;
 
-        // 2c 再做一遍（BCB 侧钉占用）：纯视图快照里 init 镜像/header/loaded files 仍是
-        // freeSystemRam，plan 会覆盖它们；位图里不钉住，BCB 就会把它们分配出去。
-        init_bcb_juvenile::mark_used((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
-        init_bcb_juvenile::mark_used((uint64_t)header, (uint64_t)header->total_pages_count * 4096);
+        // init() 已自标记 init 镜像 / 区间数组 / low-1MB。此处补 header + loaded files：
+        // 纯视图快照里它们仍是 freeSystemRam，账本不钉住分配器就会把它们交出去。
+        // 语义态：header/loaded files 是 init 临时财产（不穿越，4.5 归还 free）→ init_tmp_property。
+        if (page_allocator_v2::pages_set(
+                {(uint64_t)header, (uint64_t)header->total_pages_count * 4096},
+                page_state_t::init_tmp_property) != 0) {
+            bsp_kout << "[INIT] header pages_set failed" << kendl; return em;
+        }
         for (uint64_t i = 0; i < header->loaded_file_count; i++) {
             if (header->loaded_files[i].file_type == LOADED_FILE_ENTRY_TYPE_ELF_REAL_LOAD) continue;
-            init_bcb_juvenile::mark_used(
-                (uint64_t)header->loaded_files[i].raw_data,
-                align_up(header->loaded_files[i].file_size, 4096));
+            if (page_allocator_v2::pages_set(
+                    {(uint64_t)header->loaded_files[i].raw_data,
+                     align_up(header->loaded_files[i].file_size, 4096)},
+                    page_state_t::init_tmp_property) != 0) {
+                bsp_kout << "[INIT] loaded_file[" << i << "] pages_set failed" << kendl;
+                return em;
+            }
         }
-        // 低 1MB（x86 实模式 IVT/BDA/EBDA/BIOS，保留语义）
-        init_bcb_juvenile::mark_used(0, 0x100000);
     }
 
-    bsp_kout << "[INIT] Phase 2: memory ready, BCB free pages="
-             << init_bcb_juvenile::free_page_count() << kendl;
+    bsp_kout << "[INIT] Phase 2: memory ready, free pages="
+             << page_allocator_v2::free_page_count() << kendl;
     return em;
 }
 
@@ -216,7 +219,17 @@ static void initramfs_mark_used(BootInfoHeader* header, ctx_early_mem* em) {
     em->ramfs_base = (uint64_t)ramfs->raw_data;
     em->ramfs_size = align_up(ramfs->file_size, 4096);
 
-    init_bcb_juvenile::mark_used(em->ramfs_base, em->ramfs_size);
+    // 语义态提交：initramfs = kernel_file_property（VFS 消化后可转 user_file）。
+    // 防御性页对齐（raw_data 起点/大小不保证 4K 对齐），对齐后覆盖区间 ⊇ 资产区间。
+    const phyaddr_t ramfs_lo = em->ramfs_base & ~0xFFFull;
+    const phyaddr_t ramfs_hi = (em->ramfs_base + em->ramfs_size + 0xFFFull) & ~0xFFFull;
+    if (page_allocator_v2::pages_set({ramfs_lo, ramfs_hi - ramfs_lo},
+                                     page_state_t::kernel_file_property) != 0) {
+        bsp_kout << "[INIT] initramfs pages_set failed" << kendl;
+        em->ramfs_base = 0;
+        em->ramfs_size = 0;
+        return;
+    }
     bsp_kout << "[INIT] initramfs in-place: base=0x" << HEX << em->ramfs_base
              << " size=0x" << em->ramfs_size << DEC << kendl;
 }
@@ -226,7 +239,7 @@ uint64_t g_va_alloc_base=0;
 // Phase 4 (串行): 构建 init_to_kernel_header_v2（extern，定义在 info_fill.cpp）
 // ============================================================================
 // 签名：kmmu / iv 已移除（v2 不需要——一等字段只剩 phymem_segments /
-// properties_table / bcb_table，其余全部走资产注册表）。
+// properties_table / free_segs_descriptors_table，其余全部走资产注册表）。
 extern phyaddr_t build_init_to_kernel_header(
     phyaddr_t                pkt_pbase,
     uint64_t                 pkt_pages,
@@ -241,16 +254,17 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
                               const ctx_intervals* iv, uint64_t entry_vaddr,
                               BootInfoHeader* header) {
     // 4.5-0: 自裁——init.elf 的财产不穿越。
-    //   移交资产（注册表 + bcb_table 位图）不含 init.elf 自身信息，kernel 无从
-    //   回收 init 镜像与 BootInfoHeader；故 init 在移交位图里抹除这两个区域，
-    //   归还为可用页。free 只翻叶子位不改映射——init 仍在其上执行直至跳转完成。
+    //   移交资产（注册表 + pages_arr 账本）不含 init.elf 自身信息，kernel 无从
+    //   回收 init 镜像与 BootInfoHeader；故 init 在移交账本里抹除这两个区域，
+    //   归还为可用页。归还 = pages_set(_, free) 翻状态，不改映射——init 仍在其上
+    //   执行直至跳转完成（替代旧 init_bcb_juvenile::free）。
     {
         auto erase_pages = [](phyaddr_t base, uint64_t byte_size) {
             if (base == 0 || byte_size == 0) return;
             const phyaddr_t lo = base & ~0xFFFull;
             const phyaddr_t hi = (base + byte_size + 0xFFFull) & ~0xFFFull;
             for (phyaddr_t p = lo; p < hi; p += 0x1000)
-                init_bcb_juvenile::free(p, 1);  // 逐页归还：容忍跨 BCB / 已归还 / 不在 BCB
+                page_allocator_v2::pages_set({p, 0x1000}, page_state_t::free);
         };
         const uint64_t init_img_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_text_start;
         erase_pages((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
@@ -259,8 +273,8 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     }
 
     // 4.5-1: CR3
-    // pages_arr 已彻底废除（relinquish + 映射删除）：回收职能由 bcb_table
-    // （init_bcb_juvenile 跨世界位图）接替，kernel 收养 BCB 后正常回收。
+    // 回收职能由 mem_map 账本（page_allocator_v2 状态数组，pages_arr mem 资产）接替，
+    // kernel 收养账本后按每页状态正常回收。
     phyaddr_t root = kmmu->get_root_table_base();
     bsp_kout << "[Phase4.5] CR3 <- 0x" << root << kendl;
     asm volatile("sfence");
@@ -376,14 +390,18 @@ extern "C" void init_main(BootInfoHeader* header) {
     if (phase_3b(kmmu, header, &em, &iv) != 0) init_fatal::halt(SRC_LOC());
     
     // Phase 4: 构造 v2 信息包
-    // 包物理页改由 init_bcb_juvenile::alloc（位图置占用）——kernel 收养 BCB 后
-    // 位图即知这些页被占用，不再依赖 page_allocator 账本（pages_arr 已废除）。
+    // 包物理页由 page_allocator_v2 分配（free_ram_explore + pages_set 提交），
+    // 语义态 transfer_package 入账穿越——kernel 收养 mem_map 后即知这些页被占用，
+    // 且状态语义明确指向"交接信息包"（与普通持久元数据区分）。
     uint64_t segcnt = 0;
     phymem_segment* pure_view = basic_allocator::get_pure_memory_view(&segcnt);
-    constexpr uint64_t PKT_PAGES = 8;   // v2 新增 bcb_table，4 页可能不够
-    loc_code_t pkt_err = 0;
-    phyaddr_t pkt = init_bcb_juvenile::alloc(PKT_PAGES, 12, &pkt_err);
+    constexpr uint64_t PKT_PAGES = 8;   // v2 含 free_segs_descriptors_table，8 页预算
+    phyaddr_t pkt = page_allocator_v2::free_ram_explore(PKT_PAGES, 12);
     if (!pkt) { bsp_kout << "pkt OOM" << kendl; init_fatal::halt(SRC_LOC()); }
+    if (page_allocator_v2::pages_set({pkt, PKT_PAGES * 4096},
+                                     page_state_t::transfer_package) != 0) {
+        bsp_kout << "pkt pages_set failed" << kendl; init_fatal::halt(SRC_LOC());
+    }
     ksetmem_8((void*)(uint64_t)pkt, 0, PKT_PAGES * 4096);
 
     if (!build_init_to_kernel_header(pkt, PKT_PAGES, header, pure_view, segcnt)) {

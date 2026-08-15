@@ -195,7 +195,7 @@ add_executable(init.elf
     src/init/phase_3a.cpp
     src/init/phase_3b.cpp
     src/init/kernel_mmu.cpp
-    src/init/init_bcb_juvenile.cpp
+    src/init/page_allocator_v2.cpp
     src/init/init_asset_registry.cpp
     src/init/init_entry.asm
     src/init/Interrupts/Sysdef_exception_entries.asm

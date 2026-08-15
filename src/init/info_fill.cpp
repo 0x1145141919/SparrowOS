@@ -1,6 +1,7 @@
 #include "abi/boot.h"
+#include "abi/src_loc.h"
 #include "init/init_asset_registry.h"
-#include "init/init_bcb_juvenile.h"
+#include "init/page_allocator_v2.h"
 #include "init/util/kout.h"
 #include "memory/memory_base.h"
 
@@ -38,8 +39,8 @@ static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base
              << " @off 0x" << h->phymem_segments << kendl;
     bsp_kout << "  properties=" << h->properties_count
              << " @off 0x" << h->properties_table << kendl;
-    bsp_kout << "  bcbs=" << h->bcbs_count
-             << " @off 0x" << h->bcb_table << kendl;
+    bsp_kout << "  free_segs=" << h->free_segs_count
+             << " @off 0x" << h->free_segs_descriptors_table << kendl;
     bsp_kout << "  logical_processor_count=" << h->logical_processor_count << kendl;
 
     // phymem_segments
@@ -61,18 +62,14 @@ static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base
                      << "' data@off 0x" << (uint64_t)props[i].data << kendl;
     }
 
-    // bcbs（bcb_district_descriptor 解包：order [0:5] / base [12:63]；
-    //      bitmap 区在包内已是 fpa_bitmaps 池内偏移）
-    if (h->bcbs_count) {
-        const bcb_desc_v2_t* descs = (const bcb_desc_v2_t*)(pkt_base + h->bcb_table);
-        bsp_kout << "  -- bcb_table (" << h->bcbs_count << ") --" << kendl;
-        for (uint64_t i = 0; i < h->bcbs_count; i++) {
-            const uint64_t dd = descs[i].bcb_district_descriptor;
-            const uint8_t  order  = static_cast<uint8_t>(dd & 0x3F);
-            const uint64_t base_pa = dd & ~static_cast<uint64_t>(0xFFF);
-            bsp_kout << "    [" << i << "] order=" << (uint32_t)order
-                     << " base=0x" << base_pa
-                     << " bitmap_off=0x" << descs[i].bitmap_region_base_pa << kendl;
+    // free_segs（free_seg_descriptor_t 解包：索引式，无需重定位——
+    //     in_pure_memview_idx → phymem_segments 下标，baseidx_in_memmap → pages_arr 下标）
+    if (h->free_segs_count) {
+        const free_seg_descriptor_t* descs = (const free_seg_descriptor_t*)(pkt_base + h->free_segs_descriptors_table);
+        bsp_kout << "  -- free_segs_descriptors_table (" << h->free_segs_count << ") --" << kendl;
+        for (uint64_t i = 0; i < h->free_segs_count; i++) {
+            bsp_kout << "    [" << i << "] pure_memview_idx=" << descs[i].in_pure_memview_idx
+                     << " baseidx_in_memmap=" << descs[i].baseidx_in_memmap << kendl;
         }
     }
 
@@ -80,14 +77,15 @@ static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base
 }
 
 // ============================================================================
-// 构建 init_to_kernel_header_v2 — 偏移式 + 注册表 + BCB 描述
+// 构建 init_to_kernel_header_v2 — 偏移式 + 注册表 + free_segs 描述
 // ============================================================================
 //
 // v2 契约（见 abi/boot.h init_to_kernel_header_v2）：
-//   一等字段只剩 phymem_segments / properties_table / bcb_table 三个 offset，
-//   其余全部进 properties_table（资产注册表序列化）。pages_arr / kmmu_interval /
-//   arch_specify / pass_through / loaded_VM_intervals 等 v1 一等字段全部移除：
-//   - pages_arr：彻底废除，职能由 bcb_table（跨世界位图）接替
+//   一等字段只剩 phymem_segments / properties_table / free_segs_descriptors_table
+//   三个 offset，其余全部进 properties_table（资产注册表序列化）。pages_arr /
+//   kmmu_interval / arch_specify / pass_through / loaded_VM_intervals 等 v1 一等字段
+//   全部移除：
+//   - pages_arr：职能由 mem_map 状态数组资产（pages_arr mem）接替
 //   - kmmu_interval / arch_specify：资产树已覆盖（kmmu 树 / 各 mem 资产）
 //
 // 包布局（8 字节对齐逐段推进）：
@@ -96,13 +94,18 @@ static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base
 //   [entries_off, +)            asset_entry_t[]      ← properties_table
 //   [blobs_off, +)              desc blob（每资产 data 拷贝入包）
 //   [segs_off, +)               phymem_segment[]     ← phymem_segments
-//   [bcbs_off, +)               bcb_desc_v2_t[]      ← bcb_table
+//   [freesegs_off, +)           free_seg_descriptor_t[] ← free_segs_descriptors_table
 //
 // 一级重链：name/data 在包内存"包基址相对偏移"（info_offset_t 语义），
 // kernel 端用包基址自加还原可访问线性地址。
 //
+// free_segs_descriptors_table 是索引式描述符（无需重定位）：
+//   in_pure_memview_idx → phymem_segments 下标（纯洁视图逐字拷贝）
+//   baseidx_in_memmap   → pages_arr mem 资产内 mem_map 条目下标
+//   下标在两世界解析一致，kernel 直接据下标重建 free 区间。
+//
 // 输入:
-//   pkt_pbase — 信息包物理基址（init_bcb_juvenile::alloc，位图已置占用）
+//   pkt_pbase — 信息包物理基址（page_allocator_v2 分配，已 pages_set transfer_package）
 //   pkt_pages — 信息包总页数
 //   header    — BootInfoHeader（UEFI 传递，取 logical_processor_count）
 //   seg_view  — phymem_segment 视图（pure view）
@@ -120,12 +123,12 @@ phyaddr_t build_init_to_kernel_header(
     uint8_t* base = reinterpret_cast<uint8_t*>(pkt_pbase);
 
     const uint64_t props_count = g_asset_registry ? g_asset_registry->size() : 0;
-    const uint64_t bcbs_count  = init_bcb_juvenile::get_desc_count();
-    const bcb_desc_v2_t* bcbs  = init_bcb_juvenile::get_descs();
+    const uint64_t free_segs_count = page_allocator_v2::get_free_segs_count();
+    free_seg_descriptor_t* free_segs = page_allocator_v2::get_free_segs();
 
     const uint64_t hdr_sz = sizeof(init_to_kernel_header_v2);
     const uint64_t seg_sz = seg_count * sizeof(phymem_segment);
-    const uint64_t bcb_sz = bcbs_count * sizeof(bcb_desc_v2_t);
+    const uint64_t freeseg_sz = free_segs_count * sizeof(free_seg_descriptor_t);
     const uint64_t ent_sz = props_count * sizeof(asset_entry_t);
 
     // ---- 第一遍：name 区 / blob 区 累计，逐资产记 name_off + blob_sz ----
@@ -157,8 +160,8 @@ phyaddr_t build_init_to_kernel_header(
     const uint64_t entries_off = align_up(names_cursor, 8);
     const uint64_t blobs_off   = align_up(entries_off + ent_sz, 8);
     const uint64_t segs_off    = align_up(blobs_off + blobs_total, 8);
-    const uint64_t bcbs_off    = align_up(segs_off + seg_sz, 8);
-    const uint64_t total       = bcbs_off + bcb_sz;
+    const uint64_t freesegs_off = align_up(segs_off + seg_sz, 8);
+    const uint64_t total       = freesegs_off + freeseg_sz;
 
     const uint64_t allocated = pkt_pages * 4096;
     if (total > allocated) {
@@ -176,39 +179,20 @@ phyaddr_t build_init_to_kernel_header(
     h->phymem_segments         = segs_off;
     h->properties_count        = props_count;
     h->properties_table        = entries_off;
-    h->bcbs_count              = bcbs_count;
-    h->bcb_table               = bcbs_off;
+    h->free_segs_count         = free_segs_count;
+    h->free_segs_descriptors_table = freesegs_off;
     h->logical_processor_count = header->logical_processor_count;
 
     // ---- phymem_segments ----
     if (seg_sz && seg_view)
         ksystemramcpy(seg_view, base + segs_off, seg_sz);
 
-    // ---- bcb_table：bitmap 区地址按 fpa_bitmaps 资产重定位（绝对 PA → 池内偏移）----
-    // init 侧（init_bcb_juvenile）填的是绝对物理基址——UEFI 恒等映射下 bitmap_region_base_pa
-    // 即 init.elf 世界的访问地址；kernel 接手后恒等映射不复存在，须经 fpa_bitmaps 资产
-    // （位图池的 kernel VA 区间）重定位：bitmap_kernel_va = fpa_bitmaps.vbase() + offset。
-    // 故此处把包内 desc 改写为相对位图池基址的偏移（同时校验落在池内）。
-    if (bcb_sz && bcbs) {
-        const asset_entry_t* fpa = g_asset_registry ? g_asset_registry->read("fpa_bitmaps") : nullptr;
-        if (!fpa || !fpa->data) {
-            bsp_kout << "[BUILD_HEADER] FATAL: fpa_bitmaps asset missing for bcb_table" << kendl;
-            if (plan) delete[] plan;
-            return 0;
-        }
-        const uint64_t pool_pbase = ((const vm_interval*)fpa->data)->pbase();
-        bcb_desc_v2_t* dst = reinterpret_cast<bcb_desc_v2_t*>(base + bcbs_off);
-        for (uint64_t i = 0; i < bcbs_count; i++) {
-            if (bcbs[i].bitmap_region_base_pa < pool_pbase) {
-                bsp_kout << "[BUILD_HEADER] FATAL: bcb bitmap outside fpa pool" << kendl;
-                if (plan) delete[] plan;
-                return 0;
-            }
-            dst[i] = bcbs[i];
-            dst[i].bitmap_region_base_pa -= pool_pbase;   // → fpa_bitmaps 池内偏移
-            dst[i].bitmap_region_base_pa += ((const vm_interval*)fpa->data)->vbase();//换成线性地址
-        }
-    }
+    // ---- free_segs_descriptors_table：索引式描述符，逐字拷贝，无需重定位 ----
+    //     in_pure_memview_idx → phymem_segments 下标（纯洁视图逐字拷贝）
+    //     baseidx_in_memmap   → pages_arr mem 资产内 mem_map 条目下标
+    //     下标在两世界解析一致，kernel 直接据下标重建 free 区间。
+    if (freeseg_sz && free_segs)
+        ksystemramcpy(free_segs, base + freesegs_off, freeseg_sz);
 
     // ---- properties：name 串 + entries + desc blob（name/data 存包内偏移） ----
     if (props_count && g_asset_registry) {

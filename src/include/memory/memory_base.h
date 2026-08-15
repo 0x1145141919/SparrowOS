@@ -4,9 +4,13 @@
 #include <util/lock.h>
 enum class page_state_t : uint8_t { 
     free = 0, 
+    kernel_persisit =1,//内核初始化的时候分配的那些持久元数据，比如pages_arr/fpa_bitsmap/GS_complex以及kernel.elf的那四大核心段（.text .rodata .data .bss）
+    kernel_file_property=2,//主要是用于init.elf分配的initramfs.img以及中间解包出的文件，在init.elf那些文件的内存标记为这个类型，后续vfs消化后可以变成user_file
     user_file = 3, 
     user_anonymous = 4, 
     dma = 5,
+    init_tmp_property=6,
+    transfer_package=7,//特别指init.elf移交给kernel.elf的那个信息包，地位特殊值得单开一个类型
     kernel_pinned = 10,
     reserved = 15
 };
@@ -17,67 +21,6 @@ struct free_seg_descriptor_t{
 struct page{
     page_state_t state;
 };
-/**
- * @brief page struct
- *此数据结构必须进入mem_map才有语义，
- *透明大页支持：若某个页框的page.is_skipped为真则属于透明页，其实际语义被mem_map[ptr]所代表
- */
-struct page_v2{
-    union {
-        struct {
-            uint64_t state:4;           // page_state_t
-            uint64_t vaddr_compact:52;  // 内核指针 [55:4]，16B 对齐约束
-            uint64_t order:6;           // 页框阶
-            uint64_t reserved:2;
-        } fields;
-        uint64_t raw;
-    };
-
-    // ── 编解码辅助 ──
-    void*   decode_ptr()   const { return (void*)(uint64_t)((this->raw|0xff00000000000000)&(~0xf)); }
-    void    encode_ptr(void* p)   { fields.vaddr_compact = (uint64_t)p >> 4; }
-    uint64_t page_size()   const { return 4096ULL << fields.order; }
-    uint64_t page_count()  const { return 1ULL << fields.order; }
-};
-
-// ── page_cache_node_t flags 位定义 ──
-constexpr uint64_t PAGE_DIRTY      = 1ULL << 0;   // 写入过，换出前需回写
-constexpr uint64_t PAGE_LOCKED     = 1ULL << 1;   // 锁定，禁止换出
-constexpr uint64_t PAGE_WRITEBACK  = 1ULL << 2;   // 回写 IO 进行中
-constexpr uint64_t PAGE_UPTODATE   = 1ULL << 3;   // 内容有效
-constexpr uint64_t PAGE_SWAPPING   = 1ULL << 4;   // 换入/换出中（防重入）
-constexpr uint64_t PAGE_REFERENCED = 1ULL << 5;   // 最近访问（clock LRU 二次机会）
-constexpr uint64_t PAGE_ACTIVE     = 1ULL << 6;   // 在活跃 LRU 链表
-constexpr uint64_t PAGE_RECLAIM    = 1ULL << 7;   // 正在被回收
-
-/**
- * @brief 页缓存节点 — 用于 user_file / user_anonymous / kernel_anonymous
- *
- * state=user_file:
- *   vaddr_compact → inode*（文件所有者）
- *   offset_of_file → file_block_index（文件内页偏移）
- *
- * state=user_anonymous:
- *   vaddr_compact → VM_DESC*（所属 VMA 描述符）
- *   offset_of_file → vaddr_offset = (vaddr - VM_DESC.start) >> 12
- *   语义: VM_DESC 中偏移 vaddr_offset 的虚拟区间，映射到本页物理内存。
- *
- * 物理地址由 all_pages_arr::phyinterval_t 链表推算:
- *   phyaddr = interval.base + (idx - interval.baseidx_in_memmap) * 4096
- *   逆向: idx = interval.baseidx_in_memmap + (phyaddr - interval.base) / 4096
- */
-struct page_cache_node_t{
-    page_v2 meta;                //  8B, [0]
-    page_cache_node_t* next;     //  8B, LRU 链表后继
-    page_cache_node_t* prev;     //  8B, LRU 链表前驱
-    uint64_t flags;              //  8B, PAGE_* 掩码
-    uint64_t offset_of_file;     //  8B, 文件块索引 / VMA 内偏移
-    uint32_t refcount;           //  4B, 引用计数
-    uint32_t map_count;          //  4B, PTE 映射数
-    spinlock_cpp_t spinlock;
-    uint8_t reserved[15];
-};
-static_assert(sizeof(page_cache_node_t) == 64, "page_cache_node_t must be 64 bytes");
 typedef enum :uint32_t{
     EFI_RESERVED_MEMORY_TYPE,
     EFI_LOADER_CODE,

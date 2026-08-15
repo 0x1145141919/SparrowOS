@@ -113,22 +113,24 @@ int page_allocator_v2::init() {
     // 7. dram_top（freeSystemRam 物理上界）
     dram_top_addr = free_max;
 
-    // 8. 自引用保护：mem_map 缓冲 / 区间数组 / init 镜像 → reserved。
+    // 8. 自引用保护：mem_map 缓冲 / 区间数组 / init 镜像。
     //    任一失败 = 该区域跨越内存空洞，账本无法表达 → 致命，返回负值。
-    //    注：堆上对象（new[] 区间数组）与链接符号起点不保证 4KB 对齐，
+    // 注：堆上对象（new[] 区间数组）与链接符号起点不保证 4KB 对齐，
     //        故统一向下/向上取整到页边界再标记（多标的页也归 init 所有，安全）。
-    if (pages_set({buf_phys, buf_pages << 12}, page_state_t::reserved) != 0) return -5;
+    // 语义态：mem_map 缓冲 = pages_arr 资产 → kernel_persisit（内核持久元数据）；
+    //         区间数组/init 镜像是 init 临时财产（不穿越，镜像 4.5 归还 free）→ init_tmp_property。
+    if (pages_set({buf_phys, buf_pages << 12}, page_state_t::kernel_persisit) != 0) return -5;
     {
         const uint64_t iv_bytes = free_iv_count * sizeof(free_seg_descriptor_t);
         const phyaddr_t iv_phys = reinterpret_cast<uintptr_t>(mem_map_intervals);
         const phyaddr_t iv_lo   = align_down(iv_phys, 0x1000);
         const phyaddr_t iv_hi   = align_up(iv_phys + iv_bytes, 0x1000);
-        if (pages_set({iv_lo, iv_hi - iv_lo}, page_state_t::reserved) != 0) return -5;
+        if (pages_set({iv_lo, iv_hi - iv_lo}, page_state_t::init_tmp_property) != 0) return -5;
     }
     {
         const phyaddr_t img_lo = align_down((uint64_t)&__init_text_start, 0x1000);
         const phyaddr_t img_hi = align_up((uint64_t)&__init_heap_end, 0x1000);
-        if (pages_set({img_lo, img_hi - img_lo}, page_state_t::reserved) != 0) return -5;
+        if (pages_set({img_lo, img_hi - img_lo}, page_state_t::init_tmp_property) != 0) return -5;
     }
 
     // 9. 重算 free_pages（自引用保护后）
@@ -287,3 +289,5 @@ uint64_t page_allocator_v2::free_page_count()  { return free_pages; }
 uint64_t page_allocator_v2::total_page_count() { return mem_map_page_count; }
 phyaddr_t page_allocator_v2::dram_top()        { return dram_top_addr; }
 phyaddr_t page_allocator_v2::get_mem_map_pbase() { return mem_map_pbase; }
+free_seg_descriptor_t* page_allocator_v2::get_free_segs() { return mem_map_intervals; }
+uint64_t               page_allocator_v2::get_free_segs_count() { return mem_map_intervals_count; }
