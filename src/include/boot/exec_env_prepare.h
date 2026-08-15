@@ -16,15 +16,18 @@
 //   ① g_env = probe_env()               探针（KVM/TCG/裸机）
 //   ② kpoolmemmgr_t::Init()             第一堆
 //   ③ link_init_to_kernel_header         信息包 偏移式 → 指针式 analyzed 视图
-//   ④ 一等字段复制到堆                   phymem_segments / bcb_table（焚包后仍有效）
+//   ④ 一等字段复制到堆                   phymem_segments / free_segs
+//                                        （free_segs 索引式，adopt 内解析，无需中转）
 //   ⑤ asset_table_t::create() + pour    资产表全量深拷贝
 //   ⑥ read/deal 三个必需资产             "log_buffer mem" "gop_framebuffer mem"
 //                                         "gop_info gop" → DmesgRingBuffer / GfxPrim
 //   ⑦ 输出子系统链路                     GfxPrim 就绪 → textconsole_GoP::Init+Clear
 //                                         → serial_init_stage1 → bsp_kout.Init+shift_dec
 //                                        （至此 kout 初始化完毕，可正常打印）
-//   ⑧ BCB 继承给 FPA                     FreePagesAllocator::Inherit_bcbs(g_bcbs)，
-//                                         全部置幼年态；大数组分配完再 Adopt_all_adult
+//   ⑧ page_frame_state_mgr 收养           adopt("pages_arr mem" 资产 +
+//                                         free_segs_descriptors_table)，接管 mem_map
+//                                         权威账本，供 early_alloc 早期分配；FPA 后续
+//                                         基于 intervals_snapshot 自行分桶重建
 //
 // 调用方：_kernel_Init asm（kernel_entry.asm）在 basic_init 之前调用。
 // ════════════════════════════════════════════════════════════════

@@ -15,8 +15,7 @@
 //   链接动作（info_pkg_link.cpp link_init_to_kernel_header）：
 //     phymem_segments   = base + offset
 //     properties_table  = base + offset，且每条 name/data 再按 base 自加
-//     bcb_table         = base + offset（条目内 bitmap_region_base_pa 已是
-//                         fpa_bitmaps 线性地址，info_fill 已重定位，不重链）
+//     free_segs_descriptors_table = base + offset（条目为索引式描述符，不重链）
 //
 // 生命周期：视图指向包内，包焚毁（ksetmem_8）前有效；pour 深拷贝后即可焚。
 // ════════════════════════════════════════════════════════════════
@@ -28,6 +27,6 @@ struct init_to_kernel_header_analyzed{
     uint64_t properties_count;
     asset_entry_t* properties_table;     // 包内 asset_entry_t[]（name/data 已重链）
     uint64_t free_segs_count;
-    free_seg_descriptor_t* free_segs_descriptors_table;            // 包内 bcb_desc_v2_t[]（注意：v2，非 bcb_desc_t）
+    free_seg_descriptor_t* free_segs_descriptors_table;   // 包内 free_seg_descriptor_t[]（索引式，无重定位）
     uint32_t logical_processor_count;
 };

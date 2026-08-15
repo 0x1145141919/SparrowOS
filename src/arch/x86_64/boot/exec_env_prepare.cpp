@@ -2,7 +2,7 @@
 #include "boot/info_pkg_link.h"
 #include "boot/asset_table.h"
 #include "memory/kpoolmemmgr.h"
-#include "memory/FreePagesAllocator.h"
+#include "memory/page_frame_state_mgr.h"
 #include "exec_env_detect.h"
 #include "panic.h"
 #include "arch/x86_64/mem_init.h"
@@ -21,9 +21,6 @@
 //   无 kout / 无输出子系统，失败一律 boot_halt 裸停机。
 // ════════════════════════════════════════════════════════════════
 
-// BCB 交接（一等字段复制目标；声明在 arch/x86_64/mem_init.h，收养路径消费）
-bcb_desc_v2_t* g_bcbs = nullptr;
-uint64_t g_bcbs_count = 0;
 static void boot_halt(loc_code_t loc);
 
 
@@ -47,13 +44,8 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
                       phymem_segments_count * sizeof(phymem_segment));
     }
 
-    // 一等字段：bcb_table 复制到堆（收养路径消费，焚包后仍有效）
-    g_bcbs_count = an->bcbs_count;
-    if (g_bcbs_count) {
-        g_bcbs = new bcb_desc_v2_t[g_bcbs_count];
-        ksystemramcpy(an->bcb_table, g_bcbs,
-                      g_bcbs_count * sizeof(bcb_desc_v2_t));
-    }
+    // 一等字段：free_segs_descriptors_table 由 page_frame_state_mgr::adopt 拷贝
+    //           （索引式，无需堆中转；adopt 内部已解析进 intervals[]）
 
     // 资产表：create + pour（全量深拷贝 properties，焚包后仍有效）
     g_asset_table = asset_table_t::create();
@@ -95,21 +87,21 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
         bsp_kout.shift_dec();
     }
 
-    // BCB 继承：把 init.elf 穿越的 BCB 生态（g_bcbs）收养给 FPA，全部置幼年态。
-    // 收养后幼年态供 pages_arr 等全局大数组顺序分配；大数组分配完再由
-    // basic_init 调 Adopt_all_adult 全量催熟。
+    // 页框状态管理器收养：接管 init 穿越的 pages_arr 账本（mem_map）+ free_segs
+    // 描述符。收养后本模块即持有权威物理页账本（state_set / state_query /
+    // kind_check / idx_base_* / early_alloc 可用）；FPA 后续重建基于它
+    // （intervals_snapshot 全量区间，自行分桶折叠），不再有 BCB 位图交接。
     {
-        FreePagesAllocator::inherit_bcbs_config cfg = {};
-        cfg.descs                   = g_bcbs;
-        cfg.count                   = g_bcbs_count;
-        cfg.logical_processor_count = logical_processor_count;
-        KURD_t ihk = FreePagesAllocator::Inherit_bcbs(&cfg);
-        if (error_kurd(ihk)) {
-            bsp_kout << "[exec_env_prepare] Inherit_bcbs failed" << kendl;
+        const asset_table_entry* e = g_asset_table->read("pages_arr mem");
+        if (!e) boot_halt(SRC_LOC());
+        vm_interval pages_arr_iv = *(vm_interval*)e->data;
+        g_asset_table->deal("pages_arr mem");
+        if (page_frame_state_mgr::adopt(&pages_arr_iv,
+                                        an->free_segs_descriptors_table,
+                                        an->free_segs_count) != 0)
             boot_halt(SRC_LOC());
-        }
-        bsp_kout << "[exec_env_prepare] Inherit_bcbs: " << g_bcbs_count
-                 << " BCBs adopted (all juvenile)" << kendl;
+        bsp_kout << "[exec_env_prepare] page_frame_state_mgr adopted: "
+                 << an->free_segs_count << " free_segs descriptors" << kendl;
     }
 }
 // 早期失败停机：exec_env_prepare 阶段无 kout，只能裸停机

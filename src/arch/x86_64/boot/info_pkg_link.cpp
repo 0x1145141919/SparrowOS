@@ -21,11 +21,12 @@ init_to_kernel_header_analyzed* link_init_to_kernel_header(init_to_kernel_header
         return nullptr;
     pkg->phymem_segments = reinterpret_cast<uint64_t>(base + pkg->phymem_segments);
 
-    // ---- bcb_table（条目内 bitmap_region_base_pa 不重链）----
-    if (!offset_in_pkt(pkg->bcb_table,
-                       pkg->bcbs_count * sizeof(bcb_desc_v2_t), pkt_bytes))
+    // ---- free_segs_descriptors_table（索引式：in_pure_memview_idx → phymem_segments
+    //       下标 / baseidx_in_memmap → pages_arr 下标，条目内无需重链）----
+    if (!offset_in_pkt(pkg->free_segs_descriptors_table,
+                       pkg->free_segs_count * sizeof(free_seg_descriptor_t), pkt_bytes))
         return nullptr;
-    pkg->bcb_table = reinterpret_cast<uint64_t>(base + pkg->bcb_table);
+    pkg->free_segs_descriptors_table = reinterpret_cast<uint64_t>(base + pkg->free_segs_descriptors_table);
 
     // ---- properties_table：数组指针 + 每条 name/data 一级重链 ----
     if (!offset_in_pkt(pkg->properties_table,
