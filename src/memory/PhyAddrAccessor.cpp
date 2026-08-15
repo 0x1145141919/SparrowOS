@@ -1,4 +1,5 @@
 #include "memory/phyaddr_accessor.h"
+#include "memory/main_phyaddr_access_window.h"
 #include "util/OS_utils.h"
 
 // 静态成员定义
@@ -7,9 +8,17 @@ vm_interval PhyAddrAccessor::cache_tb[CACHE_SLOT_COUNT] = {};
 uint64_t    PhyAddrAccessor::lru_tick[CACHE_SLOT_COUNT] = {};
 uint64_t    PhyAddrAccessor::access_clock = 0;
 
+// 主窗口直映射基址（完全信任旁路 PHYACC_* 用）：窗口建立时设置，
+// 与 BASIC_interval 同源。声明见 memory/main_phyaddr_access_window.h。
+uint64_t main_window_vbase = 0;
+
 void PhyAddrAccessor::Init(vm_interval basic_interval)
 {
     BASIC_interval = basic_interval;
+    // 主窗口基址：归一化 vbase - pbase（当前窗口 pbase=0，即窗口 vbase）。
+    // 保证 PHYACC_VA(addr) = main_window_vbase + addr 精确等于
+    // vbase() + (addr - pbase())，供完全信任旁路直算。
+    main_window_vbase = basic_interval.vbase() - basic_interval.pbase();
     // 清空缓存槽
     for (uint32_t i = 0; i < CACHE_SLOT_COUNT; i++) {
         cache_tb[i] = {};

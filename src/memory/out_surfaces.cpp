@@ -2,6 +2,9 @@
 #include "memory/all_pages_arr.h"
 #include "memory/AddresSpace.h"
 #include "memory/FreePagesAllocator.h"
+#include "memory/page_frame_state_mgr.h"
+#include "memory/main_phyaddr_access_window.h"
+#include "memory/pgtable_page.h"
 #include "panic.h"
 #include "util/OS_utils.h"
 #include "ktime.h"
@@ -366,6 +369,65 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
 
     return success;
 }
+// ================================================================
+// 页表页专用分配/释放轮子（声明见 memory/pgtable_page.h）
+// ================================================================
+phyaddr_t pgtable_page_alloc(buddy_alloc_params params, KURD_t& kurd)
+{
+    constexpr uint64_t _4KB_SIZE = 0x1000;
+#ifdef USER_MODE
+    void* p = mmap(nullptr, _4KB_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        kurd = KURD_t(result_code::FAIL, OS_OUT_OF_MEMORY, module_code::MEMORY,
+                      MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES, 0,
+                      level_code::ERROR, err_domain::CORE_MODULE);
+        return 0;
+    }
+    return (phyaddr_t)p;
+#else
+    phyaddr_t p = 0;
+    if (page_frame_state_mgr::early_alloc_open()) [[unlikely]] {
+        // 早期：page_frame_state_mgr 直配（记账 kernel_pgtable，4KB 对齐）
+        p = page_frame_state_mgr::early_alloc(1, 12, page_state_t::kernel_pgtable);
+        if (p == 0) {
+            kurd = KURD_t(result_code::FAIL, OS_OUT_OF_MEMORY, module_code::MEMORY,
+                          MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES, 0,
+                          level_code::ERROR, err_domain::CORE_MODULE);
+            return 0;
+        }
+    } else {
+        // 运行时（绝大多数，热路径）：FPA
+        p = FreePagesAllocator::alloc(_4KB_SIZE, params,
+                                      page_state_t::kernel_pgtable, kurd);
+        if (p == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(kurd))
+            return 0;
+    }
+    // 整页清零（rep stosq，经主窗口）
+    ksetmem_64((void*)PHYACC_VA(p), 0, _4KB_SIZE);
+    return p;
+#endif
+}
+
+KURD_t pgtable_page_free(phyaddr_t base)
+{
+    constexpr uint64_t _4KB_SIZE = 0x1000;
+#ifdef USER_MODE
+    munmap((void*)base, _4KB_SIZE);
+    return KURD_t(result_code::SUCCESS, 0, module_code::MEMORY,
+                  MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES, 0,
+                  level_code::INFO, err_domain::CORE_MODULE);
+#else
+    if (page_frame_state_mgr::early_alloc_open()) [[unlikely]] {
+        // early 阶段分配的页表页生命周期 = 内核，不可释放（no-op）
+        return KURD_t(result_code::SUCCESS, 0, module_code::MEMORY,
+                      MEMMODULE_LOCATIONS::LOCATION_CODE_OUT_SURFACES, 0,
+                      level_code::INFO, err_domain::CORE_MODULE);
+    }
+    return FreePagesAllocator::free(base, _4KB_SIZE);
+#endif
+}
+
 void* __wrapped_pgs_valloc(KURD_t*kurd_out,uint64_t _4kbpgscount, page_state_t TYPE, uint8_t alignment_log2) {
 #ifdef USER_MODE
     (void)TYPE;

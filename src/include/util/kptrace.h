@@ -15,6 +15,10 @@ class ksymmanager {//被映射的表项是只读的，写操作会触发页错�
     static uint32_t entry_size;
     public:
     static int Init(vm_interval* entry,uint64_t file_size);
+    // 搬家/重定向：符号表物理资产被转生（alloc 新物理页 → 拷贝 → 重映射）后，
+    // 应急映射（phyaddr_window 重链）的旧 VA 会失效，须经此重指向新 interval。
+    // new_entry 必须携带转生后的 vbase（含经 phyaddr_window 重链的窗口式 VA）。
+    static int relocate(vm_interval* new_entry,uint64_t file_size);
     static symbol_entry*get_entry_near_addr(vaddr_t addr);//找到引索为n的符号使(symbol_table[n].address<=addr)&&(symbol_table[n+1].address>addr)
     //保证地址随引索的增加而增加，使用二分查找
     static const symbol_entry* get_table() { return symbol_table; }

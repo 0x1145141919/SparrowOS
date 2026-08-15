@@ -13,6 +13,8 @@
 #include "util/textConsole.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
+#include "util/kptrace.h"
+#include "arch/x86_64/core_hardwares/HPET.h"
 
 // ════════════════════════════════════════════════════════════════
 // exec_env_prepare 实现
@@ -22,6 +24,8 @@
 // ════════════════════════════════════════════════════════════════
 
 static void boot_halt(loc_code_t loc);
+static void init_panic_early_support(void);
+static void init_output_subsystem(void);
 
 
 void exec_env_prepare(init_to_kernel_header_v2* pkg)
@@ -52,8 +56,84 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
     if (!g_asset_table || g_asset_table->pour(an) != 0)
         boot_halt(SRC_LOC());
 
-    // read/deal 三个必需资产：log_buffer / gop_framebuffer / gop_info
-    // 模式：read 直读 → 调用方自拷 → deal 标记（deal 后 entry 悬垂）
+    // 早期 panic 支撑：phyaddr_window / ksymmanager / HPET（先于输出子系统就绪，
+    // 保证第一条可能崩溃即可调符号表 + 时间戳）
+    init_panic_early_support();
+
+    // 输出子系统初始化（资产 read/deal + 输出链路），统一收敛到独立函数
+    init_output_subsystem();
+
+    // 页框状态管理器收养：接管 init 穿越的 pages_arr 账本（mem_map）+ free_segs
+    // 描述符。收养后本模块即持有权威物理页账本（state_set / state_query /
+    // kind_check / idx_base_* / early_alloc 可用）；FPA 后续重建基于它
+    // （intervals_snapshot 全量区间，自行分桶折叠），不再有 BCB 位图交接。
+    {
+        const asset_table_entry* e = g_asset_table->read("pages_arr mem");
+        if (!e) boot_halt(SRC_LOC());
+        vm_interval pages_arr_iv = *(vm_interval*)e->data;
+        g_asset_table->deal("pages_arr mem");
+        if (page_frame_state_mgr::adopt(&pages_arr_iv,
+                                        an->free_segs_descriptors_table,
+                                        an->free_segs_count) != 0)
+            boot_halt(SRC_LOC());
+        bsp_kout << "[exec_env_prepare] page_frame_state_mgr adopted: "
+                 << an->free_segs_count << " free_segs descriptors" << kendl;
+    }
+}
+// 早期 panic 支撑：phyaddr_window / ksymmanager / HPET
+//   ① "phyaddr_window mem" → Kspace_phyaddr_access_window 全局落账（[0,dram_top)→高 VA
+//      窗口）。它是二级重链的钥匙：包外纯物理资产（movable 等）经它把 phys 重链成内核
+//      VA（见 Init_v3_string_tag_container.md §三.2），后续 PhyAddrAccessor 也依赖它。
+//   ② "ksymbols movable" → movable_file_entry_t（纯物理描述符，init.elf 不做 KMMU 映射）。
+//      应急：经 phyaddr_window 重链成 vm_interval 后 Init——panic 最早的符号表可得。
+//   ③ "hpet_mmio mem" → readonly_timer（HPET）：kout 时间戳（now）与 ktime 依赖它。
+// 本函数仍处摸黑阶段，失败一律 boot_halt 裸停机。
+static void init_panic_early_support(void)
+{
+    // ① 二级重链基础：phyaddr_window 必须先于一切 phys→VA 换算落账
+    {
+        const asset_table_entry* e = g_asset_table->read("phyaddr_window mem");
+        if (!e) boot_halt(SRC_LOC());
+        Kspace_phyaddr_access_window = *(vm_interval*)e->data;
+        g_asset_table->deal("phyaddr_window mem");
+    }
+    // ② ksymmanager：ksymbols 应急经 phyaddr_window 重链访问
+    {
+        const asset_table_entry* e = g_asset_table->read("ksymbols movable");
+        if (!e) boot_halt(SRC_LOC());
+        movable_file_entry_t sym = *(movable_file_entry_t*)e->data;
+        g_asset_table->deal("ksymbols movable");
+
+        phyaddr_t sym_pbase = sym.base_ppn << 12;
+        uint64_t  sym_bytes = align_up(sym.size, 4096);
+        vm_interval ksym_iv = {
+            .vpn    = (Kspace_phyaddr_access_window.vbase() + sym_pbase) >> 12,
+            .ppn    = sym.base_ppn,
+            .npages = sym_bytes >> 12,
+            .access = KSPACE_RW_ACCESS,
+        };
+        if (ksymmanager::Init(&ksym_iv, sym.size) != 0)
+            boot_halt(SRC_LOC());
+    }
+    // ③ readonly_timer：HPET MMIO 已由 init.elf KMMU 映射（vm_interval 含真实 VA）
+    {
+        const asset_table_entry* e = g_asset_table->read("hpet_mmio mem");
+        if (!e) boot_halt(SRC_LOC());
+        vm_interval hpet_iv = *(vm_interval*)e->data;
+        g_asset_table->deal("hpet_mmio mem");
+        readonly_timer = new HPET_driver();
+        if (error_kurd(readonly_timer->Init(&hpet_iv)))
+            boot_halt(SRC_LOC());
+    }
+}
+
+// 输出子系统初始化：
+//   ① read/deal 三个必需资产：log_buffer / gop_framebuffer / gop_info
+//     模式：read 直读 → 调用方自拷 → deal 标记（deal 后 entry 悬垂）
+//   ② 输出链路：GfxPrim 就绪 → textconsole → serial → kout
+// 本函数仍处摸黑阶段，失败一律 boot_halt 裸停机。
+static void init_output_subsystem(void)
+{
     {
         const asset_table_entry* e = g_asset_table->read("log_buffer mem");
         if (!e) boot_halt(SRC_LOC());
@@ -75,7 +155,6 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
             boot_halt(SRC_LOC());
     }
 
-    // 输出子系统链路：GfxPrim 就绪 → textconsole → serial → kout
     {
         Vec2i font_vec = {.x = 16, .y = 32};
         if (error_kurd(textconsole_GoP::Init(&ter16x32_data[0][0][0],
@@ -86,24 +165,8 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
         bsp_kout.Init();
         bsp_kout.shift_dec();
     }
-
-    // 页框状态管理器收养：接管 init 穿越的 pages_arr 账本（mem_map）+ free_segs
-    // 描述符。收养后本模块即持有权威物理页账本（state_set / state_query /
-    // kind_check / idx_base_* / early_alloc 可用）；FPA 后续重建基于它
-    // （intervals_snapshot 全量区间，自行分桶折叠），不再有 BCB 位图交接。
-    {
-        const asset_table_entry* e = g_asset_table->read("pages_arr mem");
-        if (!e) boot_halt(SRC_LOC());
-        vm_interval pages_arr_iv = *(vm_interval*)e->data;
-        g_asset_table->deal("pages_arr mem");
-        if (page_frame_state_mgr::adopt(&pages_arr_iv,
-                                        an->free_segs_descriptors_table,
-                                        an->free_segs_count) != 0)
-            boot_halt(SRC_LOC());
-        bsp_kout << "[exec_env_prepare] page_frame_state_mgr adopted: "
-                 << an->free_segs_count << " free_segs descriptors" << kendl;
-    }
 }
+
 // 早期失败停机：exec_env_prepare 阶段无 kout，只能裸停机
 static void boot_halt(loc_code_t loc) {
     (void)loc;

@@ -20,6 +20,17 @@ int ksymmanager::Init(vm_interval* entry,uint64_t file_size)
     entry_count = entry_size/sizeof(symbol_entry);
     return OS_SUCCESS;
 }
+int ksymmanager::relocate(vm_interval* new_entry,uint64_t file_size)
+{
+    if (!new_entry || !new_entry->vbase() || file_size == 0)
+        return -1;
+    phybase    = new_entry->pbase();
+    virtbase   = new_entry->vbase();
+    symbol_table = (symbol_entry*)virtbase;
+    entry_size = file_size;
+    entry_count = entry_size/sizeof(symbol_entry);
+    return OS_SUCCESS;
+}
 symbol_entry *ksymmanager::get_entry_near_addr(vaddr_t addr)
 {
     // 检查符号表是否有效

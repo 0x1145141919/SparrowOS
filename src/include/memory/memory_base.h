@@ -12,6 +12,7 @@ enum class page_state_t : uint8_t {
     init_tmp_property=6,
     transfer_package=7,//特别指init.elf移交给kernel.elf的那个信息包，地位特殊值得单开一个类型
     kernel_pinned = 10,
+    kernel_pgtable = 11,
     reserved = 15
 };
 struct free_seg_descriptor_t{

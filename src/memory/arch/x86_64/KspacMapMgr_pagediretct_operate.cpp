@@ -4,6 +4,8 @@
 #include "memory/kpoolmemmgr.h"
 #include "memory/FreePagesAllocator.h"
 #include "memory/phyaddr_accessor.h"
+#include "memory/main_phyaddr_access_window.h"
+#include "memory/pgtable_page.h"
 #include "abi/os_error_definitions.h"
 #include "linker_symbols.h"
 #include "util/OS_utils.h"
@@ -132,17 +134,12 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
     if (!(pdpte.raw & PageTableEntry::P_MASK) ){
         nonleaf_pgtbentry_flagsset(pdpte);
         KURD_t kurd;
-        phyaddr_t pd_phyaddr = FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,kurd);
+        phyaddr_t pd_phyaddr = pgtable_page_alloc(BUDDY_ALLOC_DEFAULT_FLAG, kurd);
         if (pd_phyaddr == 0||kurd.result!=result_code::SUCCESS) return kurd;
         pdpte.pdpte.PD_addr = pd_phyaddr >> 12;
-        // 初始化新分配的页目录中的所有页表项为0
-        for(uint16_t i=0;i<512;i++)
-        {
-            PhyAddrAccessor::writeu64((pd_phyaddr & PHYS_ADDR_MASK) + sizeof(PageTableEntryUnion) * i, 0);
-        }
     }
     phyaddr_t pde_loacte_phyaddr = (pdpte.pdpte.PD_addr << 12) +sizeof(PageTableEntryUnion) * pde_index;
-    uint64_t pderaw = PhyAddrAccessor::readu64(pde_loacte_phyaddr);
+    uint64_t pderaw = PHYACC_READU64(pde_loacte_phyaddr);
     PageTableEntryUnion pde = {
         .raw = pderaw
     };
@@ -155,15 +152,10 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
         {
             nonleaf_pgtbentry_flagsset(pde);
             KURD_t kurd;
-            phyaddr_t pt_phyaddr = FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_ALWAYS_TRY,page_state_t::kernel_pinned,kurd);
+            phyaddr_t pt_phyaddr = pgtable_page_alloc(BUDDY_ALLOC_ALWAYS_TRY, kurd);
             if (pt_phyaddr == 0||kurd.result!=result_code::SUCCESS) return kurd;
             pde.pde.pt_addr = pt_phyaddr >> 12;
-            PhyAddrAccessor::writeu64(pde_loacte_phyaddr, pde.raw);
-            // 初始化新分配的页表中的所有页表项为0
-            for(uint16_t i=0;i<512;i++)
-            {
-                PhyAddrAccessor::writeu64((pt_phyaddr & PHYS_ADDR_MASK) + sizeof(PageTableEntryUnion) * i, 0);
-            }
+            PHYACC_WRITEU64(pde_loacte_phyaddr, pde.raw);
         }
 
     phyaddr_t pte_phybase = (pde.pde.pt_addr << 12) & PHYS_ADDR_MASK;
@@ -181,10 +173,9 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_set(
     template_entry.pte.present = 1;
     template_entry.pte.PCD = idx.PCD;
     template_entry.pte.PWT = idx.PWT;
+    PageTableEntryUnion* pte_arr = (PageTableEntryUnion*)PHYACC_VA(pte_phybase);
     for (uint16_t i = 0; i < count; i++) {
-        uint64_t pte_offset = sizeof(PageTableEntryUnion) * (i + pte_index);
-        uint64_t pte_value = template_entry.raw + phybase + i * _4KB_SIZE;
-        PhyAddrAccessor::writeu64(pte_phybase + pte_offset, pte_value);
+        pte_arr[pte_index + i].raw = template_entry.raw + phybase + i * _4KB_SIZE;
     }
 
     return success;
@@ -375,14 +366,9 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
     if (!(pdpte.raw & PageTableEntry::P_MASK)) {
         nonleaf_pgtbentry_flagsset(pdpte);
         KURD_t kurd;
-        phyaddr_t pd_phyaddr = FreePagesAllocator::alloc(_4KB_SIZE,BUDDY_ALLOC_DEFAULT_FLAG,page_state_t::kernel_pinned,kurd);
+        phyaddr_t pd_phyaddr = pgtable_page_alloc(BUDDY_ALLOC_DEFAULT_FLAG, kurd);
         if (pd_phyaddr == 0||kurd.result!=result_code::SUCCESS) return kurd;
         pdpte.pdpte.PD_addr = pd_phyaddr >> 12;
-        // 初始化新分配的页目录中的所有页表项为0
-        for(uint16_t i=0;i<512;i++)
-        {
-            PhyAddrAccessor::writeu64((pd_phyaddr & PHYS_ADDR_MASK) + sizeof(PageTableEntryUnion) * i, 0);
-        }
     }
 
     // 修复位运算优先级问题：使用括号确保正确的运算顺序
@@ -403,10 +389,10 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_set(
     template_entry.pde2MB.PCD          = idx.PCD;
     template_entry.pde2MB.EXECUTE_DENY = !access.is_executable;
 
+    PageTableEntryUnion* pd_arr = (PageTableEntryUnion*)PHYACC_VA(pd_phyaddr);
     for (uint16_t i = 0; i < count; i++) {
-        uint64_t pde_offset = sizeof(PageTableEntryUnion) * (pde_index + i);
         template_entry.pde2MB._2mb_Addr = ((phybase >> 21) + i) & ((1ULL << 27) - 1);
-        PhyAddrAccessor::writeu64(pd_phyaddr + pde_offset, template_entry.raw);
+        pd_arr[pde_index + i].raw = template_entry.raw;
     }
 
     return success;
@@ -517,7 +503,7 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     uint64_t pd_addr = pdpte.pdpte.PD_addr;
     uint64_t pde_offset = sizeof(PageTableEntryUnion) * pde_index;
     uint64_t pde_address = (pd_addr << 12) + pde_offset;
-    uint64_t pderaw = PhyAddrAccessor::readu64(pde_address);
+    uint64_t pderaw = PHYACC_READU64(pde_address);
     
     if (!(pderaw & PageTableEntry::P_MASK)) {
         fail.reason = pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_SUBTABLE_NOT_EXIST;
@@ -532,28 +518,26 @@ KURD_t KspacePageTable::_4lv_pte_4KB_entries_clear(vaddr_t vaddr_base, uint16_t 
     PageTableEntryUnion pde = { .raw = pderaw };
     phyaddr_t pt_phyaddr = (pde.pde.pt_addr << 12) & PHYS_ADDR_MASK;
 
-    // 清除指定范围 PTE
+    // 清除指定范围 PTE：整段 rep stosq 清零，再逐项 invlpg
+    PageTableEntryUnion* pt_arr = (PageTableEntryUnion*)PHYACC_VA(pt_phyaddr);
+    ksetmem_64(&pt_arr[pte_index], 0, sizeof(PageTableEntryUnion) * count);
     for (uint16_t i = 0; i < count; i++) {
-        uint64_t pte_offset = sizeof(PageTableEntryUnion) * (pte_index + i);
-        PhyAddrAccessor::writeu64(pt_phyaddr + pte_offset, 0);
         invalidate_tlb_by_vaddr(vaddr_base + ((pte_index + i) << 12)); // 4KB 步长
     }
 
     // 检查整个 PT 是否全空（不限 may_full_del）
     bool is_full_del = true;
     for (uint16_t i = 0; i < 512; i++) {
-        uint64_t pte_offset = sizeof(PageTableEntryUnion) * i;
-        uint64_t pte_value = PhyAddrAccessor::readu64(pt_phyaddr + pte_offset);
-        if (pte_value & PageTableEntry::P_MASK) {
+        if (pt_arr[i].raw & PageTableEntry::P_MASK) {
             is_full_del = false;
             break;
         }
     }
 
     if (is_full_del) {
-        FreePagesAllocator::free(pt_phyaddr, 1<<12);
+        pgtable_page_free(pt_phyaddr);
         // 清除PDE项
-        PhyAddrAccessor::writeu64(pde_address, 0);
+        PHYACC_WRITEU64(pde_address, 0);
     }
 
     return success;
@@ -668,11 +652,11 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
 
     phyaddr_t pd_phyaddr = (pdpte.pdpte.PD_addr << 12) & PHYS_ADDR_MASK;
 
-    // 清除指定范围的 2MB PDE 条目
+    // 清除指定范围的 2MB PDE 条目：先逐项校验，再整段 rep stosq 清零 + 逐项 invlpg
+    PageTableEntryUnion* pd_arr = (PageTableEntryUnion*)PHYACC_VA(pd_phyaddr);
     for (uint16_t i = 0; i < count; i++) {
-        uint64_t pde_offset = sizeof(PageTableEntryUnion) * (pde_index + i);
-        uint64_t pde_value = PhyAddrAccessor::readu64(pd_phyaddr + pde_offset);
-        
+        uint64_t pde_value = pd_arr[pde_index + i].raw;
+
         if (!(pde_value & PageTableEntry::P_MASK)) {
             // 已经为空，继续（允许重复清除）
             continue;
@@ -681,23 +665,23 @@ KURD_t KspacePageTable::_4lv_pde_2MB_entries_clear(vaddr_t vaddr_base, uint16_t 
             fatal.reason = pages_clear_results::FATAL_REASONS::REASON_CODE_HUGE_PDE_NOT_EXIST;
             return fatal;
         }
-        PhyAddrAccessor::writeu64(pd_phyaddr + pde_offset, 0);
+    }
+    ksetmem_64(&pd_arr[pde_index], 0, sizeof(PageTableEntryUnion) * count);
+    for (uint16_t i = 0; i < count; i++) {
         invalidate_tlb_by_vaddr(vaddr_base + ((pde_index + i) << 21)); // 2MB 步长
     }
 
     // 检查整个 PD 是否完全为空 → 回收 PD 页表页
     bool pd_empty = true;
     for (uint16_t i = 0; i < 512; i++) {
-        uint64_t pde_offset = sizeof(PageTableEntryUnion) * i;
-        uint64_t pde_value = PhyAddrAccessor::readu64(pd_phyaddr + pde_offset);
-        if (pde_value & PageTableEntry::P_MASK) {
+        if (pd_arr[i].raw & PageTableEntry::P_MASK) {
             pd_empty = false;
             break;
         }
     }
 
     if (pd_empty) {
-        FreePagesAllocator::free(pd_phyaddr, 1<<12);
+        pgtable_page_free(pd_phyaddr);
         pdpte.raw = 0;  // 清上级 PDPTE
         // 注意：这里不需要递归检查 PDPTE 是否全空，因为内核空间一般不回收整个 512GB 块
     }
@@ -740,7 +724,7 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
         phyaddr_t pd_phyaddr = (pdpte.pdpte.PD_addr << 12) & PHYS_ADDR_MASK;
         uint64_t pde_offset = sizeof(PageTableEntryUnion) * pde_index;
         uint64_t pde_address = pd_phyaddr + pde_offset;
-        uint64_t pde_raw = PhyAddrAccessor::readu64(pde_address);
+        uint64_t pde_raw = PHYACC_READU64(pde_address);
         
         // 检查PDE
         if (!(pde_raw & PageTableEntry::P_MASK)) {
@@ -761,7 +745,7 @@ KURD_t KspacePageTable::v_to_phyaddrtraslation_entry
         phyaddr_t pt_phyaddr = (pde.pde.pt_addr << 12) & PHYS_ADDR_MASK;
         uint64_t pte_offset = sizeof(PageTableEntryUnion) * pte_index;
         uint64_t pte_address = pt_phyaddr + pte_offset;
-        uint64_t pte_raw = PhyAddrAccessor::readu64(pte_address);
+        uint64_t pte_raw = PHYACC_READU64(pte_address);
         
         // 设置结果
         page_size = _4KB_SIZE;

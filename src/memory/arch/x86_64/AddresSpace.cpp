@@ -4,6 +4,8 @@
 #include "memory/kpoolmemmgr.h"
 #include "memory/FreePagesAllocator.h"
 #include "memory/phyaddr_accessor.h"    
+#include "memory/main_phyaddr_access_window.h"
+#include "memory/pgtable_page.h"
 #include "linker_symbols.h"
 #include "util/OS_utils.h"
 #include "util/kout.h"
@@ -206,14 +208,9 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         }else{
             
             phyaddr_t entry_to_alloc_phybase=0;
-            entry_to_alloc_phybase= FreePagesAllocator::alloc(_4KB_SIZE, (this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, contain);
+            entry_to_alloc_phybase = pgtable_page_alloc((this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, contain);
             if(!entry_to_alloc_phybase||error_kurd(contain)) return 0;
-            
-            // 初始化新分配的页表内存为0
-            for(uint16_t i=0; i<512; i++) {
-                uint64_t offset = sizeof(PageTableEntryUnion) * i;
-                PhyAddrAccessor::writeu64(entry_to_alloc_phybase + offset, 0);
-            }
+
             entry.raw=0;
             entry.pte.KERNELbit=1;
             entry.pte.present=1;
@@ -247,10 +244,10 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }//这里权限问题待解决
         
-        // 使用pml4_phybase和PhyAddrAccessor访问PML4项
+        // 使用pml4_phybase访问PML4项
         uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
         uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-        uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+        uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
         PageTableEntryUnion pml4e = { .raw = pml4_raw };
         
         phyaddr_t pdpte_tb_phyaddr = get_sub_tb(pml4e,PageTableEntryType::PML4);
@@ -258,12 +255,12 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         
         // 检查并写回PML4项（如果需要）
         if (!(pml4_raw & PageTableEntry::P_MASK) && (pml4e.pml4.present)) {
-            PhyAddrAccessor::writeu64(pml4_addr, pml4e.raw);
+            PHYACC_WRITEU64(pml4_addr, pml4e.raw);
         }
         
         uint64_t pdpte_offset = sizeof(PageTableEntryUnion) * pdpte_index;
         uint64_t pdpte_addr = pdpte_tb_phyaddr + pdpte_offset;
-        uint64_t pdpte_raw = PhyAddrAccessor::readu64(pdpte_addr);
+        uint64_t pdpte_raw = PHYACC_READU64(pdpte_addr);
         PageTableEntryUnion pdpte_entry = { .raw = pdpte_raw };
         
         phyaddr_t pde_tb_phyaddr = get_sub_tb(pdpte_entry, PageTableEntryType::PDPT);
@@ -278,12 +275,12 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             }
         // 如果在get_sub_tb中修改了pdpte_entry（例如分配了新的页表），需要将修改写回
         if (!(pdpte_raw & PageTableEntry::P_MASK)&&(pdpte_entry.pdpte.present)) {
-            PhyAddrAccessor::writeu64(pdpte_addr, pdpte_entry.raw);
+            PHYACC_WRITEU64(pdpte_addr, pdpte_entry.raw);
         }
         
         uint64_t pde_offset = sizeof(PageTableEntryUnion) * pde_index;
         uint64_t pde_addr = pde_tb_phyaddr + pde_offset;
-        uint64_t pde_raw = PhyAddrAccessor::readu64(pde_addr);
+        uint64_t pde_raw = PHYACC_READU64(pde_addr);
         PageTableEntryUnion pde_entry = { .raw = pde_raw };
         
         phyaddr_t pte_tb_phyaddr = get_sub_tb(pde_entry, PageTableEntryType::PD);
@@ -298,14 +295,12 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             
         // 如果在get_sub_tb中修改了pde_entry（例如分配了新的页表），需要将修改写回
         if (!(pde_raw & PageTableEntry::P_MASK)&&(pde_entry.pde.present)) {
-            PhyAddrAccessor::writeu64(pde_addr, pde_entry.raw);
+            PHYACC_WRITEU64(pde_addr, pde_entry.raw);
         }
         
-        //设置pte项
+        //设置pte项（主窗口基址提升后数组遍历）
+        PageTableEntryUnion* pte_arr = (PageTableEntryUnion*)PHYACC_VA(pte_tb_phyaddr);
         for(uint16_t i=0;i<count;i++){
-            uint64_t pte_offset = sizeof(PageTableEntryUnion) * (pte_index + i);
-            uint64_t pte_addr = pte_tb_phyaddr + pte_offset;
-            
             PageTableEntryUnion pte_entry;
             pte_entry.raw=0;
             pte_entry.pte.present=1;
@@ -318,7 +313,7 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             pte_entry.pte.EXECUTE_DENY=!desc_access.is_executable;
             pte_entry.pte.global=desc_access.is_global;
             
-            PhyAddrAccessor::writeu64(pte_addr, pte_entry.raw);
+            pte_arr[pte_index+i].raw = pte_entry.raw;
         }
         return 0;
     };
@@ -349,10 +344,10 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }
 
-        // 使用pml4tb_phyaddr_base和PhyAddrAccessor访问PML4项
+        // 使用pml4tb_phyaddr_base访问PML4项
         uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
         uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-        uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+        uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
         PageTableEntryUnion pml4e = { .raw = pml4_raw };
         
         phyaddr_t pdpte_tb_phyaddr = get_sub_tb(pml4e, PageTableEntryType::PML4);
@@ -360,12 +355,12 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         
         // 检查并写回PML4项（如果需要）
         if (!(pml4_raw & PageTableEntry::P_MASK) && (pml4e.pml4.present)) {
-            PhyAddrAccessor::writeu64(pml4_addr, pml4e.raw);
+            PHYACC_WRITEU64(pml4_addr, pml4e.raw);
         }
         
         uint64_t pdpte_offset = sizeof(PageTableEntryUnion) * pdpte_index;
         uint64_t pdpte_addr = pdpte_tb_phyaddr + pdpte_offset;
-        uint64_t pdpte_raw = PhyAddrAccessor::readu64(pdpte_addr);
+        uint64_t pdpte_raw = PHYACC_READU64(pdpte_addr);
         PageTableEntryUnion pdpte_entry = { .raw = pdpte_raw };
         
         phyaddr_t pde_tb_phyaddr = get_sub_tb(pdpte_entry, PageTableEntryType::PDPT);
@@ -381,14 +376,12 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             
         // 如果在get_sub_tb中修改了pdpte_entry（例如分配了新的页表），需要将修改写回
         if (!(pdpte_raw & PageTableEntry::P_MASK)&&(pdpte_entry.pdpte.present)) {
-            PhyAddrAccessor::writeu64(pdpte_addr, pdpte_entry.raw);
+            PHYACC_WRITEU64(pdpte_addr, pdpte_entry.raw);
         }
         
-        // 设置pde项
+        // 设置pde项（主窗口基址提升后数组遍历）
+        PageTableEntryUnion* pde_arr = (PageTableEntryUnion*)PHYACC_VA(pde_tb_phyaddr);
         for(uint16_t i=0;i<count;i++){
-            uint64_t pde_offset = sizeof(PageTableEntryUnion) * (pde_index + i);
-            uint64_t pde_addr = pde_tb_phyaddr + pde_offset;
-            
             PageTableEntryUnion pde_entry;
             pde_entry.raw = 0;
             pde_entry.raw |= PDE::PS_MASK;
@@ -402,7 +395,7 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             pde_entry.pde2MB.EXECUTE_DENY = !desc_access.is_executable;
             pde_entry.pde2MB.global = desc_access.is_global;
             
-            PhyAddrAccessor::writeu64(pde_addr, pde_entry.raw);
+            pde_arr[pde_index + i].raw = pde_entry.raw;
         }
         return 0;
     };
@@ -430,10 +423,10 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             return PAGES_COUNT_AND_BASE_OUT_OF_RANGE;
         }
 
-        // 使用pml4tb_phyaddr_base和PhyAddrAccessor访问PML4项
+        // 使用pml4tb_phyaddr_base访问PML4项
         uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
         uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-        uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+        uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
         PageTableEntryUnion pml4e = { .raw = pml4_raw };
         
         phyaddr_t pdpte_tb_phyaddr = get_sub_tb(pml4e, PageTableEntryType::PML4);
@@ -441,13 +434,11 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
         
         // 检查并写回PML4项（如果需要）
         if (!(pml4_raw & PageTableEntry::P_MASK) && (pml4e.pml4.present)) {
-            PhyAddrAccessor::writeu64(pml4_addr, pml4e.raw);
+            PHYACC_WRITEU64(pml4_addr, pml4e.raw);
         }
-        // 设置pdpte项
+        // 设置pdpte项（主窗口基址提升后数组遍历）
+        PageTableEntryUnion* pdpte_arr = (PageTableEntryUnion*)PHYACC_VA(pdpte_tb_phyaddr);
         for(uint16_t i=0;i<count;i++){
-            uint64_t pdpte_offset = sizeof(PageTableEntryUnion) * (pdpte_index + i);
-            uint64_t pdpte_addr = pdpte_tb_phyaddr + pdpte_offset;
-            
             PageTableEntryUnion pdpte_entry;
             pdpte_entry.raw = 0;
             pdpte_entry.raw |= PDPTE::PS_MASK;
@@ -461,7 +452,7 @@ KURD_t AddressSpace::enable_low_half_vm_interval(vm_interval interval)
             pdpte_entry.pdpte1GB.EXECUTE_DENY = !desc_access.is_executable;
             pdpte_entry.pdpte1GB.global = desc_access.is_global;
             
-            PhyAddrAccessor::writeu64(pdpte_addr, pdpte_entry.raw);
+            pdpte_arr[pdpte_index + i].raw = pdpte_entry.raw;
         }
         return 0;
     };
@@ -627,14 +618,14 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
 
     if (pte_index + count > 512) return TRY_TO_GET_SUB_PAGE_OF_HUGE_PAGE;
 
-    // 使用pml4tb_phyaddr_base和PhyAddrAccessor访问PML4项
+    // 使用pml4tb_phyaddr_base访问PML4项
     uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
     uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-    uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+    uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
     PageTableEntryUnion pml4e = { .raw = pml4_raw };
     
     phyaddr_t pdpt_base = pml4e.pml4.pdpte_addr << 12;
-    uint64_t pdpte_raw=PhyAddrAccessor::readu64(pdpt_base+pdpte_index*sizeof(PageTableEntryUnion));
+    uint64_t pdpte_raw=PHYACC_READU64(pdpt_base+pdpte_index*sizeof(PageTableEntryUnion));
     if(!(pdpte_raw&PageTableEntry::P_MASK))
     { 
         return TRY_TO_GET_SUB_PAGE_OF_NOT_PRESENT_PAGE;
@@ -642,7 +633,7 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
         if(pdpte_raw&PDPTE::PS_MASK)return TRY_TO_GET_SUB_PAGE_OF_HUGE_PAGE;
     }
     phyaddr_t pde_base=align_down(pdpte_raw,_4KB_SIZE)&PHYS_ADDR_MASK;
-    uint64_t pde_raw=PhyAddrAccessor::readu64(pde_base+pde_index*sizeof(PageTableEntryUnion));
+    uint64_t pde_raw=PHYACC_READU64(pde_base+pde_index*sizeof(PageTableEntryUnion));
     if(!(pde_raw&PageTableEntry::P_MASK))
     { 
         return TRY_TO_GET_SUB_PAGE_OF_NOT_PRESENT_PAGE;
@@ -650,9 +641,11 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
         if(pde_raw&PDE::PS_MASK)return TRY_TO_GET_SUB_PAGE_OF_HUGE_PAGE;
     }
     phyaddr_t pte_base=align_down(pde_raw,_4KB_SIZE)&PHYS_ADDR_MASK;
+    // 校验通过后整段清零（rep stosq），取代逐项 load/store
+    PageTableEntryUnion* pte_arr = (PageTableEntryUnion*)PHYACC_VA(pte_base);
     for(uint16_t i=pte_index;i<pte_index+count;i++)
     {
-        uint64_t pte_raw=PhyAddrAccessor::readu64(pte_base+i*sizeof(PageTableEntryUnion));
+        uint64_t pte_raw=pte_arr[i].raw;
         if(!(pte_raw&PageTableEntry::P_MASK))
         {
             return TRY_TO_CLEAR_UNPRESENT_PAGE;
@@ -660,25 +653,25 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
         phyaddr_t pte_phyaddr=align_down(pte_raw,_4KB_SIZE)&PHYS_ADDR_MASK;
         if(pte_phyaddr!=phybase+(i-pte_index)*_4KB_SIZE)
             return CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
-;
-        PhyAddrAccessor::writeu64(pte_base+i*sizeof(PageTableEntryUnion),0);
     }
+    ksetmem_64(&pte_arr[pte_index], 0, sizeof(PageTableEntryUnion) * count);
     bool all_clear=true;
     for(uint16_t i=0;i<512;i++){
-        if(PhyAddrAccessor::readu64(pte_base+i*sizeof(PageTableEntryUnion))){
+        if(pte_arr[i].raw){
             all_clear=false;
             break;
         }
     }
     if(all_clear)
      {
-        FreePagesAllocator::free(pte_base,1<<12);
-        PhyAddrAccessor::writeu64(pde_base+pde_index*sizeof(PageTableEntryUnion),0);
+        pgtable_page_free(pte_base);
+        PHYACC_WRITEU64(pde_base+pde_index*sizeof(PageTableEntryUnion),0);
         
         // Check if the entire PD is now empty and can be recycled
+        PageTableEntryUnion* pd_arr = (PageTableEntryUnion*)PHYACC_VA(pde_base);
         bool pd_all_clear = true;
         for (uint16_t i = 0; i < 512; i++) {
-            if (PhyAddrAccessor::readu64(pde_base + i * sizeof(PageTableEntryUnion))) {
+            if (pd_arr[i].raw) {
                 pd_all_clear = false;
                 break;
             }
@@ -686,13 +679,14 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
         
         if (pd_all_clear) {
             // Recycle the entire PD page
-            FreePagesAllocator::free(pde_base, 1<<12);
-            PhyAddrAccessor::writeu64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion), 0);
+            pgtable_page_free(pde_base);
+            PHYACC_WRITEU64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion), 0);
             
             // Check if the entire PDPT is now empty and can be recycled
+            PageTableEntryUnion* pdpt_arr = (PageTableEntryUnion*)PHYACC_VA(pdpt_base);
             bool pdpt_all_clear = true;
             for (uint16_t i = 0; i < 512; i++) {
-                if (PhyAddrAccessor::readu64(pdpt_base + i * sizeof(PageTableEntryUnion))) {
+                if (pdpt_arr[i].raw) {
                     pdpt_all_clear = false;
                     break;
                 }
@@ -700,9 +694,9 @@ KURD_t AddressSpace::disable_low_half_vm_interval(vm_interval interval)
             
             if (pdpt_all_clear) {
                 // Recycle the entire PDPT page
-                FreePagesAllocator::free(pdpt_base, 1<<12);
-                // 使用pml4tb_phyaddr_base和PhyAddrAccessor修改PML4项
-                PhyAddrAccessor::writeu64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
+                pgtable_page_free(pdpt_base);
+                // 使用pml4tb_phyaddr_base修改PML4项
+                PHYACC_WRITEU64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
             }
         }
      }
@@ -729,14 +723,14 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
 
     if (pde_index + count > 512) return COUNT_OUT_OF_RANGE;
 
-    // 使用pml4tb_phyaddr_base和PhyAddrAccessor访问PML4项
+    // 使用pml4tb_phyaddr_base访问PML4项
     uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
     uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-    uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+    uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
     PageTableEntryUnion pml4e = { .raw = pml4_raw };
     
     phyaddr_t pdpt_base = pml4e.pml4.pdpte_addr << 12;
-    uint64_t pdpte_raw = PhyAddrAccessor::readu64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion));
+    uint64_t pdpte_raw = PHYACC_READU64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion));
     
     // 检查PDPT条目是否存在且不是1GB大页
     if (!(pdpte_raw & PageTableEntry::P_MASK)) {
@@ -749,8 +743,10 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     
     // 逐项校验：条目必须为 2MB（PS=1）并且物理地址对齐匹配
     uint64_t expected_2mb = phybase / _2MB_SIZE;
+    // 校验通过后整段清零（rep stosq）
+    PageTableEntryUnion* pd_arr = (PageTableEntryUnion*)PHYACC_VA(pde_base);
     for (int i = 0; i < count; i++) {
-        uint64_t pde_raw = PhyAddrAccessor::readu64(pde_base + (pde_index + i) * sizeof(PageTableEntryUnion));
+        uint64_t pde_raw = pd_arr[pde_index + i].raw;
         
         // 检查是否为2MB大页
         if (!(pde_raw & PDE::PS_MASK)) {
@@ -763,10 +759,10 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
         if (pde_phyaddr != (expected_2mb + i) * _2MB_SIZE) {
             return CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
         }
-        
-        // 清零并立即 invlpg（按 2MB 大页的虚地址）
-        PhyAddrAccessor::writeu64(pde_base + (pde_index + i) * sizeof(PageTableEntryUnion), 0);
-        if (will_invalidate_soon) {
+    }
+    ksetmem_64(&pd_arr[pde_index], 0, sizeof(PageTableEntryUnion) * count);
+    if (will_invalidate_soon) {
+        for (int i = 0; i < count; i++) {
             vaddr_t va = vaddr_base + (vaddr_t)i * _2MB_SIZE;
         }
     }
@@ -774,7 +770,7 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     // 检查 PDE 表是否全空
     bool pde_all_empty = true;
     for (int i = 0; i < 512; i++) {
-        if (PhyAddrAccessor::readu64(pde_base + i * sizeof(PageTableEntryUnion))) {
+        if (pd_arr[i].raw) {
             pde_all_empty = false;
             break;
         }
@@ -782,13 +778,14 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     if (!pde_all_empty) return SUCCESS;
 
     // 释放 PDE 表
-    FreePagesAllocator::free(pde_base, 1<<12);
-    PhyAddrAccessor::writeu64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion), 0);
+    pgtable_page_free(pde_base);
+    PHYACC_WRITEU64(pdpt_base + pdpte_index * sizeof(PageTableEntryUnion), 0);
 
     // 检查 PDPT 是否全空
+    PageTableEntryUnion* pdpt_arr = (PageTableEntryUnion*)PHYACC_VA(pdpt_base);
     bool pdpt_all_empty = true;
     for (int i = 0; i < 512; i++) {
-        if (PhyAddrAccessor::readu64(pdpt_base + i * sizeof(PageTableEntryUnion))) {
+        if (pdpt_arr[i].raw) {
             pdpt_all_empty = false;
             break;
         }
@@ -796,9 +793,9 @@ auto _4lv_pde_2MB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     if (!pdpt_all_empty) return SUCCESS;
 
     // 释放 PDPT
-    FreePagesAllocator::free(pdpt_base, 1<<12);
-    // 使用pml4tb_phyaddr_base和PhyAddrAccessor修改PML4项
-    PhyAddrAccessor::writeu64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
+    pgtable_page_free(pdpt_base);
+    // 使用pml4tb_phyaddr_base修改PML4项
+    PHYACC_WRITEU64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
     return SUCCESS;
 };
 
@@ -819,27 +816,28 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
 
     if (pdpte_index + count > 512) return COUNT_OUT_OF_RANGE;
 
-    // 使用pml4tb_phyaddr_base和PhyAddrAccessor访问PML4项
+    // 使用pml4tb_phyaddr_base访问PML4项
     uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_index;
     uint64_t pml4_addr = pml4tb_phyaddr_base + pml4_offset;
-    uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+    uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
     PageTableEntryUnion pml4e = { .raw = pml4_raw };
     
     phyaddr_t pdpt_base = pml4e.pml4.pdpte_addr << 12;
 
-    // 逐项校验并清除
+    // 逐项校验：必须是 1GB 大页（PS=1）且物理地址一致，校验通过后整段清零
     uint64_t expected_1gb = phybase / _1GB_SIZE;
+    PageTableEntryUnion* pdpt_arr = (PageTableEntryUnion*)PHYACC_VA(pdpt_base);
     for (uint16_t i = 0; i < count; i++) {
-        uint64_t pdpte_raw = PhyAddrAccessor::readu64(pdpt_base + (pdpte_index + i) * sizeof(PageTableEntryUnion));
+        uint64_t pdpte_raw = pdpt_arr[pdpte_index + i].raw;
         
-        // 必须是 1GB 大页（PS=1）且物理地址一致
         if (!(pdpte_raw & PDPTE::PS_MASK)) return CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
         
         // 解析1GB页的物理地址
         uint64_t pdpte_phyaddr = align_down(pdpte_raw, _1GB_SIZE) & PHYS_ADDR_MASK;
         if (pdpte_phyaddr != (expected_1gb + i) * _1GB_SIZE) return CONSISTENCY_VIOLATION_WHEN_CLEAR_PAGE_TABLE_ENTRY;
-        
-        PhyAddrAccessor::writeu64(pdpt_base + (pdpte_index + i) * sizeof(PageTableEntryUnion), 0);
+    }
+    ksetmem_64(&pdpt_arr[pdpte_index], 0, sizeof(PageTableEntryUnion) * count);
+    for (uint16_t i = 0; i < count; i++) {
         if (will_invalidate_soon) {
             vaddr_t va = vaddr_base + (vaddr_t)i * _1GB_SIZE;
             asm volatile("invlpg %0" : : "m"(va));
@@ -849,7 +847,7 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     // 检查 PDPT 是否全空
     bool pdpt_all_empty = true;
     for (uint16_t i = 0; i < 512; i++) {
-        if (PhyAddrAccessor::readu64(pdpt_base + i * sizeof(PageTableEntryUnion))) {
+        if (pdpt_arr[i].raw) {
             pdpt_all_empty = false;
             break;
         }
@@ -857,10 +855,9 @@ auto _4lv_pdpte_1GB_entries_clear = [pml4tb_phyaddr_base, will_invalidate_soon](
     if (!pdpt_all_empty) return SUCCESS;
 
     // 释放 PDPT
-    FreePagesAllocator::free(pdpt_base, 1<<12);
-    // 使用pml4tb_phyaddr_base和PhyAddrAccessor修改PML4项
-    PhyAddrAccessor::writeu64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
-
+    pgtable_page_free(pdpt_base);
+    // 使用pml4tb_phyaddr_base修改PML4项
+    PHYACC_WRITEU64(pml4tb_phyaddr_base + pml4_index * sizeof(PageTableEntryUnion), 0);
     return SUCCESS;
 };
 
@@ -1021,30 +1018,30 @@ phyaddr_t AddressSpace::vaddr_to_paddr(vaddr_t vaddr,KURD_t& kurd)
     if(pglv_4_or_5 == PAGE_TBALE_LV::LV_4){
         if(pml4_idx>255)goto not_allowd;// 高一半是内核空间,这里无权限访问
         
-        // 使用pml4_phybase和PhyAddrAccessor访问PML4表项
+        // 使用pml4_phybase访问PML4表项
         uint64_t pml4_offset = sizeof(PageTableEntryUnion) * pml4_idx;
         uint64_t pml4_addr = pml4_phybase + pml4_offset;
-        uint64_t pml4_raw = PhyAddrAccessor::readu64(pml4_addr);
+        uint64_t pml4_raw = PHYACC_READU64(pml4_addr);
         PageTableEntryUnion pml4e_union;
         pml4e_union.raw = pml4_raw;
         PML4Entry pml4_entry = pml4e_union.pml4;
         
         if(!pml4_entry.present)goto entry_not_presnt;
         phyaddr_t pdpte_base_phyaddr = pml4_entry.pdpte_addr << 12;
-        uint64_t pdpte_raw = PhyAddrAccessor::readu64(pdpte_base_phyaddr + pdpte_idx * sizeof(PageTableEntryUnion));
+        uint64_t pdpte_raw = PHYACC_READU64(pdpte_base_phyaddr + pdpte_idx * sizeof(PageTableEntryUnion));
         PageTableEntryUnion pdpte;
         pdpte.raw = pdpte_raw;
         if(!pdpte.pdpte.present)goto entry_not_presnt;
         else if(pdpte.pdpte.large)goto pdpte_end;
         
         phyaddr_t pde_base_phyaddr = pdpte.pdpte.PD_addr << 12;
-        uint64_t pde_raw = PhyAddrAccessor::readu64(pde_base_phyaddr + pde_idx * sizeof(PageTableEntryUnion));
+        uint64_t pde_raw = PHYACC_READU64(pde_base_phyaddr + pde_idx * sizeof(PageTableEntryUnion));
         PageTableEntryUnion pde;
         pde.raw = pde_raw;
         if(!pde.pde.present)goto entry_not_presnt;
         else if(pde.raw&PDE::PS_MASK)goto pde_end;  
         phyaddr_t pte_base_phyaddr = pde.pde.pt_addr << 12;
-        uint64_t pte_raw = PhyAddrAccessor::readu64(pte_base_phyaddr + pte_idx * sizeof(PageTableEntryUnion));
+        uint64_t pte_raw = PHYACC_READU64(pte_base_phyaddr + pte_idx * sizeof(PageTableEntryUnion));
         PageTableEntryUnion pte;
         pte.raw = pte_raw;
         goto pte_end;
@@ -1085,7 +1082,7 @@ void AddressSpace::unsafe_load_pml4_to_cr3(uint16_t pcid)
 
 AddressSpace::~AddressSpace()//深度优先搜索折构低一半的页表
 {
-    KURD_t status=FreePagesAllocator::free(pml4_phybase,1<<12);
+    KURD_t status=pgtable_page_free(pml4_phybase);
     if(status.result!=result_code::SUCCESS){
         bsp_kout<<"phymemspace_mgr::pages_recycle failed in result:"<<status<<kendl;
     }
@@ -1094,24 +1091,17 @@ AddressSpace::~AddressSpace()//深度优先搜索折构低一半的页表
 KURD_t AddressSpace::second_stage_init()
 {
     KURD_t contain=KURD_t();
-    pml4_phybase=FreePagesAllocator::alloc(_4KB_SIZE, (this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, contain);
+    pml4_phybase = pgtable_page_alloc((this == gKernelSpace) ? BUDDY_ALLOC_DOWN_4GB : BUDDY_ALLOC_DEFAULT_FLAG, contain);
     if(pml4_phybase==0||error_kurd(contain))return contain;
-    for(uint16_t i=0;i<256;i++){
-        PhyAddrAccessor::writeu64(
-            pml4_phybase+i*sizeof(PageTableEntryUnion),
-            0
-        );
-    }
     phyaddr_t kspacUPpdpt_phybase=KspacePageTable::kspace_uppdpt_phyaddr;
     PageTableEntryUnion Up_pml4e_template=KspacePageTable::high_half_template;
+    // 高半区填充（主窗口基址提升后数组遍历）
+    PageTableEntryUnion* pml4_arr = (PageTableEntryUnion*)PHYACC_VA(pml4_phybase);
     for(uint16_t i=0;i<256;i++)
     {
         uint64_t raw=Up_pml4e_template.raw;
         raw|=(kspacUPpdpt_phybase+i*4096)&PHYS_ADDR_MASK;
-        PhyAddrAccessor::writeu64(
-            pml4_phybase+(i+256)*sizeof(PageTableEntryUnion),
-            raw
-        );
+        pml4_arr[i+256].raw = raw;
     }
     occupyied_size=0;
     ksetmem_8(tlb_holding_bitmap,0,sizeof(tlb_holding_bitmap));

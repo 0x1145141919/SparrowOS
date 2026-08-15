@@ -19,11 +19,16 @@
 //   ④ 一等字段复制到堆                   phymem_segments / free_segs
 //                                        （free_segs 索引式，adopt 内解析，无需中转）
 //   ⑤ asset_table_t::create() + pour    资产表全量深拷贝
-//   ⑥ read/deal 三个必需资产             "log_buffer mem" "gop_framebuffer mem"
-//                                         "gop_info gop" → DmesgRingBuffer / GfxPrim
-//   ⑦ 输出子系统链路                     GfxPrim 就绪 → textconsole_GoP::Init+Clear
-//                                         → serial_init_stage1 → bsp_kout.Init+shift_dec
-//                                        （至此 kout 初始化完毕，可正常打印）
+//   ⑥ 早期 panic 支撑                    "phyaddr_window mem" → Kspace_phyaddr_access_window
+//                                         （二级重链钥匙，后续 PhyAddrAccessor 也依赖）
+//                                        + "ksymbols movable" 应急经窗口重链 → ksymmanager
+//                                        + "hpet_mmio mem" → HPET readonly_timer
+//                                        （保证第一条可能崩溃即可调符号表 + 时间戳）
+//   ⑦ 输出子系统链路 (init_output_subsystem)
+//                                        "log_buffer mem" "gop_framebuffer mem"
+//                                        "gop_info gop" → DmesgRingBuffer / GfxPrim
+//                                        → textconsole_GoP::Init+Clear → serial_init_stage1
+//                                        → bsp_kout.Init+shift_dec（至此 kout 可正常打印）
 //   ⑧ page_frame_state_mgr 收养           adopt("pages_arr mem" 资产 +
 //                                         free_segs_descriptors_table)，接管 mem_map
 //                                         权威账本，供 early_alloc 早期分配；FPA 后续
