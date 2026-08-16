@@ -90,8 +90,8 @@ static void test_equivalence() {
 
         BCB_fnd_DeepFirst   fnd_d;
         BCB_fnd_ShallowFirst fnd_r;
-        fnd_d.init((uint64_t)bd, BCB_ORDER);
-        fnd_r.init((uint64_t)br, BCB_ORDER);
+        fnd_d.pure_init((uint64_t)bd, BCB_ORDER);
+        fnd_r.pure_init((uint64_t)br, BCB_ORDER);
 
         uint8_t order = (uint8_t)((uint64_t)
             std::exponential_distribution<double>(0.3)(gen) % (BCB_ORDER + 1));
@@ -125,7 +125,7 @@ static void test_long_sequence() {
     {
         void* bm = make_bitmap();
         BCB_fnd_DeepFirst fnd;
-        fnd.init((uint64_t)bm, BCB_ORDER);
+        fnd.pure_init((uint64_t)bm, BCB_ORDER);
 
         std::mt19937_64 gen(0x12345678);
         std::exponential_distribution<double> od(0.3);
@@ -172,7 +172,7 @@ static void test_long_sequence() {
     {
         void* bm = make_bitmap();
         BCB_fnd_ShallowFirst fnd;
-        fnd.init((uint64_t)bm, BCB_ORDER);
+        fnd.pure_init((uint64_t)bm, BCB_ORDER);
 
         std::mt19937_64 gen(0x12345678);
         std::exponential_distribution<double> od(0.3);
@@ -282,7 +282,7 @@ static void test_stress_1m() {
     {
         void* bm = make_bitmap();
         BCB_fnd_DeepFirst fnd;
-        fnd.init((uint64_t)bm, BCB_ORDER);
+        fnd.pure_init((uint64_t)bm, BCB_ORDER);
         run_stress_1m(fnd, "DEBUG");
         std::free(bm);
     }
@@ -291,7 +291,7 @@ static void test_stress_1m() {
     {
         void* bm = make_bitmap();
         BCB_fnd_ShallowFirst fnd;
-        fnd.init((uint64_t)bm, BCB_ORDER);
+        fnd.pure_init((uint64_t)bm, BCB_ORDER);
         run_stress_1m(fnd, "RELEASE");
         std::free(bm);
     }

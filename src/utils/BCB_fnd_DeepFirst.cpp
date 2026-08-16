@@ -4,8 +4,8 @@
 // ════════════════════════════════════════════════════════════════
 // BCB_fnd_DeepFirst 实现
 //
-// 位图访问、索引辅助、btree_validation 由基类提供
-// 本文件仅实现 5 个纯虚分配接口 + 内部辅助方法
+// 位图访问、索引辅助、btree_validation、pure_init 由基类提供
+// 本文件仅实现 4 个纯虚分配接口 + 内部辅助方法
 // ════════════════════════════════════════════════════════════════
 
 // ================================================================
@@ -70,28 +70,6 @@ static KURD_t default_fatal()
     KURD_t k = default_kurd();
     k = set_fatal_result_level(k);
     return k;
-}
-
-// ================================================================
-// 初始化
-// ================================================================
-
-void BCB_fnd_DeepFirst::init(
-    vaddr_t bitmap_va, uint8_t max_order_val)
-{
-    max_order = max_order_val;
-
-    const uint64_t total_bits = (3ull << max_order);
-    const uint64_t u64_count  = (total_bits + 63) >> 6;
-
-    bitmap = reinterpret_cast<uint64_t*>(bitmap_va);
-    ksetmem_8(bitmap, 0, u64_count * sizeof(uint64_t));
-
-    node_write(1, NODE_FREE);
-
-    for (uint8_t i = 0; i < ORDER_COUNT; i++)
-        free_count[i] = 0;
-    free_count[max_order] = 1;
 }
 
 // ================================================================

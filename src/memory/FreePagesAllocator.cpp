@@ -1,5 +1,6 @@
 #include "memory/FreePagesAllocator.h"
 #include "memory/all_pages_arr.h"
+#include "memory/page_frame_state_mgr.h"
 #include "arch/x86_64/Interrupt_system/Interrupt.h"
 #include "panic.h"
 #include "util/kout.h"
@@ -85,7 +86,6 @@ KURD_t FreePagesAllocator::default_fatal()
 
 uint64_t FreePagesAllocator::BCB_count;
 FreePagesAllocator::BuddyControlBlock*FreePagesAllocator::BCBS;
-all_pages_arr::free_segs_t* FreePagesAllocator::memory_crumbs;
 fpa_stats* FreePagesAllocator::statistics_arr;
 uint64_t*FreePagesAllocator::processors_preffered_bcb_idx;
 namespace {
@@ -109,66 +109,45 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     );
     KURD_t fatal = set_fatal_result_level(success);
 
-    all_pages_arr::free_segs_t* free_segs = all_pages_arr::free_segs_get();
-    if (!free_segs) {
-        return fatal;
-    }
-    auto free_free_segs = [&]() {
-        if (!free_segs) return;
-        if (free_segs->entries) {
-            delete[] free_segs->entries;
-            free_segs->entries = nullptr;
-        }
-        delete free_segs;
-        free_segs = nullptr;
-    };
-    if (free_segs->count != 0 && free_segs->entries == nullptr) {
-        free_free_segs();
+    // ── 数据源：page_frame_state_mgr 全量区间（不再用 all_pages_arr 的 free 段表）──
+    // intervals_snapshot 返回所有 freeSystemRam 区间（base/numof4kbpgs），不按状态/光标过滤
+    // ——分桶在整区间上进行，BCB 构造函数会逐页查账本写 order-0 叶子位图（允许内部肮脏）。
+    uint64_t iv_count = 0;
+    page_frame_state_mgr::interval_desc_t* ivs = page_frame_state_mgr::intervals_snapshot(&iv_count);
+    if (!ivs || iv_count == 0) {
         return fatal;
     }
 
     if (g_bcb_candidate == nullptr) {
         g_bcb_candidate = new Ktemplats::list_doubly<BCB_plan_entry>();
         if (g_bcb_candidate == nullptr) {
-            free_free_segs();
+            delete[] ivs;
             return fatal;
         }
     } else {
         g_bcb_candidate->clear();
     }
 
-    // 重建 memory_crumbs（堆上持久对象，可被其它结构读取）。
-    if (memory_crumbs != nullptr) {
-        if (memory_crumbs->entries != nullptr) {
-            delete[] memory_crumbs->entries;
-            memory_crumbs->entries = nullptr;
-        }
-        delete memory_crumbs;
-        memory_crumbs = nullptr;
-    }
-    memory_crumbs = new all_pages_arr::free_segs_t();
-    if (memory_crumbs == nullptr) {
-        free_free_segs();
-        return fatal;
-    }
-    memory_crumbs->count = 0;
-    memory_crumbs->entries = nullptr;
+    // 放弃 memory_crumbs（空闲碎片设计废弃）：低于 min_bcb_order 的碎片直接丢弃，
+    // 不再单独记账。候选集只收 order >= min_bcb_order 的桶。
 
-    bsp_kout << "[FPA::Init] free segments (from all_pages_arr): " << (uint64_t)free_segs->count << kendl;
-    for (uint64_t i = 0; i < free_segs->count; ++i) {
-        auto& seg = free_segs->entries[i];
-        bsp_kout << "  seg[" << (uint64_t)i << "] base=0x" << HEX << (uint64_t)seg.base
-                 << " size=0x" << seg.size
-                 << " end=0x" << (seg.base + seg.size) << DEC << kendl;
-        g_all_avaliable_mem_accumulate += seg.size;
+    bsp_kout << "[FPA::Init] intervals (from page_frame_state_mgr): " << (uint64_t)iv_count << kendl;
+    for (uint64_t i = 0; i < iv_count; ++i) {
+        const auto& iv = ivs[i];
+        const phyaddr_t seg_base = iv.base;
+        const uint64_t  seg_size = iv.numof4kbpgs << 12;
+        bsp_kout << "  iv[" << (uint64_t)i << "] base=0x" << HEX << seg_base
+                 << " size=0x" << seg_size
+                 << " end=0x" << (seg_base + seg_size) << DEC << kendl;
+        g_all_avaliable_mem_accumulate += seg_size;
 
         uint64_t order_max = 0;
-        phyaddr_t base = seg.base;
-        if (seg.base != 0) {
-            uint64_t tz = __builtin_ctzll(seg.base);
+        phyaddr_t base = seg_base;
+        if (seg_base != 0) {
+            uint64_t tz = __builtin_ctzll(seg_base);
             order_max = (tz > 12) ? (tz - 12) : 0;
         }
-        const phyaddr_t end = seg.base + seg.size;
+        const phyaddr_t end = seg_base + seg_size;
 
         while (true) {
             uint8_t order = static_cast<uint8_t>(order_max);
@@ -179,8 +158,9 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
                 top = base + (1ull << (order + 12));
             }
 
-            // 候选阶段不过滤 order（0~63 都允许进入候选集）。
-            g_bcb_candidate->push_back(BCB_plan_entry{base, order});
+            // 分桶：仅准入 order >= min_bcb_order 的桶（碎片直接丢弃）
+            if (order >= min_bcb_order)
+                g_bcb_candidate->push_back(BCB_plan_entry{base, order});
 
             if (top >= end) {
                 break;
@@ -195,49 +175,20 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
             }
         }
     }
-    free_free_segs();
+    delete[] ivs;
 
     const uint64_t candidate_count = g_bcb_candidate->size();
     if (candidate_count == 0) {
         return fatal;
     }
 
-    // 先将候选集分流：低于 min_bcb_order 的进入 memory_crumbs，其余进入 selected。
+    // 不再分流 crumbs：全部候选（order >= min_bcb_order）进入 strategy 阶段
     Ktemplats::list_doubly<BCB_plan_entry> selected_candidates;
-    uint64_t crumbs_count = 0;
     for (auto it = g_bcb_candidate->begin(); it != g_bcb_candidate->end(); ++it) {
-        const BCB_plan_entry plan = *it;
-        if (plan.order < min_bcb_order) {
-            ++crumbs_count;
-        } else {
-            selected_candidates.push_back(plan);
-        }
+        selected_candidates.push_back(*it);
     }
     bsp_kout << "[FPA::Init] candidates total=" << (uint64_t)candidate_count
-             << " crumbs(order<10)=" << (uint64_t)crumbs_count
              << " selected=" << (uint64_t)selected_candidates.size() << kendl;
-    memory_crumbs->count = crumbs_count;
-    if (crumbs_count > 0) {
-        memory_crumbs->entries = new all_pages_arr::free_segs_t::entry_t[crumbs_count];
-        if (memory_crumbs->entries == nullptr) {
-            return fatal;
-        }
-        uint64_t out = 0;
-        for (auto it = g_bcb_candidate->begin(); it != g_bcb_candidate->end(); ++it) {
-            const BCB_plan_entry plan = *it;
-            if (plan.order >= min_bcb_order) {
-                continue;
-            }
-            if (plan.order >= 52) {
-                continue;
-            }
-            memory_crumbs->entries[out++] = all_pages_arr::free_segs_t::entry_t{
-                .base = plan.base,
-                .size = (1ull << (plan.order + 12))
-            };
-        }
-        memory_crumbs->count = out;
-    }
 
     // strategy 变换：得到最终构造计划。
     Ktemplats::list_doubly<BCB_plan_entry> construct_plan;
@@ -328,7 +279,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     uint64_t constructed = 0;
     for (uint64_t pi = 0; pi < sorted_count; ++pi) {
         const BCB_plan_entry plan = sorted_plan[pi];
-        const uint64_t need_bytes = (plan.order >= 2) ? (1ull << (plan.order - 2)) : 0;
+        // 位图全布局 3·2^N bits（见 bcb_handoff.h / foundation pure_init）
+        const uint64_t need_bytes = (3ull << plan.order) >> 3;
         uint64_t alloc_base = align_up_u64(bitmap_cursor, 8);
 
         bool enough_bitmap = false;
@@ -347,8 +299,9 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
             continue;
         }
 
-        new (BCBS + constructed) BuddyControlBlock(plan.base, plan.order);
-        BCBS[constructed].corebcb_mixedbitmap_base_acclaim(alloc_base);
+        // 3-arg 构造：内部依据 page_frame_state_mgr 逐页写 order-0 叶子位图（脏叶子允许）
+        // + inherit_init（幼年态 + free_count[0]） + fold_up_from_leaves（直接成年）。
+        new (BCBS + constructed) BuddyControlBlock(plan.base, alloc_base, plan.order);
         ++constructed;
         bitmap_cursor = alloc_base + need_bytes;
     }
@@ -391,10 +344,6 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     ksetmem_64(processors_preffered_bcb_idx, ~0ULL, processor_count * sizeof(uint64_t));
 
     return success;
-}
-all_pages_arr::free_segs_t* FreePagesAllocator::get_memory_crumbs()
-{
-    return memory_crumbs;
 }
 uint8_t size_to_order(uint64_t size)
 {
@@ -507,7 +456,7 @@ phyaddr_t FreePagesAllocator::alloc
     uint64_t permanent_fail_count = 0;
     bool saw_busy_candidate = false;
 
-    auto mark_permanent_fail = [&](uint64_t idx) {
+    auto make_session_level_permenant_fail = [&](uint64_t idx) {
         if (!permanant_fail_map[idx]) {
             permanant_fail_map[idx] = 1;
             ++permanent_fail_count;
@@ -526,13 +475,13 @@ phyaddr_t FreePagesAllocator::alloc
             const uint64_t bcb_base = bcb.get_base();
             const uint64_t bcb_span = 1ULL << (bcb.get_max_order() + 12);
             if (bcb_base + bcb_span > 0x100000000ULL) {
-                mark_permanent_fail(idx);
+                make_session_level_permenant_fail(idx);
                 return INVALID_ALLOC_BASE;
             }
         }
 
         if (!bcb.can_alloc(need_order)) {
-            mark_permanent_fail(idx);
+            make_session_level_permenant_fail(idx);
             return INVALID_ALLOC_BASE;
         }
 
@@ -545,34 +494,29 @@ phyaddr_t FreePagesAllocator::alloc
             return INVALID_ALLOC_BASE;
         }
 
-        phyaddr_t alloc_base = 0;
-        if (bcb.is_juvenile()) {
-            // 幼年态：连续叶顺序分配（无对齐无合并）
-            tmp_error_locator jk = 0;
-            alloc_base = bcb.juvenile_alloc(jk, page_count);
-            if (jk != 0 || alloc_base == 0) {
-                mark_permanent_fail(idx);
+        phyaddr_t alloc_base = bcb.allocate_buddy_way(size, kurd, params.align_log2);
+        if (error_kurd(kurd)) {
+            make_session_level_permenant_fail(idx);
+            return INVALID_ALLOC_BASE;
+        }
+
+        // 账本同步：idx_base_* 直写（O(1)，免区间二分）。pages_arr_base_idx 为 BCB
+        // 页基址在 pages_arr 中的下标，offset_pages = 本 BCB 内页偏移。
+        {
+            const uint64_t offset_pages = (alloc_base - bcb.get_base()) >> 12;
+            const uint64_t base_idx     = bcb.get_pages_arr_base_idx();
+            if (base_idx == ~0ULL) {
+                make_session_level_permenant_fail(idx);
                 kurd = fail;
                 return INVALID_ALLOC_BASE;
             }
-        } else {
-            // 成年态：完整 buddy 路径
-            alloc_base = bcb.allocate_buddy_way(size, kurd, params.align_log2);
-            if (error_kurd(kurd)) {
-                mark_permanent_fail(idx);
+            if (page_frame_state_mgr::idx_base_state_set(base_idx + offset_pages,
+                                                         page_count, interval_type) != 0) {
+                (void)bcb.free_buddy_way(alloc_base, size);
+                make_session_level_permenant_fail(idx);
+                kurd = fail;
                 return INVALID_ALLOC_BASE;
             }
-        }
-
-        kurd = all_pages_arr::simp_pages_set(alloc_base, page_count, interval_type);
-        if (error_kurd(kurd)) {
-            if (bcb.is_juvenile()) {
-                (void)bcb.juvenile_free((alloc_base - bcb.get_base()) >> 12, page_count);
-            } else {
-                (void)bcb.free_buddy_way(alloc_base, size);
-            }
-            mark_permanent_fail(idx);
-            return INVALID_ALLOC_BASE;
         }
 
         if (preferred_idx_ptr) {
@@ -699,19 +643,24 @@ KURD_t FreePagesAllocator::free(phyaddr_t base, uint64_t size)
     }
 
     { spintrylock_spin_guard _g(bcb.lock);
-    if (bcb.is_juvenile()) {
-        // 幼年态：连续叶归还（无合并）
-        tmp_error_locator jk = bcb.juvenile_free((base - bcb_base) >> 12,
-                                                 (size + 4095) >> 12);
-        if (jk != 0) {
+    KURD_t bcb_kurd = bcb.free_buddy_way(base, size);
+    if (error_kurd(bcb_kurd)) {
+        return bcb_kurd;
+    }
+    }
+
+    // 账本归还：idx_base_* 直写翻回 free（O(1)，免区间二分）
+    {
+        const uint64_t offset_pages = (base - bcb_base) >> 12;
+        const uint64_t base_idx     = bcb.get_pages_arr_base_idx();
+        if (base_idx == ~0ULL) {
             return make_not_belong();
         }
-    } else {
-        KURD_t bcb_kurd = bcb.free_buddy_way(base, size);
-        if (error_kurd(bcb_kurd)) {
-            return bcb_kurd;
+        if (page_frame_state_mgr::idx_base_state_set(base_idx + offset_pages,
+                                                     (size + 4095) >> 12,
+                                                     page_state_t::free) != 0) {
+            return make_not_belong();
         }
-    }
     }
 
     uint64_t cpu_count = fpa_get_cpu_count();
@@ -759,97 +708,5 @@ fpa_stats FreePagesAllocator::get_fpa_stats_all()
         total.free_count += current.free_count;
     }
     return total;
-}
-
-// ================================================================
-// Inherit_bcbs — 收养路径（继承 init.elf 穿越的 BCB 生态）
-//
-// 不做任何规划/切分/池挖取：BCB 的 order/base/位图全由 init.elf 决定并穿越。
-// 收养后全部幼年态（顺序分配、无对齐无合并），供 pages_arr 等全局大数组利用；
-// 大数组分配完后再调 Adopt_all_adult 全量催熟。
-//
-// 关键语义：
-//   - desc.bcb_district_descriptor = [0:5]order | [12:63]base_pa[12:63]（低12bit隐式0）
-//   - desc.bitmap_region_base_pa 已是线性地址（info_fill 序列化时重定位为
-//     fpa_bitmaps.vbase() + 池内偏移），收养时直接可用
-//   - BCBS 按 base 升序（init 侧已排好），alloc/free 的二分查找继续有效
-// ================================================================
-
-KURD_t FreePagesAllocator::Inherit_bcbs(const inherit_bcbs_config* cfg)
-{
-    KURD_t success = default_success();
-    KURD_t fatal = default_fatal();
-
-    if (!cfg || !cfg->descs || cfg->count == 0) {
-        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-        return fatal;
-    }
-
-    const uint64_t count = cfg->count;
-
-    // 分配 BCB 存储：raw bytes → placement-new（与旧 Init 一致的手法）
-    uint8_t* bcb_storage = new uint8_t[count * sizeof(BuddyControlBlock)];
-    if (bcb_storage == nullptr) {
-        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-        return fatal;
-    }
-    BuddyControlBlock* new_bcbs = reinterpret_cast<BuddyControlBlock*>(bcb_storage);
-
-    // 逐 BCB 收养：解包 descriptor → 构造 → 置幼年态
-    for (uint64_t i = 0; i < count; ++i) {
-        const bcb_desc_v2_t& desc = cfg->descs[i];
-        const uint64_t dd = desc.bcb_district_descriptor;
-        const uint8_t  order  = static_cast<uint8_t>(dd & 0x3F);
-        const phyaddr_t base  = dd & ~static_cast<phyaddr_t>(0xFFF);
-        const vaddr_t   bitmap_va = static_cast<vaddr_t>(desc.bitmap_region_base_pa);
-
-        new (new_bcbs + i) BuddyControlBlock(base, order);
-        new_bcbs[i].corebcb_init_from_leaves(bitmap_va);   // JUVENILE + free_count[0]
-    }
-
-    BCBS      = new_bcbs;
-    BCB_count = count;
-
-    // 每CPU台账（逻辑CPU数来自 cfg，显式传入不依赖隐式状态）
-    uint64_t processor_count = cfg->logical_processor_count;
-    if (processor_count == 0) processor_count = 1;
-    statistics_arr = new fpa_stats[processor_count];
-    processors_preffered_bcb_idx = new uint64_t[processor_count];
-    if (!statistics_arr || !processors_preffered_bcb_idx) {
-        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-        return fatal;
-    }
-    ksetmem_8(statistics_arr, 0, processor_count * sizeof(fpa_stats));
-    ksetmem_64(processors_preffered_bcb_idx, ~0ULL, processor_count * sizeof(uint64_t));
-
-    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-    return success;
-}
-
-// ================================================================
-// Adopt_all_adult — 全量催熟（JUVENILE → ADULT）
-// 在 pages_arr 等全局大数组分配完成后再调用，恢复完整 buddy 语义
-// ================================================================
-
-KURD_t FreePagesAllocator::Adopt_all_adult()
-{
-    KURD_t success = default_success();
-    KURD_t fatal = default_fatal();
-
-    if (BCBS == nullptr || BCB_count == 0) {
-        fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-        return fatal;
-    }
-
-    for (uint64_t i = 0; i < BCB_count; ++i) {
-        KURD_t k = BCBS[i].corebcb_fold_adult();
-        if (error_kurd(k)) {
-            fatal.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-            return fatal;
-        }
-    }
-
-    success.event_code = MEMMODULE_LOCATIONS::FREEPAGES_ALLOCATOR::EVENT_CODE_INIT;
-    return success;
 }
 

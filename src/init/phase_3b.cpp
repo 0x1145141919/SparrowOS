@@ -1,4 +1,5 @@
 #include "init/phase_3.h"
+#include "abi/asset_names.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "firmware/gSTResloveAPIs.h"
@@ -54,14 +55,8 @@ static loc_code_t build_fpa_bitmaps(p3b_ctx& ctx, const char* name) {
     if (!p) { bsp_kout << "fpa pool OOM" << kendl; return SRC_LOC(); }
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     ksetmem_8((void*)(uint64_t)p, 0, sz);   // 纯预留池清零：kernel FPA 自行雕刻
-    vaddr_t v = va_alloc_up(sz, 12);
-    ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
-                                         "fpa_bitmaps", KMMU_ENTRY_FLAG_PERSISTENT));
-    ctx.iv->FPA_bitmaps = {.vpn = v >> 12, .ppn = p >> 12,
-                           .npages = npg, .access = KSPACE_RW_ACCESS};
-    asset_reg_add(name, new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
-                                         .npages = npg, .access = KSPACE_RW_ACCESS });
-    bsp_kout << "[Phase3b] FPA_bitmaps(pool): p=0x" << p << " v=" << (void*)v
+    asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
+    bsp_kout << "[Phase3b] FPA_bitmaps(pool): p=0x" << p 
              << " sz=" << (void*)sz << kendl;
     return 0;
 }
@@ -74,13 +69,9 @@ static loc_code_t build_pages_arr(p3b_ctx& ctx, const char* name) {
     uint64_t  sz = align_up(page_allocator_v2::total_page_count(), 0x1000);  // sizeof(page)==1
     if (!p || sz == 0) { bsp_kout << "[Phase3b] pages_arr not ready" << kendl; return SRC_LOC(); }
     uint64_t npg = sz >> 12;
-    vaddr_t v = va_alloc_up_off(sz, 21,p);
-    ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
-                                         "pages_arr", KMMU_ENTRY_FLAG_PERSISTENT));
-    ctx.iv->pages_arr_vbase = v;
-    asset_reg_add(name, new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
-                                         .npages = npg, .access = KSPACE_RW_ACCESS });
-    bsp_kout << "[Phase3b] pages_arr: p=0x" << p << " v=" << (void*)v
+    
+    asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
+    bsp_kout << "[Phase3b] pages_arr: p=0x" << p
              << " sz=0x" << sz << kendl;
     return 0;
 }
@@ -93,14 +84,8 @@ static loc_code_t build_log_buffer(p3b_ctx& ctx, const char* name) {
     if (!p) { bsp_kout << "log OOM" << kendl; return SRC_LOC(); }
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     ksetmem_8((void*)(uint64_t)p, 0, sz);
-    vaddr_t v = va_alloc_up(sz, 21);
-    ctx.kmmu->map(kernel_mmu::make_entry(p, v, sz, KSPACE_RW_ACCESS,
-                                         "log_buffer", KMMU_ENTRY_FLAG_PERSISTENT));
-    ctx.iv->log_buffer = {.vpn = v >> 12, .ppn = p >> 12,
-                          .npages = npg, .access = KSPACE_RW_ACCESS};
-    asset_reg_add(name, new vm_interval{ .vpn = v >> 12, .ppn = p >> 12,
-                                         .npages = npg, .access = KSPACE_RW_ACCESS });
-    bsp_kout << "[Phase3b] log_buffer: p=0x" << p << " v=" << (void*)v << kendl;
+    asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
+    bsp_kout << "[Phase3b] log_buffer: p=0x" << p  << kendl;
     return 0;
 }
 
@@ -271,16 +256,16 @@ static const struct {
     const char* name;
     loc_code_t (*build)(p3b_ctx&, const char*);
 } k_p3b_assets[] = {
-    { "fpa_bitmaps mem",     build_fpa_bitmaps },
-    { "pages_arr mem",       build_pages_arr },
-    { "log_buffer mem",      build_log_buffer },
-    { "ksymbols movable",    build_ksymbols },
-    { "initramfs movable",   build_initramfs },
-    { "gop_framebuffer mem", build_gop },
-    { "hpet_mmio mem",       build_hpet },
-    { "gs_complexes mem",    build_gs_complexes },
-    { "hdstacks mem",        build_hdstacks },
-    { "phyaddr_window mem",  build_phyaddr_window },
+    { asset_names::fpa_bitmaps,     build_fpa_bitmaps },
+    { asset_names::pages_arr,       build_pages_arr },
+    { asset_names::log_buffer,      build_log_buffer },
+    { asset_names::ksymbols,        build_ksymbols },
+    { asset_names::initramfs,       build_initramfs },
+    { asset_names::gop_framebuffer, build_gop },
+    { asset_names::hpet_mmio,       build_hpet },
+    { asset_names::gs_complexes,    build_gs_complexes },
+    { asset_names::hdstacks,        build_hdstacks },
+    { asset_names::phyaddr_window,  build_phyaddr_window },
 };
 static constexpr uint64_t k_p3b_asset_count =
     sizeof(k_p3b_assets) / sizeof(k_p3b_assets[0]);

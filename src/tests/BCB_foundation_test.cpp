@@ -342,7 +342,7 @@ int main() {
     printf("Bitmap: %lu bytes at %p\n", (unsigned long)bitmap_bytes, bitmap_mem);
 
     BCB_fnd_DeepFirst fnd;
-    fnd.init((uint64_t)bitmap_mem, BCB_ORDER);
+    fnd.pure_init((uint64_t)bitmap_mem, BCB_ORDER);
     printf("Foundation initialized\n\n");
 
     // ─── 基础测试 ───

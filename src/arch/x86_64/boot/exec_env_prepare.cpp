@@ -3,6 +3,7 @@
 #include "boot/asset_table.h"
 #include "memory/kpoolmemmgr.h"
 #include "memory/page_frame_state_mgr.h"
+#include "memory/phyaddr_accessor.h"
 #include "exec_env_detect.h"
 #include "panic.h"
 #include "arch/x86_64/mem_init.h"
@@ -68,11 +69,14 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
     // kind_check / idx_base_* / early_alloc 可用）；FPA 后续重建基于它
     // （intervals_snapshot 全量区间，自行分桶折叠），不再有 BCB 位图交接。
     {
-        const asset_table_entry* e = g_asset_table->read("pages_arr mem");
+        const asset_table_entry* e = g_asset_table->read("pages_arr movable");
         if (!e) boot_halt(SRC_LOC());
-        vm_interval pages_arr_iv = *(vm_interval*)e->data;
-        g_asset_table->deal("pages_arr mem");
-        if (page_frame_state_mgr::adopt(&pages_arr_iv,
+        movable_file_entry_t pages_arr_file = *(movable_file_entry_t*)e->data;
+        g_asset_table->deal("pages_arr movable");
+        // pages_arr 已改纯物理描述符（phase_3b 不再 KMMU 映射）：本模块内部
+        // （page_frame_state_mgr::adopt）经主窗口把物理基址重链成 mem_map VA。
+        // PhyAddrAccessor::Init 已在 init_panic_early_support 完成，窗口就绪。
+        if (page_frame_state_mgr::adopt(&pages_arr_file,
                                         an->free_segs_descriptors_table,
                                         an->free_segs_count) != 0)
             boot_halt(SRC_LOC());
@@ -96,6 +100,11 @@ static void init_panic_early_support(void)
         if (!e) boot_halt(SRC_LOC());
         Kspace_phyaddr_access_window = *(vm_interval*)e->data;
         g_asset_table->deal("phyaddr_window mem");
+        // 物理地址访问器：窗口从资产表落账后立即初始化主窗口直映射基址
+        // （main_window_vbase / BASIC_interval）。pages_arr / fpa_bitmaps /
+        // log_buffer 已改 movable（纯物理描述符，无 KMMU 映射），后续一切
+        // phys→VA 均经窗口重链（含 page_frame_state_mgr 收养），必须先行。
+        PhyAddrAccessor::Init(Kspace_phyaddr_access_window);
     }
     // ② ksymmanager：ksymbols 应急经 phyaddr_window 重链访问
     {
@@ -135,10 +144,19 @@ static void init_panic_early_support(void)
 static void init_output_subsystem(void)
 {
     {
-        const asset_table_entry* e = g_asset_table->read("log_buffer mem");
+        const asset_table_entry* e = g_asset_table->read("log_buffer movable");
         if (!e) boot_halt(SRC_LOC());
-        vm_interval log_iv = *(vm_interval*)e->data;
-        g_asset_table->deal("log_buffer mem");
+        movable_file_entry_t log_file = *(movable_file_entry_t*)e->data;
+        g_asset_table->deal("log_buffer movable");
+        // log_buffer 已改纯物理描述符（phase_3b 不再 KMMU 映射）：经主窗口重链成 vm_interval
+        phyaddr_t log_pbase = log_file.base_ppn << 12;
+        uint64_t  log_bytes = align_up(log_file.size, 4096);
+        vm_interval log_iv = {
+            .vpn    = (Kspace_phyaddr_access_window.vbase() + log_pbase) >> 12,
+            .ppn    = log_file.base_ppn,
+            .npages = log_bytes >> 12,
+            .access = KSPACE_RW_ACCESS,
+        };
         DmesgRingBuffer::Init(&log_iv);
     }
     {

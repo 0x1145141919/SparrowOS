@@ -19,7 +19,6 @@ private:
 public:
     BCB_fnd_ShallowFirst() = default;
 
-    void init(vaddr_t bitmap_va, uint8_t max_order_val) override;
     uint64_t find_candidate(uint8_t& base_order,
                             KURD_t& kurd) override;
     KURD_t split(uint8_t order, uint64_t offset,

@@ -1,5 +1,6 @@
 #include "memory/FreePagesAllocator.h"
 #include "memory/all_pages_arr.h"
+#include "memory/page_frame_state_mgr.h"
 #include "util/kout.h"
 #include "util/OS_utils.h"
 #include "panic.h"
@@ -121,92 +122,58 @@ bool FreePagesAllocator::BuddyControlBlock::can_alloc(uint8_t order)
 // 构造
 // ================================================================
 
-FreePagesAllocator::BuddyControlBlock::BuddyControlBlock(phyaddr_t base, uint8_t max_support_order)
+FreePagesAllocator::BuddyControlBlock::BuddyControlBlock(phyaddr_t base,vaddr_t bitmap_vbase, uint8_t max_support_order)
 {
     this->max_supprt_order = max_support_order;
     this->base = base;
+    // 计算本 BCB 页基址在 page_frame_state_mgr::pages_arr 中的条目下标
+    // （alloc/free 据此用 idx_base_* 直写账本）。失败置 INVALID，alloc/free 会拒绝。
+    {
+        uint64_t bidx = 0;
+        if (page_frame_state_mgr::phyaddr_to_page_idx(base, &bidx) != 0)
+            bidx = INVALID_INBCB_INDEX;
+        this->pages_arr_base_idx = bidx;
+    }
     for (uint8_t i = 0; i < DESINGED_MAX_SUPPORT_ORDER; i++) {
         for (uint8_t j = 0; j < PER_ORDER_CACHE_SUGGEST_COUNT; j++)
             suggest_order_free_page_index[i][j] = INVALID_INBCB_INDEX;
         suggest_order_cache_cursor[i] = 0;
     }
     ksetmem_8(&statistics, 0, sizeof(statistics));
-    // fnd 尚未初始化——由 corebcb_mixedbitmap_base_acclaim 延迟初始化
-}
 
-FreePagesAllocator::BuddyControlBlock::BuddyControlBlock() {}
+    // 依据 page_frame_state_mgr（收养自 init 的 pages_arr 账本）写实 order-0 叶子位图：
+    // 本 BCB 管理物理区间 [base, base + 2^max_support_order 页)，逐页查账本状态，
+    // free → 叶位置 1，否则 0。随后 inherit_init 按叶子位图统计 free_count[0]。
+    // 叶子位图区 = 位偏移 [1<<N, 2<<N)，第 i 叶对应物理页 base + i*4096
+    // （与 leaf_read/leaf_write 的位偏移约定一致）。
+    {
+        const uint64_t leaf_cnt      = 1ull << max_support_order;
+        const uint64_t leaf_bit_base = 1ull << max_support_order;
+        uint64_t* const words        = reinterpret_cast<uint64_t*>(bitmap_vbase);
 
-// ================================================================
-// corebcb_mixedbitmap_base_acclaim — 延迟初始化底座
-// ================================================================
+        // 防御：先清零叶子位图区（bitmap_vbase 由调用方从池中刻出，可能含残留）
+        for (uint64_t b = leaf_bit_base; b < leaf_bit_base + leaf_cnt; b++)
+            words[b >> 6] &= ~(1ull << (b & 63));
 
-void FreePagesAllocator::BuddyControlBlock::corebcb_mixedbitmap_base_acclaim(vaddr_t bitmap_base_addr)
-{
-    fnd.init(bitmap_base_addr, max_supprt_order);
-    // 旧版 (v2) 的 free_page_without_merge(0, max_supprt_order) 等价于
-    // 底座 init 已自动将根设为 NODE_FREE, free_count[max_order]=1
-}
-
-// ================================================================
-// corebcb_init_from_leaves — 收养路径（init.elf 穿越位图，叶子已写实）
-// 置幼年态；由上层在适当时候调用 fold_up_from_leaves 成年
-// ================================================================
-
-void FreePagesAllocator::BuddyControlBlock::corebcb_init_from_leaves(vaddr_t bitmap_base_addr)
-{
-    fnd.init_from_leaves(bitmap_base_addr, max_supprt_order);
-}
-
-// ================================================================
-// corebcb_fold_adult — 成年仪式（JUVENILE → ADULT）
-// 自底向上填内部节点 + 全 free_count 重算（→ fnd.fold_up_from_leaves）
-// ================================================================
-
-KURD_t FreePagesAllocator::BuddyControlBlock::corebcb_fold_adult()
-{
-    tmp_error_locator e = fnd.fold_up_from_leaves();
-    if (e != 0) return default_fatal();
-    return default_success();
-}
-
-// ================================================================
-// juvenile_alloc — 幼年态专用分配（仅 JUVENILE 态可调）
-// 扫 order0 叶子位图找 acquire_count 个连续空闲页，成功返回本 BCB 内
-// 页偏移对应的物理地址；失败返回 0 并填 kurd。状态不符即 error。
-// ================================================================
-
-phyaddr_t FreePagesAllocator::BuddyControlBlock::juvenile_alloc(
-    tmp_error_locator& kurd, uint64_t acquire_count)
-{
-    kurd = 0;
-    if (!fnd.is_juvenile()) {
-        kurd = SRC_LOC();
-        statistics.alloc_times_fail++;
-        return 0;
+        for (uint64_t i = 0; i < leaf_cnt; i++) {
+            const phyaddr_t page = base + (i << 12);
+            page_state_t st;
+            const bool is_free = (page_frame_state_mgr::state_query(page, &st) == 0)
+                              && (st == page_state_t::free);
+            if (is_free) {
+                const uint64_t bit = leaf_bit_base + i;
+                words[bit >> 6] |= (1ull << (bit & 63));
+            }
+        }
     }
-    uint64_t off = fnd.juvenile_alloc_order0(kurd, acquire_count);
-    if (kurd != 0 || off == INVALID_INBCB_INDEX) {
-        statistics.alloc_times_fail++;
-        return 0;
-    }
-    statistics.alloc_times_success++;
-    return base + (off << 12);
+
+    fnd.inherit_init(bitmap_vbase,max_support_order);
+    fnd.fold_up_from_leaves();
 }
 
-// ================================================================
-// juvenile_free — 幼年态专用释放（仅 JUVENILE 态可调）
-// 清 return_count 个叶子 → 维护 free_count[0]。状态不符即 error。
-// ================================================================
-
-tmp_error_locator FreePagesAllocator::BuddyControlBlock::juvenile_free(
-    uint64_t offset, uint64_t return_count)
+FreePagesAllocator::BuddyControlBlock::BuddyControlBlock()
 {
-    if (!fnd.is_juvenile()) {
-        return SRC_LOC();
-    }
-    tmp_error_locator e = fnd.juvenile_free_order0(offset, return_count);
-    if (e == 0) statistics.free_times_success++;
-    return e;
+    this->pages_arr_base_idx = INVALID_INBCB_INDEX;
 }
 
 // ================================================================

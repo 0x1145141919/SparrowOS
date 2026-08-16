@@ -1,5 +1,6 @@
 #include "memory/page_frame_state_mgr.h"
 #include "memory/kpoolmemmgr.h"   // 全局 operator new[]/delete[]（-fno-exceptions 下需显式声明）
+#include "memory/main_phyaddr_access_window.h"   // PHYACC_VA：movable 纯物理描述符 → 窗口 VA
 
 // ════════════════════════════════════════════════════════════════
 // page_frame_state_mgr 实现
@@ -27,15 +28,19 @@ uint64_t page_frame_state_mgr::intervals_count                        = 0;
 // ================================================================
 // adopt — 收养 init 穿越的 pages_arr 账本 + free_segs 描述符
 // ================================================================
-loc_code_t page_frame_state_mgr::adopt(vm_interval* pages_arr_iv,
+loc_code_t page_frame_state_mgr::adopt(const movable_file_entry_t* pages_arr_file,
                                        const free_seg_descriptor_t* free_segs,
                                        uint64_t free_segs_count)
 {
-    if (!pages_arr_iv || !free_segs || free_segs_count == 0) return SRC_LOC();
+    if (!pages_arr_file || !free_segs || free_segs_count == 0) return SRC_LOC();
     if (!phymem_segments || phymem_segments_count == 0) return SRC_LOC();
 
-    pages_arr = reinterpret_cast<page*>(pages_arr_iv->vbase());
-    pages_arr_entry_count = pages_arr_iv->byte_cnt() / sizeof(page);
+    // pages_arr 已改 movable（纯物理描述符，phase_3b 不再 KMMU 映射）：
+    // 经主窗口把物理基址重链成可访问 VA 作为 mem_map 线性基址。
+    // 前提：调用方（exec_env_prepare）已 PhyAddrAccessor::Init（main_window_vbase 就绪）。
+    const phyaddr_t mem_map_pbase = pages_arr_file->base_ppn << 12;
+    pages_arr = reinterpret_cast<page*>(PHYACC_VA(mem_map_pbase));
+    pages_arr_entry_count = pages_arr_file->size / sizeof(page);
     if (!pages_arr || pages_arr_entry_count == 0) return SRC_LOC();
 
     interval_t* new_intervals = new interval_t[free_segs_count];
@@ -69,7 +74,6 @@ loc_code_t page_frame_state_mgr::adopt(vm_interval* pages_arr_iv,
     }
 
     // 全部校验通过后才提交（失败路径不留半成品状态）。
-    //delete[] intervals;                 // 二次 adopt：先释放旧表
     intervals      = new_intervals;
     intervals_count = free_segs_count;
     early_alloc_closed = false;
@@ -165,7 +169,10 @@ loc_code_t page_frame_state_mgr::idx_base_state_set(uint64_t base_idx, uint64_t 
                                                     page_state_t state)
 {
     if (page_count == 0) return 0;
-    if (!pages_arr || base_idx + page_count > pages_arr_entry_count) return SRC_LOC();
+    // 减法式越界：避免 base_idx + page_count 加法溢出后误判通过（窗口访问无 guard 页，
+    // 越界会静默写坏相邻物理内存，越界检查是唯一防线）。
+    if (!pages_arr || base_idx > pages_arr_entry_count) return SRC_LOC();
+    if (page_count > pages_arr_entry_count - base_idx) return SRC_LOC();
     for (uint64_t j = 0; j < page_count; j++)
         pages_arr[base_idx + j].state = state;
     return 0;
@@ -184,7 +191,9 @@ bool page_frame_state_mgr::idx_base_kind_check(uint64_t base_idx, uint64_t page_
                                                page_state_t expected)
 {
     if (page_count == 0) return true;
-    if (!pages_arr || base_idx + page_count > pages_arr_entry_count) return false;   // 越界直接 false
+    // 减法式越界（同上）：窗口访问无 guard 页，越界读会静默读到相邻物理内存。
+    if (!pages_arr || base_idx > pages_arr_entry_count) return false;
+    if (page_count > pages_arr_entry_count - base_idx) return false;
     for (uint64_t j = 0; j < page_count; j++)
         if (pages_arr[base_idx + j].state != expected) return false;
     return true;

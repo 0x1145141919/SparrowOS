@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "memory/memory_base.h"
 #include "abi/src_loc.h"
+#include "abi/boot.h"   // movable_file_entry_t（pages_arr movable 纯物理描述符）
 
 // ════════════════════════════════════════════════════════════════
 // page_frame_state_mgr — 页框状态管理器（原 all_pages_arr 重构）
@@ -55,10 +56,12 @@ private:
 
 public:
     // 收养（exec_env_prepare 早期，早于 FPA）：
-    //   pages_arr_iv    — pages_arr mem 资产（vbase=mem_map 线性基址）
+    //   pages_arr_file — pages_arr movable 资产（纯物理描述符 base_ppn/size，无 KMMU
+    //                     映射）。本模块经主窗口（PHYACC_VA）把物理基址重链成可访问
+    //                     VA 作为 mem_map 线性基址——调用方必须先 PhyAddrAccessor::Init。
     //   free_segs/count — free_segs_descriptors_table（init 穿越，索引式）
     // 收养 = 构建 intervals + 记账，不覆写 mem_map 状态。
-    static loc_code_t adopt(vm_interval* pages_arr_iv,
+    static loc_code_t adopt(const movable_file_entry_t* pages_arr_file,
                             const free_seg_descriptor_t* free_segs,
                             uint64_t free_segs_count);
 

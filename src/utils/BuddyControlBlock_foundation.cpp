@@ -1,11 +1,34 @@
 #include "util/BuddyControlBlock_foundation.h"
 #include "abi/src_loc.h"
+#include "util/OS_utils.h"   // ksetmem_8（pure_init 共享实现）
 
 // ════════════════════════════════════════════════════════════════
 // BuddyControlBlock_foundation 基类实现
 //
 // 所有派生类共享的位图访问、索引辅助、btree_validation
 // ════════════════════════════════════════════════════════════════
+
+// ================================================================
+// 纯洁初始化（派生类共享：原 ShallowFirst/DeepFirst 实现完全一致，收敛到基类）
+// ================================================================
+
+void BuddyControlBlock_foundation::pure_init(
+    vaddr_t bitmap_va, uint8_t max_order_val)
+{
+    max_order = max_order_val;
+
+    const uint64_t total_bits = (3ull << max_order);
+    const uint64_t u64_count  = (total_bits + 63) >> 6;
+
+    bitmap = reinterpret_cast<uint64_t*>(bitmap_va);
+    ksetmem_8(bitmap, 0, u64_count * sizeof(uint64_t));
+    state=STATE_ADULT;
+    node_write(1, NODE_FREE);
+
+    for (uint8_t i = 0; i < ORDER_COUNT; i++)
+        free_count[i] = 0;
+    free_count[max_order] = 1;
+}
 
 // ================================================================
 // 底层位图访问
@@ -362,4 +385,56 @@ tmp_error_locator BuddyControlBlock_foundation::juvenile_free_order0(
         leaf_write((1ull << max_order) + o, true);
     free_count[0] += return_count;
     return 0;
+}
+// ================================================================
+// 内联辅助：统计 [bit_off, bit_off+bit_cnt) 区间内的置位位数
+// 以 u64 字为单位逐字 popcount，头部/尾部部分字做掩码裁剪
+// ================================================================
+
+static inline uint64_t count_set_bits_range(
+    const uint64_t* words, uint64_t bit_off, uint64_t bit_cnt)
+{
+    if (bit_cnt == 0) return 0;
+
+    const uint64_t w0 = bit_off >> 6;
+    const uint64_t w1 = (bit_off + bit_cnt - 1) >> 6;
+
+    uint64_t total = 0;
+    for (uint64_t w = w0; w <= w1; w++) {
+        uint64_t word = words[w];
+        if (w == w0 && (bit_off & 63))               // 头部部分字：屏蔽低端
+            word &= ~0ULL << (bit_off & 63);
+        if (w == w1 && ((bit_off + bit_cnt) & 63))   // 尾部部分字：屏蔽高端
+            word &= (1ULL << ((bit_off + bit_cnt) & 63)) - 1;
+        total += __builtin_popcountll(word);
+    }
+    return total;
+}
+
+// ================================================================
+// inherit_init — 继承初始化：整块位图原样接管，置幼年态（纯 order-0 模式）
+//
+// 与 init_from_leaves 的差异：
+//   - init_from_leaves：收养路径——外部叶子已写实、内部节点区清零，
+//     只重算 free_count[0]，不触碰位图内容。
+//   - inherit_init    ：整块位图（含内部节点区）原样继承，内部节点不预清零；
+//                       状态置 JUVENILE，外部必须遵守纯 order-0 模式
+//                       （只有 order-0 叶子位图区参与分配/归还）。
+//                       free_count[0] 由叶子位图区以 u64 字单位 popcount 统计。
+//
+// order-0 叶子位图区 = 位偏移 [1<<max_order, 2<<max_order)
+// （见 leaf_read：bitmap[(1<<max_order)+leaf_idx] 的 1bit）
+// ================================================================
+
+void BuddyControlBlock_foundation::inherit_init(vaddr_t bitmap_va, uint8_t max_order_val)
+{
+    max_order = max_order_val;
+    bitmap    = reinterpret_cast<uint64_t*>(bitmap_va);
+
+    for (uint8_t i = 0; i < ORDER_COUNT; i++)
+        free_count[i] = 0;
+
+    free_count[0] = count_set_bits_range(bitmap, 1ull << max_order, 1ull << max_order);
+
+    state = STATE_JUVENILE;
 }

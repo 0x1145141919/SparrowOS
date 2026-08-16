@@ -2,7 +2,6 @@
 #include "AddresSpace.h"
 #include "all_pages_arr.h"
 #include "panic.h"
-
 constexpr uint8_t CACHE_SLOT_COUNT = 16;
 
 class PhyAddrAccessor {

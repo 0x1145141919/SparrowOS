@@ -80,7 +80,7 @@ static std::vector<trace_op> gen_trace(uint64_t target_ops, unsigned seed = 42) 
     void* bm = std::malloc(bmb);
     std::memset(bm, 0, bmb);
     BuddyControlBlock_foundation g;
-    g.init((uint64_t)bm, BCB_ORDER);
+    g.pure_init((uint64_t)bm, BCB_ORDER);
 
     std::mt19937_64 gen(seed);
     std::exponential_distribution<double> od(0.3);
@@ -182,7 +182,7 @@ int main() {
         void* bm = std::malloc(BITMAP_BYTES_V4);
         std::memset(bm, 0, BITMAP_BYTES_V4);
         BuddyControlBlock_foundation a;
-        a.init((uint64_t)bm, BCB_ORDER);
+        a.pure_init((uint64_t)bm, BCB_ORDER);
         run(a, trace, "BCB_v4 (2-bit DFS)", BITMAP_BYTES_V4);
         std::free(bm);
     }

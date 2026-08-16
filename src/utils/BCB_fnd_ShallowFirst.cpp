@@ -4,32 +4,10 @@
 // ════════════════════════════════════════════════════════════════
 // BCB_fnd_ShallowFirst 实现
 //
-// 位图访问、索引辅助、btree_validation 由基类提供
-// 本文件仅实现 5 个纯虚分配接口
+// 位图访问、索引辅助、btree_validation、pure_init 由基类提供
+// 本文件仅实现 4 个纯虚分配接口
 // 无防御性校验，无 KURD 三阶段错误链
 // ════════════════════════════════════════════════════════════════
-
-// ================================================================
-// 初始化
-// ================================================================
-
-void BCB_fnd_ShallowFirst::init(
-    vaddr_t bitmap_va, uint8_t max_order_val)
-{
-    max_order = max_order_val;
-
-    const uint64_t total_bits = (3ull << max_order);
-    const uint64_t u64_count  = (total_bits + 63) >> 6;
-
-    bitmap = reinterpret_cast<uint64_t*>(bitmap_va);
-    ksetmem_8(bitmap, 0, u64_count * sizeof(uint64_t));
-
-    node_write(1, NODE_FREE);
-
-    for (uint8_t i = 0; i < ORDER_COUNT; i++)
-        free_count[i] = 0;
-    free_count[max_order] = 1;
-}
 
 // ================================================================
 // DFS 只读查找 — order 预检 + 双 child 一次性读取版

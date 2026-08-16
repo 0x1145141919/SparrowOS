@@ -280,7 +280,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     asm volatile("sfence");
     asm volatile("mov %0, %%cr3" :: "r"(root) : "memory");
     
-    // 4.5-2: 构建所有处理器的 GDT/TSS 到 GS 复合体（恒等映射，pbase == vbase）
+    // 4.5-2: 构建所有处理器的 GDT/TSS 到 GS 复合体
     {
         vaddr_t gs_base  = iv->arch_info.conjunc_GSs.vbase();
         wrmsr_func(msr::syscall::IA32_GS_BASE,gs_base);//提前给bsp加载好gs

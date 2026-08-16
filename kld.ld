@@ -47,12 +47,12 @@ SECTIONS {
         ap_bootstrap_end = .;
     } > init : ap_bootstrap_stack
     . = KImgvbase;
-    .text_main : {
+    .text : {
         text_begin = .;
          *(.text .text.*)
          . = ALIGN(2M);
          text_end = . ;
-    } > VRAM :text_main
+    } > VRAM :text
     .data : {
         _data_start = .;
         *(.data .data.*)
@@ -95,7 +95,7 @@ PHDRS {
     ap_bootstrap_rodata PT_LOAD FLAGS(4);
     ap_bootstrap_data PT_LOAD FLAGS(6);
     ap_bootstrap_stack PT_LOAD FLAGS(6);
-    text_main PT_LOAD FLAGS(5 | 0x100);      /* PF_R | PF_X (RX) */
+    text PT_LOAD FLAGS(5 | 0x100);      /* PF_R | PF_X (RX) */
     data PT_LOAD FLAGS(6 | 0x100);      /* PF_R | PF_W (RW) */   
     rodata PT_LOAD FLAGS(4 | 0x100);    /* PF_R (R) */
     bss PT_LOAD FLAGS(6 | 0x100);

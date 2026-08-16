@@ -28,8 +28,11 @@ public:
     BuddyControlBlock_foundation() = default;
     virtual ~BuddyControlBlock_foundation() = default;
 
+    // ═══ 纯洁初始化（实函数，派生类共享：两派生类实现完全一致，收敛到基类） ═══
+    // 初始化后处于"全空闲成年态"：整区位图清零 + 根 NODE_FREE + free_count[max_order]=1。
+    void pure_init(vaddr_t bitmap_va, uint8_t max_order_val);
+
     // ═══ 纯虚分配接口（各派生类自己实现） ═══
-    virtual void init(vaddr_t bitmap_va, uint8_t max_order_val) = 0;
     virtual uint64_t find_candidate(uint8_t& base_order,
                                     KURD_t& kurd) = 0;
     virtual KURD_t split(uint8_t order, uint64_t offset,
@@ -38,7 +41,8 @@ public:
                                     uint64_t offset) = 0;
     virtual uint8_t order_return(uint8_t order, uint64_t offset,
                                  KURD_t& kurd) = 0;
-
+    
+    void inherit_init(vaddr_t bitmap_va, uint8_t max_order_val);
     // ═══ 共享只读/校验函数（实函数，不可覆写） ═══
     bool order_exist_check(uint8_t order) const {
         return (order < ORDER_COUNT && free_count[order] > 0);

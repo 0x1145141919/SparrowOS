@@ -1,4 +1,5 @@
 #include "init/phase_3.h"
+#include "abi/asset_names.h"
 #include "init/page_allocator_v2.h"
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
@@ -88,10 +89,10 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
         const char* asset_name;  // 进资产树的多arg 名字（arg0 + arg1 路由）
     };
     const sec_target_t k_sec_targets[] = {
-        { ".text",   true,  "kernel_code",   "kernel_code mem"   },
-        { ".data",   false, "kernel_data",   "kernel_data mem"   },
-        { ".rodata", false, "kernel_rodata", "kernel_rodata mem" },
-        { ".bss",    false, "kernel_bss",    "kernel_bss mem"    },
+        { ".text",   true,  "kernel_code",   asset_names::kernel_code   },
+        { ".data",   false, "kernel_data",   asset_names::kernel_data   },
+        { ".rodata", false, "kernel_rodata", asset_names::kernel_rodata },
+        { ".bss",    false, "kernel_bss",    asset_names::kernel_bss    },
     };
     constexpr int k_sec_count = 4;
 
@@ -228,7 +229,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
             .base_ppn = kimg_pbase >> 12,
             .size     = kelf_sz,
         };
-        if (!asset_reg_add("kimg movable", kimg_desc)) {
+        if (!asset_reg_add(asset_names::kimg, kimg_desc)) {
             bsp_kout << "[Phase3a] asset dup: kimg" << kendl;
             init_fatal::halt(SRC_LOC());
         }

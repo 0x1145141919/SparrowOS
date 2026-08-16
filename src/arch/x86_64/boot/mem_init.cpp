@@ -5,6 +5,8 @@
 #include "memory/init_memory_info.h"
 #include "memory/AddresSpace.h"
 #include "memory/phyaddr_accessor.h"
+#include "memory/page_frame_state_mgr.h"
+#include "memory/main_phyaddr_access_window.h"
 #include "arch/x86_64/mem_init.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "util/kout.h"
@@ -143,6 +145,104 @@ static void tlb_full_flush() {
     asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
     asm volatile("mov %0, %%cr3" :: "r"(cr3_val) : "memory");
 }
+
+// ================================================================
+// bfs_delete_old_pagetable — CR3 切换后 BFS 递归删除老页表（init.elf kmmu 根表）
+//
+// 背景：kernel.elf 切入自建新 PML4（gKernelSpace）后，init.elf 侧 kmmu 建立的
+//       老页表（identity 映射 + kernel 四段 + 各 mem 资产映射）不再被引用，
+//       需要整棵回收。老页表根表物理地址 = 切换前的 CR3（调用方记录传入）。
+//
+// 回收对象 = 页表页（PML4/PDPT/PD/PT 各级表页本身），NOT 叶映射指向的数据页
+//          （kernel 段 / gs / hdstacks / 窗口等是资产，数据页归 FPA 管）。
+// 走读方式 = 老页表页物理地址一律经主窗口 PHYACC_VA 读（新页表已含窗口映射，
+//           窗口 [0, dram_top) 覆盖所有物理页表页，无需 identity 残留）。
+// 回收动作 = page_frame_state_mgr::state_set(base,1,free)：页表页原由 init 侧
+//           page_allocator_v2 以 kernel_pinned 记账，这里翻回 free 归还账本。
+//
+// BFS 队列：显式循环 + 逐层出队，深度不递归（页表 4 层，但页数可达数万，
+//           递归爆栈；BFS 用堆上队列）。队列容量动态翻倍。
+//
+// ⚠ 层级必须随队列携带：PT（level 3）的全部 Present 项都是 4KB 叶数据页
+//   （其 bit7 是 PAT 位，不是 PS），绝不能当子页表页入队。只有 PML4/PDPT/PD
+//   的非大页项才指向下一级页表页。
+//
+// 约束：必须在切换 CR3 之后、但页面仍经窗口可读时调用（即 gKernelSpace 已映射
+//       主窗口）；本函数不碰 TLB（新页表已 load，老表条目随 CR3 reload 失效）。
+// ================================================================
+static loc_code_t bfs_delete_old_pagetable(phyaddr_t old_root)
+{
+    if (old_root == 0) return SRC_LOC();
+    constexpr uint64_t ENTRIES = 512;
+    constexpr uint64_t P_BIT  = 1ULL << 0;   // Present
+    constexpr uint64_t PS_BIT = 1ULL << 7;   // Page Size（PDPT 1GB / PD 2MB 大页）
+    constexpr uint64_t ADDR_MASK = PHYS_ADDR_MASK & ~0xFFFull;  // 页表项物理地址字段
+
+    // 队列条目：待处理页表页物理地址 + 层级（0=PML4,1=PDPT,2=PD,3=PT）
+    struct qent_t { phyaddr_t pa; uint8_t level; };
+    uint64_t q_cap  = 1024;
+    uint64_t q_head = 0, q_tail = 0;
+    qent_t* queue = new qent_t[q_cap];
+    if (!queue) return SRC_LOC();
+
+    auto queue_push = [&](phyaddr_t pa, uint8_t level) -> bool {
+        if (q_tail == q_cap) {
+            uint64_t ncap = q_cap * 2;
+            qent_t* nq = new qent_t[ncap];
+            if (!nq) return false;
+            for (uint64_t i = 0; i < q_tail; i++) nq[i] = queue[i];
+            delete[] queue;
+            queue = nq;
+            q_cap = ncap;
+        }
+        queue[q_tail++] = { pa, level };
+        return true;
+    };
+
+    uint64_t freed_count = 0;
+    bool     failed = false;
+
+    if (!queue_push(old_root, 0)) failed = true;   // 根表（PML4）本身也是页表页
+
+    while (!failed && q_head < q_tail) {
+        const qent_t cur = queue[q_head++];
+        const phyaddr_t  pa    = cur.pa;
+        const uint8_t    level = cur.level;
+
+        // ---- 走读本页表页全部条目，把指向"下一级页表页"的项入队 ----
+        //   level 0（PML4）：Present → 指向 PDPT（无大页语义）
+        //   level 1（PDPT）：Present && !PS → 指向 PD；PS=1 → 1GB 叶，跳过
+        //   level 2（PD）  ：Present && !PS → 指向 PT；PS=1 → 2MB 叶，跳过
+        //   level 3（PT）  ：全部是 4KB 叶数据页，无子页表页，绝不入队
+        for (uint64_t i = 0; i < ENTRIES; i++) {
+            const uint64_t raw = PHYACC_READU64(pa + i * sizeof(uint64_t));
+            if (!(raw & P_BIT)) continue;
+            if (level >= 3) break;                 // PT 层无子页表页
+            if ((level == 1 || level == 2) && (raw & PS_BIT)) continue;  // 大页叶
+            const uint64_t child = raw & ADDR_MASK;
+            if (child == 0) continue;
+            if (!queue_push(child, (uint8_t)(level + 1))) { failed = true; break; }
+        }
+        if (failed) break;
+
+        // ---- 回收本级页表页本身：翻回 free 归还 page_frame_state_mgr ----
+        if (page_frame_state_mgr::state_set(pa, 1, page_state_t::free) != 0) {
+            bsp_kout << "[bfs_delete_old_pagetable] state_set free fail pa=0x"
+                     << HEX << pa << DEC << kendl;
+            failed = true;
+            break;
+        }
+        freed_count++;
+    }
+
+    delete[] queue;
+    if (failed) return SRC_LOC();
+    bsp_kout << "[bfs_delete_old_pagetable] freed " << freed_count
+             << " page-table pages (old root 0x" << HEX << old_root << ")" << DEC << kendl;
+    return 0;
+}
+
+
 KURD_t kimg_affiliate_property_map1(){
     struct aff_entry {
         vm_interval* iv;
