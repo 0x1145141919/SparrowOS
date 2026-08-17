@@ -189,42 +189,7 @@ void create_first_kthread(){
 // ─── 核心关机 IPI handler（跑飞型，三指令收工） ────────────
 // 由 fly_ipi_send 投递到目标核，cli + wbinvd + hlt 后永不复返
 
-static uint64_t ipi_shutdown_func(void*)
-{
-    asm volatile("cli; wbinvd; hlt" ::: "memory");
-    __builtin_unreachable();
-    return 1;
-}
 
-// ─── 广播关机 ─────────────────────────────────────────────
-// 遍历除 self 外所有 AP，逐一 fly_ipi_send 关机
-// 50ms 硬上限，超时则跳过剩余 AP，发起者自救
-
-extern "C" void broadcast_shutdown()
-{
-    uint32_t self = fast_get_processor_id();
-    uint32_t nproc = logical_processor_count;
-    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
-
-    for (uint32_t pid = 0; pid < nproc; pid++) {
-        if (pid == self) continue;
-        if (ktime::get_microsecond_stamp() >= deadline)
-            break;
-
-        ipi_package_t ipi;
-        ipi.arg        = nullptr;
-        ipi.func       = (uint64_t)ipi_shutdown_func;
-        ipi.id         = pid;
-        ipi.is_apicid  = false;
-        ipi.is_returnable = false;
-
-        fly_ipi_send(&ipi);  // best-effort
-    }
-
-    // 发起者自救
-    asm volatile("cli; wbinvd; hlt" ::: "memory");
-    __builtin_unreachable();
-}
 
 loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
@@ -232,69 +197,11 @@ XSDT_Table *XSDT;
 
 extern "C" void fred_enable(gs_complex_t*gs_complex);
 
-// ── basic_init（下一轮实现）──
-// 职责（资产表消费后半段 + 输出子系统 + 内存收养）：
-//   从 asset_table read/deal 剩余资产（kimg/initramfs/ksymbols/hpet_mmio/
-//   gs_complexes/hdstacks/phyaddr_window/kernel_* mem），焚包（ksetmem_8 已由
-//   exec_env_prepare 完成 pour 后可执行），初始化 textconsole/serial/kout/
-//   HPET/ksymmanager，收养 BCB（g_bcbs → FreePagesAllocator），执行 mem_init。
-// 旧 kernel_start 的逻辑体已移入下面注释（v1 全局字段布局，施工时按 v2 资产表改写）。
-extern "C" void basic_init()
-{
-    // TODO(设计方确认)：见上面职责注释。旧 kernel_start 主体 = 施工蓝图。
-}
 
-// ── truly_start（下一轮实现）──
-// 职责：mem_init 之后的复杂业务初始化——调度器就绪前的收尾（ACPI/APIC 分析、
-//       全局调度器数组、AP 启动、task_pool、中断接管），随后进入调度
-//       （create_first_kthread）。
-// 返回 int 以规避 C++ 对全局 main 的签名限制；asm 侧 call 后忽略返回值。
-extern "C" int truly_start()
-{
-    // TODO(设计方确认)：旧 kernel_start 尾部（kernel_start 注释块）为施工蓝图。
-    for (;;) asm volatile("hlt");
-    return 0;
-}
-
-#if 0
-// ════════════════════════════════════════════════════════════════
-// [存档] 旧 kernel_start — v1 交接包全局布局的初始化主体（施工蓝图）
-// 已被 exec_env_prepare / basic_init / main 三阶段取代。保留逻辑备迁移。
-// ════════════════════════════════════════════════════════════════
 extern "C" void kernel_start() 
 {   
-    very_early_init(transfer);
-    ksetmem_8(transfer,0,transfer->self_pages_count*0x1000);
-    transfer=nullptr;//此信息包是属于阅后即焚
     int  Status=0;
     KURD_t bsp_init_kurd=KURD_t();
-    bsp_init_kurd=GfxPrim::Init(&gop_info,gop_buffer);//要开发直接写图形缓冲区的接口
-    if(error_kurd(bsp_init_kurd)){
-        return;
-    }
-    ksymmanager::Init(&symtable_file.interval, symtable_file.size);  
-    readonly_timer = new HPET_driver();
-    readonly_timer->Init(&hpet_mmio);
-    DmesgRingBuffer::Init(&log_buffer);
-    Vec2i font_vec={.x=16, .y=32};
-    bsp_init_kurd=textconsole_GoP::Init(&ter16x32_data[0][0][0],font_vec,0x00ffffffff,0);
-    textconsole_GoP::Clear();
-    serial_init_stage1();
-    bsp_kout.Init();
-    bsp_kout.shift_dec();
-    if (Status!=OS_SUCCESS)
-    {
-        bsp_kout<<"InitialKernelShellControler Failed\n";return ;
-    }
-    bsp_kout<<"Kernel Shell Initialed Success\n";
-    tsc_regist();
-    GlobalKernelStatus=kernel_state::PANIC_WILL_ANALYZE;
-    Panic::will_check();
-    bsp_init_kurd=mem_init();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"mem_init Failed"<<kendl;
-        return;
-    }
     gAcpiVaddrSapceMgr.Init(g_xsdt_base);
     if(fred_support_catch_bit){
         fred_enable((gs_complex_t*)rdmsr(msr::syscall::IA32_GS_BASE));
@@ -325,7 +232,6 @@ extern "C" void kernel_start()
         global_schedulers[i].placed_init(cx->stacks_ptr);
     }
     gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
-
     bsp_init_kurd = ap_init_one_by_one();
     if (error_kurd(bsp_init_kurd)) {
         bsp_kout << "x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug" << kendl;
@@ -343,7 +249,6 @@ extern "C" void kernel_start()
     global_container=new ecams_container_t((MCFG_Table*)gAcpiVaddrSapceMgr.get_acpi_table("MCFG"));
     create_first_kthread();
 }
-#endif
 extern "C" void ap_final_work();
 check_point init_finish_checkpoint;
 extern void apply_umwait_control(void);
@@ -364,3 +269,41 @@ extern "C" void ap_init()
     asm volatile("sfence");
     ap_final_work();
 }
+static uint64_t ipi_shutdown_func(void*)
+{
+    asm volatile("cli; wbinvd; hlt" ::: "memory");
+    __builtin_unreachable();
+    return 1;
+}
+// ─── 广播关机 ─────────────────────────────────────────────
+// 遍历除 self 外所有 AP，逐一 fly_ipi_send 关机
+// 50ms 硬上限，超时则跳过剩余 AP，发起者自救
+
+extern "C" void broadcast_shutdown()
+{
+    uint32_t self = fast_get_processor_id();
+    uint32_t nproc = logical_processor_count;
+    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
+
+    for (uint32_t pid = 0; pid < nproc; pid++) {
+        if (pid == self) continue;
+        if (ktime::get_microsecond_stamp() >= deadline)
+            break;
+
+        ipi_package_t ipi;
+        ipi.arg        = nullptr;
+        ipi.func       = (uint64_t)ipi_shutdown_func;
+        ipi.id         = pid;
+        ipi.is_apicid  = false;
+        ipi.is_returnable = false;
+
+        fly_ipi_send(&ipi);  // best-effort
+    }
+
+    // 发起者自救
+    asm volatile("cli; wbinvd; hlt" ::: "memory");
+    __builtin_unreachable();
+}
+
+
+

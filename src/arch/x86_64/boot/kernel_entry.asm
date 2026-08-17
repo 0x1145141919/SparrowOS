@@ -237,7 +237,7 @@ _kernel_Init:
     call rax
     mov rax, basic_init
     call rax
-    mov rax, truly_start
+    mov rax, kernel_start
     call rax
     hlt
 secure_hlt:

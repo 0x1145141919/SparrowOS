@@ -157,13 +157,14 @@ set(SRC_COMMON
 
 # 内核可执行文件
 add_executable(kernel.elf
-    src/KImage_Introspection.cpp
     src/utils/kshell_commands_regist.cpp
     src/arch/x86_64/panic.cpp
     src/arch/x86_64/boot/kinit.cpp
+    src/arch/x86_64/boot/basic_init.cpp
     src/arch/x86_64/boot/exec_env_prepare.cpp
     src/arch/x86_64/boot/info_pkg_link.cpp
     src/arch/x86_64/boot/asset_table.cpp
+    src/KImage_Introspection.cpp
     src/utils/kcirclebufflogMgr.cpp
     src/arch/x86_64/boot/kernel_entry.asm
     src/arch/x86_64/boot/ap_init_pemode_exceptions.asm

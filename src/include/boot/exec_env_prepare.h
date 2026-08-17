@@ -38,4 +38,4 @@
 // ════════════════════════════════════════════════════════════════
 
 // pkg — init.elf 传递的 v2 信息包基址（kernel 侧可访问线性地址）
-void exec_env_prepare(init_to_kernel_header_v2* pkg);
+extern "C" void exec_env_prepare(init_to_kernel_header_v2* pkg);
