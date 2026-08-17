@@ -255,8 +255,7 @@ extern "C" bool i8042_char_read_event_by_seq(uint64_t seq, kbd_char_event* out_e
     if(out_event == nullptr){
         return false;
     }
-    const kbd_char_event* ring_view =
-        (i8042_char_ring_readonly_view != nullptr) ? i8042_char_ring_readonly_view : i8042_char_ring;
+    const kbd_char_event* ring_view =i8042_char_ring;
     while(true){
         const uint64_t publish_seq_before = i8042_char_publish_seq.load(atomic_memory_order::acquire);
         if(seq >= publish_seq_before){

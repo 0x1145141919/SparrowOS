@@ -284,7 +284,8 @@ extern "C" bool i8042_read_event_by_seq(uint64_t seq, ps_2_keyboard_event* out_e
         return false;
     }
     const ps_2_keyboard_event* ring_view =
-        (i8042_event_ring_readonly_view != nullptr) ? i8042_event_ring_readonly_view : i8042_event_ring;
+        //(i8042_event_ring_readonly_view != nullptr) ? i8042_event_ring_readonly_view : i8042_event_ring;
+        i8042_event_ring;
     while(true){
         const uint64_t publish_seq_before = i8042_event_publish_seq.load(atomic_memory_order::acquire);
         if(seq >= publish_seq_before){
