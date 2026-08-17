@@ -109,7 +109,7 @@ atomic_scalar_t<uint32_t> panic_winner{0};
 void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, uint64_t arg5)
 {
     uint32_t prev = panic_winner.add_ka(1);
-    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY){
+    if(GlobalKernelStatus>=kernel_state::SCHEDUL_READY&&GlobalKernelStatus!=kernel_state::PANIC){
         broadcast_halt();
     }
     if (global_pt_blackboxes)
