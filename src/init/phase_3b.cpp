@@ -251,6 +251,22 @@ static loc_code_t build_phyaddr_window(p3b_ctx& ctx, const char* name) {
     return 0;
 }
 
+// ---- XSDT 基址（scalar）：XSDT 物理基址标量穿越 ----
+// 架构标量资产，无区间/无映射。kernel.elf 侧在 mem_init::assets_remap 遍历到
+// 时初始化 g_xsdt_base（gAcpiVaddrSapceMgr.Init / acpimgr 消费）。em->xsdt_base
+// 可能为 0（ACPI 2.0 缺失，init_init 已打 WARN），此时照常登记 0 值标量。
+static loc_code_t build_xsdt(p3b_ctx& ctx, const char* name) {
+    uint64_t* copy = new uint64_t(ctx.em->xsdt_base);
+    if (!copy) return SRC_LOC();
+    if (!asset_reg_add(name, copy)) {
+        bsp_kout << "[Phase3b] asset dup: xsdt_pbase" << kendl;
+        return SRC_LOC();
+    }
+    bsp_kout << "[Phase3b] xsdt_pbase(scalar): 0x" << HEX
+             << ctx.em->xsdt_base << DEC << kendl;
+    return 0;
+}
+
 // ---- 集中登记表（.rodata 全局 const）：注册顺序 = 数组顺序 ----
 static const struct {
     const char* name;
@@ -266,6 +282,7 @@ static const struct {
     { asset_names::gs_complexes,    build_gs_complexes },
     { asset_names::hdstacks,        build_hdstacks },
     { asset_names::phyaddr_window,  build_phyaddr_window },
+    { asset_names::xsdt_pbase,      build_xsdt },
 };
 static constexpr uint64_t k_p3b_asset_count =
     sizeof(k_p3b_assets) / sizeof(k_p3b_assets[0]);
@@ -297,7 +314,8 @@ loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
         bsp_kout << "[Phase3b] identity: [0x1000, 0x" << top << ") WB+RWX (transient)" << kendl;
     }
 
-    // XSDT 基址（架构标量，非资产；HPET 生产函数消费 em->xsdt_base）
+    // XSDT 基址（架构标量；HPET 生产函数消费 em->xsdt_base；标量资产由
+    // build_xsdt 登记穿越，kernel 侧 mem_init::assets_remap 落账 g_xsdt_base）
     iv.arch_info.XSDT_base = em->xsdt_base;
 
     // ---- 集中注册：.rodata 表驱动，逐资产生产 + 登记 ----

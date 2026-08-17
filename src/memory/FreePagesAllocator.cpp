@@ -342,7 +342,7 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     }
     ksetmem_8(statistics_arr, 0, processor_count * sizeof(fpa_stats));
     ksetmem_64(processors_preffered_bcb_idx, ~0ULL, processor_count * sizeof(uint64_t));
-
+    page_frame_state_mgr::early_alloc_close();
     return success;
 }
 uint8_t size_to_order(uint64_t size)

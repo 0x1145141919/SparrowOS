@@ -283,6 +283,7 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     // 4.5-2: 构建所有处理器的 GDT/TSS 到 GS 复合体
     {
         vaddr_t gs_base  = iv->arch_info.conjunc_GSs.vbase();
+        vaddr_t hdstack_base_vaddr= iv->arch_info.hdstacks_interval_vbase;
         wrmsr_func(msr::syscall::IA32_GS_BASE,gs_base);//提前给bsp加载好gs
         wrmsr_func(msr::syscall::IA32_KERNEL_GS_BASE,gs_base);//提前给bsp加载好gs
         uint32_t  pcount   = ((init_to_kernel_header_v2*)(uint64_t)info_pbase)->logical_processor_count;
@@ -294,7 +295,8 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         };
         for (uint32_t p = 0; p < pcount; p++) {
             gs_complex_t* cx = (gs_complex_t*)(uint64_t)(gs_base + p * GS_COMPLEX_STRIDE);
-            per_processor_hardware_stack_t* st = cx->stacks_ptr;
+            per_processor_hardware_stack_t* st = (per_processor_hardware_stack_t*)(hdstack_base_vaddr+p*sizeof(per_processor_hardware_stack_t));
+            cx->stacks_ptr=st;
             vaddr_t st_va=reinterpret_cast<vaddr_t>(st);
             cx->slots[PROCESSOR_ID_GS_INDEX]=p;
             // GDT 条目

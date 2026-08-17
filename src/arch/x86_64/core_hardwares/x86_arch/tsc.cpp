@@ -1,6 +1,8 @@
 #include "arch/x86_64/core_hardwares/tsc.h"
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "memory/page_frame_state_mgr.h"
+#include "memory/main_phyaddr_access_window.h"
 #include "util/textConsole.h"
 #include "exec_env_detect.h"
 #include "ktime.h"
@@ -11,9 +13,6 @@
 uint32_t tsc_fs_per_cycle;
 bool is_tsc_ddline_avaliabe;
 bool is_tsc_reliable;
-
-extern vm_interval pages_arr;
-extern vm_interval Kspace_phyaddr_access_window;
 
 static void tsc_panic_hlt(void)
 {
@@ -58,10 +57,9 @@ static void kvm_calc_tsc_fs_per_cycle(void)
     // KVM_FEATURE_CLOCKSOURCE2 = bit 3
     if (!(q.eax & (1 << 3)))
         tsc_panic_hlt();
+    phyaddr_t pvclock_pa=page_frame_state_mgr::early_alloc(1,12,page_state_t::kernel_pinned);
 
-    // 从 pages_arr 借一页物理内存做 pvclock 页
-    phyaddr_t pvclock_pa = pages_arr.pbase();
-    vaddr_t   pvclock_va = Kspace_phyaddr_access_window.vbase() + pvclock_pa;
+    vaddr_t   pvclock_va = PHYACC_VA(pvclock_pa);
 
     // 清零
     ksetmem_8((void *)pvclock_va, 0, 4096);

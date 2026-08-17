@@ -16,6 +16,7 @@
 #include "util/OS_utils.h"
 #include "util/kptrace.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
+#include "KImage_Introspection.h"
 
 // ════════════════════════════════════════════════════════════════
 // exec_env_prepare 实现
@@ -29,7 +30,7 @@ static void init_panic_early_support(void);
 static void init_output_subsystem(void);
 
 
-void exec_env_prepare(init_to_kernel_header_v2* pkg)
+extern "C" void exec_env_prepare(init_to_kernel_header_v2* pkg)
 {
     g_env = probe_env();
     GlobalKernelStatus = kernel_state::EARLY_BOOT;
@@ -83,6 +84,7 @@ void exec_env_prepare(init_to_kernel_header_v2* pkg)
         bsp_kout << "[exec_env_prepare] page_frame_state_mgr adopted: "
                  << an->free_segs_count << " free_segs descriptors" << kendl;
     }
+    self_introspection_init();
 }
 // 早期 panic 支撑：phyaddr_window / ksymmanager / HPET
 //   ① "phyaddr_window mem" → Kspace_phyaddr_access_window 全局落账（[0,dram_top)→高 VA
@@ -99,7 +101,6 @@ static void init_panic_early_support(void)
         const asset_table_entry* e = g_asset_table->read("phyaddr_window mem");
         if (!e) boot_halt(SRC_LOC());
         Kspace_phyaddr_access_window = *(vm_interval*)e->data;
-        g_asset_table->deal("phyaddr_window mem");
         // 物理地址访问器：窗口从资产表落账后立即初始化主窗口直映射基址
         // （main_window_vbase / BASIC_interval）。pages_arr / fpa_bitmaps /
         // log_buffer 已改 movable（纯物理描述符，无 KMMU 映射），后续一切
@@ -129,7 +130,6 @@ static void init_panic_early_support(void)
         const asset_table_entry* e = g_asset_table->read("hpet_mmio mem");
         if (!e) boot_halt(SRC_LOC());
         vm_interval hpet_iv = *(vm_interval*)e->data;
-        g_asset_table->deal("hpet_mmio mem");
         readonly_timer = new HPET_driver();
         if (error_kurd(readonly_timer->Init(&hpet_iv)))
             boot_halt(SRC_LOC());
@@ -163,7 +163,6 @@ static void init_output_subsystem(void)
         const asset_table_entry* e = g_asset_table->read("gop_framebuffer mem");
         if (!e) boot_halt(SRC_LOC());
         vm_interval gop_fb = *(vm_interval*)e->data;
-        g_asset_table->deal("gop_framebuffer mem");
         GlobalBasicGraphicInfoType gop_info = {};
         e = g_asset_table->read("gop_info gop");
         if (!e) boot_halt(SRC_LOC());

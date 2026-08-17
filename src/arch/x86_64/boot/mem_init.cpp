@@ -7,6 +7,8 @@
 #include "memory/phyaddr_accessor.h"
 #include "memory/page_frame_state_mgr.h"
 #include "memory/main_phyaddr_access_window.h"
+#include "boot/asset_table.h"
+#include "abi/asset_names.h"
 #include "arch/x86_64/mem_init.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "util/kout.h"
@@ -17,134 +19,8 @@ phymem_segment *phymem_segments;
 uint64_t phymem_segments_count; 
 uint32_t logical_processor_count;
 vm_interval Kspace_phyaddr_access_window;
+vm_interval conjucnt_GSs;
 phyaddr_t g_xsdt_base;
-// 从 kIMG_self_window 解析 ELF 程序头表，标记所有 PT_LOAD 段为持久页
-// 替换旧版对 kBSS_interval 的单独标记——BSS 已是普通 PT_LOAD
-static KURD_t persist_elf_segments() {
-    uint8_t* elf_base = (uint8_t*)kIMG_self_window.vbase();
-    Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_base;
-    if (ehdr->e_ident[0] != 0x7f || ehdr->e_ident[1] != 'E' ||
-        ehdr->e_ident[2] != 'L'  || ehdr->e_ident[3] != 'F') {
-        bsp_kout << "[persist_elf] bad magic" << kendl;
-        return {result_code::FATAL, 0, module_code::MEMORY,
-                MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-                0, level_code::FATAL, err_domain::CORE_MODULE};
-    }
-    uint8_t* ptbl = elf_base + ehdr->e_phoff;
-    for (Elf64_Half i = 0; i < ehdr->e_phnum; i++) {
-        Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * ehdr->e_phentsize);
-        if (ph->p_type != PT_LOAD) continue;
-        uint64_t npg = align_up(ph->p_memsz, 4096) >> 12;
-        if (npg == 0) continue;
-        KURD_t kurd = all_pages_arr::simp_pages_set(ph->p_paddr, npg, page_state_t::kernel_persisit);
-        if (error_kurd(kurd)) return kurd;
-    }
-    return {result_code::SUCCESS, 0, module_code::MEMORY,
-            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-            0, level_code::INFO, err_domain::CORE_MODULE};
-}
-
-KURD_t pesisitent_properties_set(){
-    KURD_t bsp_init_kurd;
-    bsp_init_kurd=persist_elf_segments();  // 从 ELF 程序头表标记所有 PT_LOAD 段（含 BSS）
-    if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
-    bsp_init_kurd=all_pages_arr::simp_pages_set(pages_arr.pbase(),pages_arr.npages,page_state_t::kernel_persisit);
-    if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
-    bsp_init_kurd=all_pages_arr::simp_pages_set(FPA_bitmaps.pbase(),FPA_bitmaps.npages,page_state_t::kernel_persisit);
-    if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
-    bsp_init_kurd=all_pages_arr::simp_pages_set(conjucnt_GSs.pbase(),conjucnt_GSs.npages,page_state_t::kernel_persisit);
-    if(error_kurd(bsp_init_kurd))return bsp_init_kurd;
-    return bsp_init_kurd;
-}
-void fpa_properties_deal(){
-    phymem_segment initramfs;
-    initramfs.start=initramfs_file.interval.pbase();
-    initramfs.size=initramfs_file.interval.byte_cnt();
-    phymem_segment symboltable;
-    symboltable.start=symtable_file.interval.pbase();
-    symboltable.size=symtable_file.interval.byte_cnt();
-    phymem_segment log_interval;
-    log_interval.start=log_buffer.pbase();
-    log_interval.size=log_buffer.byte_cnt();
-    phymem_segment KImg_pinterval;
-    KImg_pinterval.start=kIMG_self_window.pbase();
-    KImg_pinterval.size=kIMG_self_window.byte_cnt();
-}
-KURD_t KImage_map_rebuild(){
-    KURD_t success(
-        result_code::SUCCESS, 0, module_code::MEMORY,
-        MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-        0, level_code::INFO, err_domain::CORE_MODULE
-    );
-
-    // 通过 kIMG_self_window 读取 ELF（CR3 尚未切换，旧 identity 页表仍可见）
-    uint8_t* elf_base = (uint8_t*)kIMG_self_window.vbase();
-    Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_base;
-    if (ehdr->e_ident[0] != 0x7f || ehdr->e_ident[1] != 'E' ||
-        ehdr->e_ident[2] != 'L'  || ehdr->e_ident[3] != 'F') {
-        bsp_kout << "[KImage_map_rebuild] bad ELF magic" << kendl;
-        KURD_t fail(
-            result_code::FATAL, 0, module_code::MEMORY,
-            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-            0, level_code::FATAL, err_domain::CORE_MODULE
-        );
-        return fail;
-    }
-
-    uint8_t* ptbl = elf_base + ehdr->e_phoff;
-
-    // 遍历所有 PT_LOAD，在 KspacePageTable（新 PML4）中重建映射
-    // 物理地址统一从 p_paddr 读取——init.elf 已将 0x100 段的真实 PA 写回此处
-    for (Elf64_Half i = 0; i < ehdr->e_phnum; i++) {
-        Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * ehdr->e_phentsize);
-        if (ph->p_type != PT_LOAD) continue;
-
-        phyaddr_t pa = ph->p_paddr;   // init.elf 已填好的真实 PA
-        vaddr_t   va = ph->p_vaddr;   // 固定虚拟地址
-        if(!is_addr_kernel_address((void*)va))continue;
-        uint64_t  sz = align_up(ph->p_memsz, 4096);
-        uint64_t npg = sz >> 12;
-
-        // 构造页表访问属性
-        pgaccess acc;
-        acc.is_kernel      = 1;
-        acc.is_writeable   = (ph->p_flags & PF_W) ? 1 : 0;
-        acc.is_readable    = 1;
-        acc.is_executable  = (ph->p_flags & PF_X) ? 1 : 0;
-        acc.is_global      = 1;
-        acc.cache_strategy = WB;
-
-        vm_interval seg_iv = {.vpn = va >> 12, .ppn = pa >> 12,
-                              .npages = npg, .access = acc};
-        // 跳过不在内核地址空间的段（如 TLS 段在低地址）
-        if (!seg_iv.is_kernel_address()) {
-            bsp_kout << "[KImage_map_rebuild]  skip seg[" << i << "] v=0x" << HEX << va
-                     << " (non-kernel address)" << DEC << kendl;
-            continue;
-        }
-        // 恒定映射：Kspace_phyaddr_direct_map 既建页表又维护红黑树
-        KURD_t kurd = Kspace_phyaddr_direct_map(seg_iv);
-        if (error_kurd(kurd)) {
-            bsp_kout << "[KImage_map_rebuild] seg " << i << " map fail" << kendl;
-            return kurd;
-        }
-        bsp_kout << "[KImage_map_rebuild]  seg[" << i << "] v=0x" << HEX << va
-                 << " p=0x" << pa << " sz=0x" << sz << kendl;
-    }
-    bsp_kout.shift_hex();
-    bsp_kout << "[KImage_map_rebuild] done: kIMG 0x" << kIMG_self_window.pbase()
-             << " ->0x" << kIMG_self_window.vbase() << kendl;
-    bsp_kout.shift_dec();
-
-    return success;
-}
-// 全量 TLB 刷出：reload CR3 使所有非全局缓存项失效
-// 在 Kspace_phyaddr_direct_map 后必须立即调用，防止 old identity-map TLB 残留
-static void tlb_full_flush() {
-    uint64_t cr3_val;
-    asm volatile("mov %%cr3, %0" : "=r"(cr3_val));
-    asm volatile("mov %0, %%cr3" :: "r"(cr3_val) : "memory");
-}
 
 // ================================================================
 // bfs_delete_old_pagetable — CR3 切换后 BFS 递归删除老页表（init.elf kmmu 根表）
@@ -241,219 +117,267 @@ static loc_code_t bfs_delete_old_pagetable(phyaddr_t old_root)
              << " page-table pages (old root 0x" << HEX << old_root << ")" << DEC << kendl;
     return 0;
 }
-
-
-KURD_t kimg_affiliate_property_map1(){
-    struct aff_entry {
-        vm_interval* iv;
-        const char* name;
+// ================================================================
+// remap_hdstacks — hdstacks 资产精细重映射（镜像 init.elf phase_3b build_hdstacks 的精化版）
+//
+// 背景：phase_3b 只对 hdstacks 做了 KMMU 粗映射（含 guard 页全量 RW），那只是
+//       过渡期映射。guard 页的"不映射"铁律由 kernel 侧精细映射阶段落实。
+//
+// 两步走：
+//   1. kspace_vm_table 跑马圈地：把整段 VA 区间（nproc × stride + 尾 guard）登记为
+//      一块领地（仅台账，不建页表），杜绝后续 VA 分配器（如 multi_heap_enable 的
+//      alloc_available_space）在 guard 页位置再放任何映射——guard 必须永久缺页。
+//   2. 内部精细映射：逐处理器逐栈（rsp0/ist1/ist2/ist3/idle_task）只对真实占用页
+//      enable_VMentry，各栈间的 guard 页保持 not-present——栈溢出立即 #PF。
+//      栈区间只有 32KB 且 4KB 对齐，enable_VMentry 内部按 4KB 粒度分块映射，
+//      不会用 2MB/1GB 大页把 guard 页一起盖住。
+// ================================================================
+static KURD_t remap_hdstacks(const vm_interval& hd)
+{
+    // 业务代码 KURD 空占位（不碰模块错误树）
+    auto placeholder_fail = []() -> KURD_t {
+        KURD_t f;
+        f.result      = result_code::FAIL;
+        f.level       = level_code::ERROR;
+        f.module_code = module_code::MEMORY;
+        return f;
     };
-    // ── hw_stacks 特殊处理：逐处理器逐栈映射，跳过 guard 页（镜像 init.elf Phase 3b 逻辑）──
-    {
-        uint64_t stack_stride = sizeof(per_processor_hardware_stack_t);
-        vaddr_t  hw_v = hw_stacks.vbase();
-        phyaddr_t hw_p = hw_stacks.pbase();
-        for (uint32_t p = 0; p < logical_processor_count; p++) {
-            uint64_t  off    = p * stack_stride;
-            vaddr_t   proc_v = hw_v + off;
-            phyaddr_t proc_p = hw_p + off;
 
-            auto map_stack = [&](uint64_t field_off, uint64_t sz, const char* name) -> KURD_t {
-                if (sz == 0) return {result_code::SUCCESS, 0, module_code::MEMORY,
-                                     MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-                                     0, level_code::INFO, err_domain::CORE_MODULE};
-                vm_interval iv = {.vpn = (proc_v + field_off) >> 12,
-                                  .ppn = (proc_p + field_off) >> 12,
-                                  .npages = sz >> 12, .access = KSPACE_RW_ACCESS};
-                KURD_t kurd = Kspace_phyaddr_direct_map(iv);  // 恒定映射：建红黑树 + 页表
-                if (error_kurd(kurd))
-                    bsp_kout << "[kimg_affiliate] hw_stacks[" << p << "]." << name << " fail" << kendl;
-                return kurd;
-            };
-            KURD_t k;
-            k = map_stack(RSP0_BASE_OFF, RSP0_STACKSIZE, "rsp0"); if (error_kurd(k)) return k;
-            k = map_stack(IST1_BASE_OFF, DF_STACKSIZE,   "ist1"); if (error_kurd(k)) return k;
-            k = map_stack(IST2_BASE_OFF, MC_STACKSIZE,   "ist2"); if (error_kurd(k)) return k;
-            k = map_stack(IST3_BASE_OFF, NMI_STACKSIZE,  "ist3"); if (error_kurd(k)) return k;
-            k = map_stack(IDLE_TASK_STACK_BASE_OFF, IDLE_TASK_STACKSIZE, "idle_task"); if (error_kurd(k)) return k;
-        }
-        bsp_kout << "[kimg_affiliate_property_map1] hw_stacks: " << logical_processor_count
-                 << " processors, stride=" << stack_stride << kendl;
+    // 圈地 + 建页表必须整体持锁，保证"红黑树登记 + 页表修改"原子（同 direct_map 约定）
+    spinlock_interrupt_about_guard guard(kspace_pagetable_modify_lock);
+
+    // ---- 1. 跑马圈地：整段 VA（含全部 guard）登记为一块领地 ----
+    VM_DESC territory = {
+        .start           = hd.vbase(),
+        .end             = hd.vbase() + hd.byte_cnt(),
+        .map_type        = VM_DESC::map_type_t::MAP_PHYSICAL,
+        .phys_start      = hd.pbase(),
+        .access          = hd.access,
+        .committed_full  = true,
+        .is_vaddr_alloced = false,
+    };
+    if (kspace_vm_table->insert(territory) != OS_SUCCESS) return placeholder_fail();
+
+    // ---- 2. 内部精细映射：逐处理器逐栈跳过 guard ----
+    //      VA/PA 偏移相同（VA 与 PA 对 stride 基址线性同构）。
+    const uint64_t stride = sizeof(per_processor_hardware_stack_t);
+    auto map_stack = [&](uint64_t off, uint64_t sz) -> KURD_t {
+        if (sz == 0) return KURD_t();
+        vm_interval sub = {
+            .vpn    = (hd.vbase() + off) >> 12,
+            .ppn    = (hd.pbase() + off) >> 12,
+            .npages = sz >> 12,
+            .access = hd.access,
+        };
+        return KspacePageTable::enable_VMentry(sub);
+    };
+
+    for (uint32_t p = 0; p < logical_processor_count; p++) {
+        const uint64_t off = p * stride;
+        KURD_t k;
+        k = map_stack(off + RSP0_BASE_OFF,            RSP0_STACKSIZE);      if (error_kurd(k)) return k;
+        k = map_stack(off + IST1_BASE_OFF,            DF_STACKSIZE);        if (error_kurd(k)) return k;
+        k = map_stack(off + IST2_BASE_OFF,            MC_STACKSIZE);        if (error_kurd(k)) return k;
+        k = map_stack(off + IST3_BASE_OFF,            NMI_STACKSIZE);       if (error_kurd(k)) return k;
+        k = map_stack(off + IDLE_TASK_STACK_BASE_OFF, IDLE_TASK_STACKSIZE); if (error_kurd(k)) return k;
     }
+    return KURD_t();
+}
 
-    aff_entry list[] = {
-        {&FPA_bitmaps,         "FPA_bitmaps"},
-        {&pages_arr,           "pages_arr"},
-        {&hpet_mmio,           "hpet_mmio"},
-        {&gop_buffer,          "gop_buffer"},
-        {&conjucnt_GSs,        "conjucnt_GSs"},
-        {&Kspace_phyaddr_access_window, "Kspace_phyaddr_access_window"},
+// ================================================================
+// load_low_half_segments — 低半区（非内核地址）段实际加载 + 映射
+//
+// 背景：phase_3a 只加载了 kernel.elf 的高半区四段（.text/.data/.rodata/.bss），
+//       ap_bootstrap_*（kld.ld init 区，0x4000 起）低地址段只存在于 kimg 文件
+//       缓冲里，从未落到其链接物理地址。AP 经 INIT-SIPI-SIPI 在物理 0x4000 处
+//       实模式启动（SIPI vector = AP_realmode_start/4096），若内容不在位，
+//       0x4000 处执行的是残留垃圾。故必须先把文件内容复制到对应物理内存。
+//
+// 步骤（逐 PT_LOAD）：
+//   1. 读 kimg 资产（movable_file_entry_t = kernel.elf 文件镜像），经主窗口重链
+//   2. 遍历全部 PT_LOAD，跳过已由 phase_3a 加载的内核地址段
+//   3. 低半段：把 [p_offset, p_offset+p_filesz) 从文件复制到物理 p_paddr；
+//      p_memsz 超出 p_filesz 的部分清零（.bss 语义）
+//   4. enable_low_half_vm_interval 映射进新 PML4（va==pa，低半区恒等）
+//
+// 写物理内存一律经主窗口 PHYACC_VA（此时新页表已含 phyaddr_window 映射）。
+// 约束：必须在 CR3 切到新 PML4、主窗口可用之后调用（本函数在 mem_init 末段调用）。
+// ================================================================
+static KURD_t load_low_half_segments()
+{
+    auto placeholder_fail = []() -> KURD_t {
+        KURD_t f;
+        f.result      = result_code::FAIL;
+        f.level       = level_code::ERROR;
+        f.module_code = module_code::MEMORY;
+        return f;
     };
 
-    for (auto& e : list) {
-        if (e.iv->npages == 0) {
-            bsp_kout << "[kimg_affiliate_property_map1] skip " << e.name
-                     << " (npages=0 or ppn=0)" << kendl;
+    const asset_table_entry* kimg = g_asset_table->read(asset_names::kimg);
+    if (!kimg) return placeholder_fail();
+    const movable_file_entry_t* kimg_file = (const movable_file_entry_t*)kimg->data;
+
+    uint8_t* elf_b = (uint8_t*)PHYACC_VA(kimg_file->base_ppn << 12);
+    Elf64_Ehdr* eh = (Elf64_Ehdr*)elf_b;
+    if (eh->e_ident[EI_MAG0] != ELFMAG0 || eh->e_ident[EI_MAG1] != ELFMAG1 ||
+        eh->e_ident[EI_MAG2] != ELFMAG2 || eh->e_ident[EI_MAG3] != ELFMAG3) {
+        bsp_kout << "[mem_init] kimg bad ELF magic" << kendl;
+        return placeholder_fail();
+    }
+    uint8_t* ptbl = elf_b + eh->e_phoff;
+    bsp_kout << "[mem_init] loading non-kernel (low-half) segments..." << kendl;
+
+    for (Elf64_Half i = 0; i < eh->e_phnum; i++) {
+        Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * eh->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_memsz == 0) continue;
+
+        vaddr_t   va = ph->p_vaddr;
+        phyaddr_t pa = ph->p_paddr;
+        uint64_t  sz = align_up(ph->p_memsz, 4096);
+
+        // 跳过已由 phase_3a 加载的内核地址段
+        vm_interval seg = {.vpn = va >> 12, .ppn = pa >> 12,
+                           .npages = sz >> 12, .access = {}};
+        if (seg.is_kernel_address()) continue;
+
+        // 越界防护：文件内容必须落在 kimg 文件缓冲内
+        if (ph->p_offset + ph->p_filesz > kimg_file->size) {
+            bsp_kout << "[mem_init] non-kernel seg[" << i << "] beyond kimg file" << kendl;
+            return placeholder_fail();
+        }
+
+        // ---- 实际加载：文件内容 → 链接物理地址（经主窗口） ----
+        if (ph->p_filesz > 0) {
+            ksystemramcpy(elf_b + ph->p_offset, (void*)PHYACC_VA(pa), ph->p_filesz);
+        }
+        if (ph->p_memsz > ph->p_filesz) {
+            ksetmem_8((void*)PHYACC_VA(pa + ph->p_filesz), 0, ph->p_memsz - ph->p_filesz);
+        }
+
+        // ---- 映射进新 PML4（低半区恒等） ----
+        pgaccess acc = {1, (uint8_t)((ph->p_flags & PF_W) ? 1 : 0), 1,
+                        (uint8_t)((ph->p_flags & PF_X) ? 1 : 0), 0, WB};
+        vm_interval seg_map = {.vpn = va >> 12, .ppn = pa >> 12,
+                               .npages = sz >> 12, .access = acc};
+        KURD_t mk = gKernelSpace->enable_low_half_vm_interval(seg_map);
+        if (error_kurd(mk)) {
+            bsp_kout << "[mem_init] non-kernel seg[" << i << "] map fail" << kendl;
+            return mk;
+        }
+        bsp_kout << "[mem_init] low-half seg[" << i << "] v=0x" << HEX << va
+                 << " p=0x" << pa << " filesz=0x" << ph->p_filesz
+                 << " sz=0x" << sz << DEC << kendl;
+    }
+    return KURD_t();
+}
+
+KURD_t assets_remap(){
+    // arg1=mem 型的统一重映射：全部 entry 只 read 不 build 不 deal（后续阶段自领）。
+    // 已 deal 条目位图已清，read 自然跳过；非 mem 型（movable/scalar/gop...）归各自消费方。
+    for (uint32_t i = 0; i < asset_names::all_count(); i++) {
+        const char* name = asset_names::all[i];
+        const asset_table_entry* e = g_asset_table->read(name);
+        if (!e) continue;
+
+        // 标量资产：非区间，匹配到即解析标量落账（目前仅 xsdt_pbase）
+        if (e->kind == ASSET_KIND_SCALAR) {
+            if (strcmp_in_kernel(e->name, asset_names::xsdt_pbase) == 0) {
+                g_xsdt_base = *(const phyaddr_t*)e->data;
+                bsp_kout << "[assets_remap] xsdt_pbase: phys 0x" << HEX
+                         << g_xsdt_base << DEC << kendl;
+            }
             continue;
         }
-        KURD_t map_kurd = Kspace_phyaddr_direct_map(*e.iv);
-        if (error_kurd(map_kurd)) {
-            bsp_kout << "[kimg_affiliate_property_map1] " << e.name
-                     << " map fail" << kendl;
-            return map_kurd;
+
+        if (e->kind != ASSET_KIND_MEM_INTERVAL) continue;
+
+        const vm_interval iv = *(const vm_interval*)e->data;
+
+        // hdstacks 特殊：先圈地再逐栈精细映射（guard 页不映射）
+        if (strcmp_in_kernel(e->name, asset_names::hdstacks) == 0) {
+            KURD_t k = remap_hdstacks(iv);
+            if (error_kurd(k)) {
+                bsp_kout << "[assets_remap] hdstacks fine remap fail" << kendl;
+                return k;
+            }
+            bsp_kout << "[assets_remap] hdstacks: territory v=0x" << HEX << iv.vbase()
+                     << " p=0x" << iv.pbase() << " npg=" << iv.npages
+                     << ", " << DEC << logical_processor_count
+                     << " procs fine-mapped (guards skipped)" << kendl;
+            continue;
         }
-        bsp_kout << "[kimg_affiliate_property_map1] " << e.name
-                 << " 0x" << HEX << e.iv->pbase() << " ->0x" << e.iv->vbase() << kendl;
-        bsp_kout.shift_dec();
+        if(strcmp_in_kernel(e->name, asset_names::gs_complexes)==0){
+            conjucnt_GSs=*(vm_interval*)e->data;
+        }
+
+        // 普通 mem 型：Kspace_phyaddr_direct_map 一站式（登记 VM_DESC + 建页表）
+        KURD_t k = Kspace_phyaddr_direct_map(iv);
+        if (error_kurd(k)) {
+            bsp_kout << "[assets_remap] direct map fail: " << name << kendl;
+            return k;
+        }
+        bsp_kout << "[assets_remap] " << name << ": v=0x" << HEX << iv.vbase()
+                 << " p=0x" << iv.pbase() << " npg=" << iv.npages << DEC << kendl;
     }
-    KURD_t ok(
-        result_code::SUCCESS, 0, module_code::MEMORY,
-        MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-        0, level_code::INFO, err_domain::CORE_MODULE
-    );
-    return ok;
-}
-// 将物理资源从 init.elf 分配转生到 kernel 的 FreePagesAllocator
-// 策略：新分配 → 拷贝内容 → 更新 ppn → 重映射 → 释放旧区间
-// 三个资产（initramfs / symtable / log_buffer）共享此模式
-KURD_t properties_modify_stage1(){
-    auto relocate_one = [](vm_interval* iv, phyaddr_t old_pbase, uint64_t old_size,
-                           const char* name) -> KURD_t {
-        KURD_t kurd;
-        uint64_t new_pa = FreePagesAllocator::alloc(
-            iv->byte_cnt(), BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_anonymous, kurd);
-        if (error_kurd(kurd)) {
-            bsp_kout << name << " alloc Failed" << kendl;
-            return kurd;
-        }
-        // 拷贝内容到新位置
-        PhyAddrAccessor::paddr_memcpy(new_pa, old_pbase, old_size);
-        iv->ppn = new_pa >> 12;
-        // 重映射 + TLB 刷出
-        kurd = Kspace_phyaddr_direct_map(*iv);
-        tlb_full_flush();
-        if (error_kurd(kurd)) {
-            bsp_kout << name << " phyaddr_direct_map Failed" << kendl;
-            return kurd;
-        }
-        // 释放旧物理页（收养后位图直接归还）
-        FreePagesAllocator::free(old_pbase, old_size);
-        return kurd;
-    };
-
-    KURD_t kurd;
-
-    kurd = relocate_one(&initramfs_file.interval,
-                         initramfs_file.interval.pbase(),
-                         initramfs_file.interval.byte_cnt(),
-                         "initramfs_file");
-    if (error_kurd(kurd)) return kurd;
-
-    kurd = relocate_one(&symtable_file.interval,
-                         symtable_file.interval.pbase(),
-                         symtable_file.interval.byte_cnt(),
-                         "symtable_file");
-    if (error_kurd(kurd)) return kurd;
-
-    kurd = relocate_one(&log_buffer,
-                         log_buffer.pbase(),
-                         log_buffer.byte_cnt(),
-                         "log_buffer");
-    if (error_kurd(kurd)) return kurd;
-
-    kurd = relocate_one(&kIMG_self_window,
-                         kIMG_self_window.pbase(),
-                         kIMG_self_window.byte_cnt(),
-                         "kIMG_self_window");
-    if (error_kurd(kurd)) return kurd;
-
-    return {result_code::SUCCESS, 0, module_code::MEMORY,
-            MEMMODULE_LOCATIONS::LOCATION_CODE_FREEPAGES_ALLOCATOR,
-            0, level_code::INFO, err_domain::CORE_MODULE};
+    bsp_kout << "all mem_properties mapped"<<kendl;
+    return KURD_t();
 }
 extern "C" uint32_t assigned_cr3;
 KURD_t mem_init(){ 
     KURD_t bsp_init_kurd;
-    PhyAddrAccessor::Init(Kspace_phyaddr_access_window);
-    bsp_init_kurd=all_pages_arr::Init(&pages_arr);
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"phymemspace_mgr Init Failed"<<kendl;
-        return bsp_init_kurd;
-    }
-     bsp_init_kurd=pesisitent_properties_set();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"pesisitent_properties_set Failed"<<kendl;
-        return bsp_init_kurd;
-    }
-    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,&FPA_bitmaps);
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
-        return bsp_init_kurd;
-    }
-    fpa_properties_deal();
-    if(error_kurd(bsp_init_kurd)){
-        return bsp_init_kurd;
-    }
     bsp_init_kurd=KspacePageTable::Init();
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"KspaceMapMgr Init Failed"<<kendl;
         return bsp_init_kurd;
     }
-    bsp_init_kurd=KImage_map_rebuild();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"KImage_map_rebuild Failed"<<kendl;
-        return bsp_init_kurd;
-    }
-    bsp_init_kurd=kimg_affiliate_property_map1();
-    if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"kimg_affiliate_property_map1 Failed"<<kendl;
-        return bsp_init_kurd;
-    }
+    bsp_init_kurd=assets_remap();
     gKernelSpace=new AddressSpace();
     bsp_init_kurd=gKernelSpace->second_stage_init();
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"identity map fail"<<kendl;
         return bsp_init_kurd;
     }
+    // 把老的 cr3 读出来在先（init.elf kmmu 根表，含 identity + 资产粗映射；
+    // 切页表后凭它 BFS 整棵回收，见 bfs_delete_old_pagetable 注释）
+    phyaddr_t old_cr3 = 0;
+    asm volatile("mov %%cr3, %0" : "=r"(old_cr3) :: "memory");
+    old_cr3 &= ~0xFFFull;   // 去 PCID/低 12 位杂项，只留根表物理页基址
+
     gKernelSpace->unsafe_load_pml4_to_cr3(KERNEL_SPACE_PCID);
-    properties_modify_stage1();
+    // BFS 释放老的页表（新页表已含主窗口映射，老表页可经窗口走读；叶数据页归 FPA 管）
+    if (bfs_delete_old_pagetable(old_cr3) != 0) {
+        bsp_kout << "[mem_init] bfs_delete_old_pagetable fail, old_cr3=0x"
+                 << HEX << old_cr3 << DEC << kendl;
+        KURD_t fail;
+        fail.result      = result_code::FAIL;
+        fail.level       = level_code::ERROR;
+        fail.module_code = module_code::MEMORY;
+        return fail;
+    }
+    {
+    const asset_table_entry*fpa_bitmap=g_asset_table->read(asset_names::fpa_bitmaps);
+    movable_file_entry_t*fpa_pinterval=(movable_file_entry_t*)fpa_bitmap->data;
+    vm_interval fpa_vinterval={
+        .vpn=PHYACC_VA(fpa_pinterval->base_ppn<<12)>>12,
+        .ppn=fpa_pinterval->base_ppn,
+        .npages=align_up(fpa_pinterval->size,0x1000)>>12
+    };
+    bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,&fpa_vinterval);
+    if(error_kurd(bsp_init_kurd)){
+        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
+        return bsp_init_kurd;
+    }
+    }
     bsp_init_kurd=kpoolmemmgr_t::multi_heap_enable();
     if(error_kurd(bsp_init_kurd)){
         bsp_kout<<"Kpoolmemmgr_t::multi_heap_enable Failed"<<kendl;
     }
-
-    // 加载非内核地址空间的段（ap_bootstrap/TLS 等）到新 PML4
-    // 这些段在 KImage_map_rebuild 中被 is_kernel_address() 跳过，
-    // 但 AP 启动代码需要它们在低地址（0x4000+）可访问
-    {
-        uint8_t* elf_b = (uint8_t*)kIMG_self_window.vbase();
-        Elf64_Ehdr* eh = (Elf64_Ehdr*)elf_b;
-        uint8_t* ptbl   = elf_b + eh->e_phoff;
-        bsp_kout << "[mem_init] mapping non-kernel segments..." << kendl;
-        for (Elf64_Half i = 0; i < eh->e_phnum; i++) {
-            Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * eh->e_phentsize);
-            if (ph->p_type != PT_LOAD) continue;
-            if (ph->p_memsz == 0) continue;
-
-            vaddr_t   va = ph->p_vaddr;
-            phyaddr_t pa = ph->p_paddr;
-            uint64_t  sz = align_up(ph->p_memsz, 4096);
-
-            pgaccess acc = {1, (uint8_t)((ph->p_flags & PF_W) ? 1 : 0), 1,
-                            (uint8_t)((ph->p_flags & PF_X) ? 1 : 0), 0, WB};
-            vm_interval seg = {.vpn = va >> 12, .ppn = pa >> 12,
-                               .npages = sz >> 12, .access = acc};
-            // 跳过已在 KImage_map_rebuild 处理的内核地址段
-            if (seg.is_kernel_address()) continue;
-
-            KURD_t mk = gKernelSpace->enable_low_half_vm_interval(seg);
-            if (error_kurd(mk)) {
-                bsp_kout << "[mem_init] non-kernel seg[" << i << "] map fail" << kendl;
-            } else {
-                bsp_kout << "  seg[" << i << "] v=0x" << HEX << va
-                         << " p=0x" << pa << " sz=0x" << sz << DEC << kendl;
-            }
-        }
+    // 加载非内核地址空间的段（ap_bootstrap 等）到物理内存并映射进新 PML4
+    bsp_init_kurd = load_low_half_segments();
+    if (error_kurd(bsp_init_kurd)) {
+        bsp_kout << "load_low_half_segments Failed" << kendl;
+        return bsp_init_kurd;
     }
     assigned_cr3=gKernelSpace->get_root_table_phybase();
     __sync_synchronize();

@@ -34,9 +34,10 @@ namespace asset_names {
     inline constexpr const char* gs_complexes    = "gs_complexes mem";
     inline constexpr const char* hdstacks        = "hdstacks mem";
     inline constexpr const char* phyaddr_window  = "phyaddr_window mem";
-
+    
     // ── init_init ──
     inline constexpr const char* gop_info        = "gop_info gop";
+    inline constexpr const char* xsdt_pbase        = "xsdt_pbase scalar";
 
     // ── 全名总表（mem_init 全局遍历用；注册序 = 数组序）──
     inline constexpr const char* all[] = {
@@ -44,6 +45,7 @@ namespace asset_names {
         fpa_bitmaps, pages_arr, log_buffer, ksymbols, initramfs,
         gop_framebuffer, hpet_mmio, gs_complexes, hdstacks, phyaddr_window,
         gop_info,
+        xsdt_pbase,
     };
     inline constexpr uint32_t all_count() {
         return sizeof(all) / sizeof(all[0]);
