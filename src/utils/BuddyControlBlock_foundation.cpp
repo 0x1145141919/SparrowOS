@@ -65,6 +65,37 @@ void BuddyControlBlock_foundation::leaf_write(uint64_t leaf_idx, bool free)
         w &= ~(1ull << sh);
 }
 
+bool BuddyControlBlock_foundation::order0_bit_test(uint64_t idx) const
+{
+    const uint64_t boff = (2ull << max_order) + idx;
+    return (bitmap[boff >> 6] >> (boff & 63)) & 1;
+}
+
+void BuddyControlBlock_foundation::order0_bit_set(uint64_t idx, bool val)
+{
+    const uint64_t boff = (2ull << max_order) + idx;
+    uint64_t& w = bitmap[boff >> 6];
+    const uint8_t sh = boff & 63;
+    if (val)
+        w |= (1ull << sh);
+    else
+        w &= ~(1ull << sh);
+}
+
+BuddyControlBlock_foundation::node_state_t
+BuddyControlBlock_foundation::higher_node_get(uint64_t idx, uint8_t order) const
+{
+    const uint64_t heap_idx = order_offset_to_idx(order, idx);
+    return static_cast<node_state_t>(node_read(heap_idx));
+}
+
+void BuddyControlBlock_foundation::higher_node_set(
+    uint64_t idx, uint8_t order, node_state_t val)
+{
+    const uint64_t heap_idx = order_offset_to_idx(order, idx);
+    node_write(heap_idx, val);
+}
+
 // ================================================================
 // heap 索引辅助
 // ================================================================
@@ -95,9 +126,9 @@ void BuddyControlBlock_foundation::idx_to_order_offset(
 
 bool BuddyControlBlock_foundation::is_free(uint8_t order, uint64_t offset) const
 {
-    uint64_t idx = order_offset_to_idx(order, offset);
     if (order == 0)
-        return leaf_read(idx);
+        return order0_bit_test(offset);
+    uint64_t idx = order_offset_to_idx(order, offset);
     return node_read(idx) == NODE_FREE;
 }
 
@@ -246,7 +277,7 @@ void BuddyControlBlock_foundation::init_from_leaves(
     const uint64_t leaf_cnt = 1ull << max_order;
     uint64_t free_leaf = 0;
     for (uint64_t o = 0; o < leaf_cnt; o++)
-        if (leaf_read((1ull << max_order) + o))
+        if (order0_bit_test(o))
             free_leaf++;
     free_count[0] = free_leaf;
 
@@ -267,41 +298,113 @@ tmp_error_locator BuddyControlBlock_foundation::fold_up_from_leaves()
     for (uint8_t i = 0; i < ORDER_COUNT; i++)
         free_count[i] = 0;
 
+    auto clear_higher_descendants = [this](uint8_t root_order, uint64_t root_off) {
+        for (uint8_t o = 1; o < root_order; o++) {
+            const uint64_t first = root_off << (root_order - o);
+            const uint64_t count = 1ull << (root_order - o);
+            for (uint64_t i = 0; i < count; i++)
+                higher_node_set(first + i, o, NODE_NONEXIST);
+        }
+    };
+
     // 自底向上：order 1 .. max_order
-    for (uint8_t k = 1; k <= max_order; k++) {
-        const uint64_t level_base  = 1ull << (max_order - k);  // order-k 节点 heap idx 起点
+    const uint8_t seed_order = (max_order >= 6) ? 6 : 1;
+
+    if (seed_order == 6) {
+        const uint64_t order0_bit_base = 2ull << max_order;
+        const uint64_t order6_count = 1ull << (max_order - 6);
+        for (uint64_t g = 0; g < order6_count; g++) {
+            const uint64_t word = bitmap[(order0_bit_base >> 6) + g];
+
+            if (word == ~0ull) {
+                clear_higher_descendants(6, g);
+                higher_node_set(g, 6, NODE_FREE);
+                free_count[6]++;
+                bitmap[(order0_bit_base >> 6) + g] = 0;
+                continue;
+            }
+
+            if (word == 0) {
+                clear_higher_descendants(6, g);
+                higher_node_set(g, 6, NODE_OCCUPIED);
+                continue;
+            }
+
+            for (uint8_t k = 1; k <= 6; k++) {
+                const uint64_t level_count = 1ull << (6 - k);
+                const uint64_t level_base = g << (6 - k);
+                for (uint64_t j = 0; j < level_count; j++) {
+                    const uint64_t off = level_base + j;
+                    if (k == 1) {
+                        bool lf = order0_bit_test(off << 1);
+                        bool rf = order0_bit_test((off << 1) | 1);
+                        if (lf && rf) {
+                            higher_node_set(off, k, NODE_FREE);
+                            free_count[1]++;
+                            order0_bit_set(off << 1, false);
+                            order0_bit_set((off << 1) | 1, false);
+                        } else if (!lf && !rf) {
+                            higher_node_set(off, k, NODE_OCCUPIED);
+                        } else {
+                            higher_node_set(off, k, NODE_NONLEAF);
+                        }
+                    } else {
+                        const uint8_t child_order = k - 1;
+                        const uint64_t left_off = off << 1;
+                        const uint64_t right_off = (off << 1) | 1;
+                        uint8_t ls = higher_node_get(left_off, child_order);
+                        uint8_t rs = higher_node_get(right_off, child_order);
+                        if (ls == NODE_FREE && rs == NODE_FREE) {
+                            higher_node_set(off, k, NODE_FREE);
+                            free_count[k]++;
+                            free_count[k - 1] -= 2;
+                            higher_node_set(left_off, child_order, NODE_NONEXIST);
+                            higher_node_set(right_off, child_order, NODE_NONEXIST);
+                        } else if (ls == NODE_OCCUPIED && rs == NODE_OCCUPIED) {
+                            higher_node_set(off, k, NODE_OCCUPIED);
+                        } else {
+                            higher_node_set(off, k, NODE_NONLEAF);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (uint8_t k = seed_order; k <= max_order; k++) {
+        if (seed_order == 6 && k == 6)
+            continue;
         const uint64_t level_count = 1ull << (max_order - k);  // order-k 节点个数
         for (uint64_t j = 0; j < level_count; j++) {
-            uint64_t idx = level_base + j;
-            uint64_t lc  = idx << 1;
-            uint64_t rc  = (idx << 1) | 1;
-
             if (k == 1) {
-                bool lf = leaf_read(lc);
-                bool rf = leaf_read(rc);
+                bool lf = order0_bit_test(j << 1);
+                bool rf = order0_bit_test((j << 1) | 1);
                 if (lf && rf) {
-                    node_write(idx, NODE_FREE);
+                    higher_node_set(j, k, NODE_FREE);
                     free_count[1]++;
-                    leaf_write(lc, false);
-                    leaf_write(rc, false);
+                    order0_bit_set(j << 1, false);
+                    order0_bit_set((j << 1) | 1, false);
                 } else if (!lf && !rf) {
-                    node_write(idx, NODE_OCCUPIED);
+                    higher_node_set(j, k, NODE_OCCUPIED);
                 } else {
-                    node_write(idx, NODE_NONLEAF);
+                    higher_node_set(j, k, NODE_NONLEAF);
                 }
             } else {
-                uint8_t ls = node_read(lc);
-                uint8_t rs = node_read(rc);
+                const uint8_t child_order = k - 1;
+                const uint64_t left_off = j << 1;
+                const uint64_t right_off = (j << 1) | 1;
+                uint8_t ls = higher_node_get(left_off, child_order);
+                uint8_t rs = higher_node_get(right_off, child_order);
                 if (ls == NODE_FREE && rs == NODE_FREE) {
-                    node_write(idx, NODE_FREE);
+                    higher_node_set(j, k, NODE_FREE);
                     free_count[k]++;
                     free_count[k - 1] -= 2;   // 双子不再空闲，合并到 order-k
-                    node_write(lc, NODE_NONEXIST);
-                    node_write(rc, NODE_NONEXIST);
+                    higher_node_set(left_off, child_order, NODE_NONEXIST);
+                    higher_node_set(right_off, child_order, NODE_NONEXIST);
                 } else if (ls == NODE_OCCUPIED && rs == NODE_OCCUPIED) {
-                    node_write(idx, NODE_OCCUPIED);
+                    higher_node_set(j, k, NODE_OCCUPIED);
                 } else {
-                    node_write(idx, NODE_NONLEAF);
+                    higher_node_set(j, k, NODE_NONLEAF);
                 }
             }
         }
@@ -310,9 +413,16 @@ tmp_error_locator BuddyControlBlock_foundation::fold_up_from_leaves()
     // 重算 free_count[0]：合并后剩余的空闲叶子
     const uint64_t leaf_cnt = 1ull << max_order;
     uint64_t free_leaf = 0;
-    for (uint64_t o = 0; o < leaf_cnt; o++)
-        if (leaf_read((1ull << max_order) + o))
-            free_leaf++;
+    if (max_order >= 6) {
+        const uint64_t order0_word_base = (2ull << max_order) >> 6;
+        const uint64_t order0_word_count = leaf_cnt >> 6;
+        for (uint64_t w = 0; w < order0_word_count; w++)
+            free_leaf += __builtin_popcountll(bitmap[order0_word_base + w]);
+    } else {
+        for (uint64_t o = 0; o < leaf_cnt; o++)
+            if (order0_bit_test(o))
+                free_leaf++;
+    }
     free_count[0] = free_leaf;
 
     state = STATE_ADULT;
@@ -344,7 +454,7 @@ uint64_t BuddyControlBlock_foundation::juvenile_alloc_order0(
     const uint64_t leaf_cnt = 1ull << max_order;
     uint64_t run = 0, start = 0;
     for (uint64_t o = 0; o < leaf_cnt; o++) {
-        if (leaf_read((1ull << max_order) + o)) {
+        if (order0_bit_test(o)) {
             if (run == 0) start = o;
             if (++run >= acquire_count) break;
         } else {
@@ -357,7 +467,7 @@ uint64_t BuddyControlBlock_foundation::juvenile_alloc_order0(
     }
 
     for (uint64_t o = start; o < start + acquire_count; o++)
-        leaf_write((1ull << max_order) + o, false);
+        order0_bit_set(o, false);
     free_count[0] -= acquire_count;
     return start;
 }
@@ -378,11 +488,11 @@ tmp_error_locator BuddyControlBlock_foundation::juvenile_free_order0(
 
     // 防御：目标范围内叶子须全部占用（重复释放检测）
     for (uint64_t o = offset; o < offset + return_count; o++) {
-        if (leaf_read((1ull << max_order) + o))
+        if (order0_bit_test(o))
             return SRC_LOC();
     }
     for (uint64_t o = offset; o < offset + return_count; o++)
-        leaf_write((1ull << max_order) + o, true);
+        order0_bit_set(o, true);
     free_count[0] += return_count;
     return 0;
 }
@@ -422,8 +532,7 @@ static inline uint64_t count_set_bits_range(
 //                       （只有 order-0 叶子位图区参与分配/归还）。
 //                       free_count[0] 由叶子位图区以 u64 字单位 popcount 统计。
 //
-// order-0 叶子位图区 = 位偏移 [1<<max_order, 2<<max_order)
-// （见 leaf_read：bitmap[(1<<max_order)+leaf_idx] 的 1bit）
+// order-0 叶子位图区 = 位偏移 [2<<max_order, 3<<max_order)
 // ================================================================
 
 void BuddyControlBlock_foundation::inherit_init(vaddr_t bitmap_va, uint8_t max_order_val)
@@ -434,7 +543,7 @@ void BuddyControlBlock_foundation::inherit_init(vaddr_t bitmap_va, uint8_t max_o
     for (uint8_t i = 0; i < ORDER_COUNT; i++)
         free_count[i] = 0;
 
-    free_count[0] = count_set_bits_range(bitmap, 1ull << max_order, 1ull << max_order);
+    free_count[0] = count_set_bits_range(bitmap, 2ull << max_order, 1ull << max_order);
 
     state = STATE_JUVENILE;
 }

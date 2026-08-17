@@ -1,6 +1,15 @@
 #include "util/BCB_fnd_ShallowFirst.h"
 #include "util/OS_utils.h"
 
+#define BCB_HIGHER_GET(heap_idx, order) \
+    higher_node_get((heap_idx) - (1ull << (max_order - (order))), (order))
+#define BCB_HIGHER_SET(heap_idx, order, val) \
+    higher_node_set((heap_idx) - (1ull << (max_order - (order))), (order), (val))
+#define BCB_ORDER0_TEST(heap_idx) \
+    order0_bit_test((heap_idx) - (1ull << max_order))
+#define BCB_ORDER0_SET(heap_idx, val) \
+    order0_bit_set((heap_idx) - (1ull << max_order), (val))
+
 // ════════════════════════════════════════════════════════════════
 // BCB_fnd_ShallowFirst 实现
 //
@@ -25,9 +34,9 @@ uint64_t BCB_fnd_ShallowFirst::dfs_find_free(
     {
         uint8_t self_state;
         if (idx < (1ull << max_order))
-            self_state = node_read(idx);
+            self_state = BCB_HIGHER_GET(idx, cur_order);
         else
-            self_state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+            self_state = BCB_ORDER0_TEST(idx) ? NODE_FREE : NODE_OCCUPIED;
         if (self_state == NODE_FREE)
             return idx;
         if (self_state != NODE_NONLEAF)
@@ -38,9 +47,8 @@ uint64_t BCB_fnd_ShallowFirst::dfs_find_free(
 
     // order=1: children are order-0 leaves (1-bit each)
     if (cur_order == 1) {
-        // leaf_read(left) | leaf_read(right) << 1
-        uint8_t subnodes = leaf_read(idx << 1)
-                         | (leaf_read(1 | (idx << 1)) << 1);
+        uint8_t subnodes = BCB_ORDER0_TEST(idx << 1)
+                         | (BCB_ORDER0_TEST(1 | (idx << 1)) << 1);
         switch (subnodes) {
             case 0b01: return idx << 1;          // left free
             case 0b10: return (idx << 1) | 1;    // right free
@@ -49,9 +57,8 @@ uint64_t BCB_fnd_ShallowFirst::dfs_find_free(
     }
 
     // order >= 2: children are 2-bit nodes
-    // node_read(left) | node_read(right) << 2
-    uint8_t subnodes = node_read(idx << 1)
-                     | (node_read(1 | (idx << 1)) << 2);
+    uint8_t subnodes = BCB_HIGHER_GET(idx << 1, cur_order - 1)
+                     | (BCB_HIGHER_GET(1 | (idx << 1), cur_order - 1) << 2);
     switch (subnodes) {
 
     // ── 两边都 NONLEAF → 左优先 DFS ──
@@ -137,15 +144,15 @@ void BCB_fnd_ShallowFirst::split_internal(
         uint64_t left_idx   = idx << 1;
         uint64_t right_idx  = (idx << 1) | 1;
 
-        node_write(idx, NODE_NONLEAF);
+        BCB_HIGHER_SET(idx, order, NODE_NONLEAF);
         free_count[order]--;
 
         if (child_order > 0) {
-            node_write(left_idx, NODE_FREE);
-            node_write(right_idx, NODE_FREE);
+            BCB_HIGHER_SET(left_idx, child_order, NODE_FREE);
+            BCB_HIGHER_SET(right_idx, child_order, NODE_FREE);
         } else {
-            leaf_write(left_idx, true);
-            leaf_write(right_idx, true);
+            BCB_ORDER0_SET(left_idx, true);
+            BCB_ORDER0_SET(right_idx, true);
         }
         free_count[child_order] += 2;
 
@@ -171,7 +178,7 @@ KURD_t BCB_fnd_ShallowFirst::split(
 
     uint64_t idx = order_offset_to_idx(order, offset);
 
-    if (node_read(idx) != NODE_FREE) {
+    if (BCB_HIGHER_GET(idx, order) != NODE_FREE) {
         KURD_t k;
         k.result = result_code::FAIL;
         return k;
@@ -192,9 +199,9 @@ void BCB_fnd_ShallowFirst::occupy_internal(
     uint64_t idx, uint8_t order)
 {
     if (order == 0)
-        leaf_write(idx, false);
+        BCB_ORDER0_SET(idx, false);
     else
-        node_write(idx, NODE_OCCUPIED);
+        BCB_HIGHER_SET(idx, order, NODE_OCCUPIED);
 
     free_count[order]--;
 
@@ -205,12 +212,12 @@ void BCB_fnd_ShallowFirst::occupy_internal(
         while (co < max_order) {
             uint64_t pi = ci >> 1;
             uint64_t bi = ci ^ 1;
-            if (node_read(pi) != NODE_NONLEAF)
+            if (BCB_HIGHER_GET(pi, co + 1) != NODE_NONLEAF)
                 break;
-            bool bo = (co == 0) ? !leaf_read(bi)
-                                : (node_read(bi) == NODE_OCCUPIED);
+            bool bo = (co == 0) ? !BCB_ORDER0_TEST(bi)
+                                : (BCB_HIGHER_GET(bi, co) == NODE_OCCUPIED);
             if (!bo) break;
-            node_write(pi, NODE_OCCUPIED);
+            BCB_HIGHER_SET(pi, co + 1, NODE_OCCUPIED);
             ci = pi;
             co = co + 1;
         }
@@ -224,9 +231,9 @@ KURD_t BCB_fnd_ShallowFirst::order_occupy_try(
 
     uint8_t cur_state;
     if (order == 0)
-        cur_state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+        cur_state = order0_bit_test(offset) ? NODE_FREE : NODE_OCCUPIED;
     else
-        cur_state = node_read(idx);
+        cur_state = BCB_HIGHER_GET(idx, order);
 
     if (cur_state != NODE_FREE) {
         KURD_t k;
@@ -257,23 +264,23 @@ uint8_t BCB_fnd_ShallowFirst::coalesce_internal(
 
         bool buddy_free;
         if (cur_order == 0)
-            buddy_free = leaf_read(buddy_idx);
+            buddy_free = BCB_ORDER0_TEST(buddy_idx);
         else
-            buddy_free = (node_read(buddy_idx) == NODE_FREE);
+            buddy_free = (BCB_HIGHER_GET(buddy_idx, cur_order) == NODE_FREE);
 
         if (!buddy_free)
             break;
 
         if (cur_order == 0) {
-            leaf_write(cur_idx, false);
-            leaf_write(buddy_idx, false);
+            BCB_ORDER0_SET(cur_idx, false);
+            BCB_ORDER0_SET(buddy_idx, false);
         } else {
-            node_write(cur_idx, NODE_NONEXIST);
-            node_write(buddy_idx, NODE_NONEXIST);
+            BCB_HIGHER_SET(cur_idx, cur_order, NODE_NONEXIST);
+            BCB_HIGHER_SET(buddy_idx, cur_order, NODE_NONEXIST);
         }
         free_count[cur_order] -= 2;
 
-        node_write(parent_idx, NODE_FREE);
+        BCB_HIGHER_SET(parent_idx, cur_order + 1, NODE_FREE);
         free_count[cur_order + 1]++;
 
         cur_idx   = parent_idx;
@@ -287,13 +294,13 @@ uint8_t BCB_fnd_ShallowFirst::coalesce_internal(
         while (wo < max_order) {
             uint64_t pi = wi >> 1;
             if (pi < 1) break;
-            uint8_t ps = node_read(pi);
+            uint8_t ps = BCB_HIGHER_GET(pi, wo + 1);
             if (ps != NODE_OCCUPIED) break;
             uint8_t cc = (wo == 0)
-                ? (leaf_read(pi << 1) ? NODE_FREE : NODE_OCCUPIED)
-                : node_read(pi << 1);
+                ? (BCB_ORDER0_TEST(pi << 1) ? NODE_FREE : NODE_OCCUPIED)
+                : BCB_HIGHER_GET(pi << 1, wo);
             if (cc == NODE_NONEXIST) break;
-            node_write(pi, NODE_NONLEAF);
+            BCB_HIGHER_SET(pi, wo + 1, NODE_NONLEAF);
             wi = pi;
             wo = wo + 1;
         }
@@ -309,9 +316,9 @@ uint8_t BCB_fnd_ShallowFirst::order_return(
 
     uint8_t cur_state;
     if (order == 0)
-        cur_state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+        cur_state = order0_bit_test(offset) ? NODE_FREE : NODE_OCCUPIED;
     else
-        cur_state = node_read(idx);
+        cur_state = BCB_HIGHER_GET(idx, order);
 
     if (cur_state != NODE_OCCUPIED) {
         KURD_t k;
@@ -321,9 +328,9 @@ uint8_t BCB_fnd_ShallowFirst::order_return(
     }
 
     if (order == 0)
-        leaf_write(idx, true);
+        BCB_ORDER0_SET(idx, true);
     else
-        node_write(idx, NODE_FREE);
+        BCB_HIGHER_SET(idx, order, NODE_FREE);
 
     free_count[order]++;
 
@@ -334,3 +341,8 @@ uint8_t BCB_fnd_ShallowFirst::order_return(
     kurd = k;
     return final_order;
 }
+
+#undef BCB_HIGHER_GET
+#undef BCB_HIGHER_SET
+#undef BCB_ORDER0_TEST
+#undef BCB_ORDER0_SET

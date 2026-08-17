@@ -83,6 +83,11 @@ protected:
     bool     leaf_read(uint64_t leaf_idx) const;
     void     leaf_write(uint64_t leaf_idx, bool free);
 
+    bool order0_bit_test(uint64_t idx) const;
+    void order0_bit_set(uint64_t idx,bool val);
+
+    node_state_t higher_node_get(uint64_t idx,uint8_t order) const;
+    void higher_node_set(uint64_t idx,uint8_t order,node_state_t val);
     // ─── heap 索引辅助 ───
     uint8_t  heap_idx_order(uint64_t idx) const;
     uint64_t order_offset_to_idx(uint8_t order,

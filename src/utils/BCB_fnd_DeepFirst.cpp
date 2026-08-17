@@ -1,6 +1,15 @@
 #include "util/BCB_fnd_DeepFirst.h"
 #include "util/OS_utils.h"
 
+#define BCB_HIGHER_GET(heap_idx, order) \
+    higher_node_get((heap_idx) - (1ull << (max_order - (order))), (order))
+#define BCB_HIGHER_SET(heap_idx, order, val) \
+    higher_node_set((heap_idx) - (1ull << (max_order - (order))), (order), (val))
+#define BCB_ORDER0_TEST(heap_idx) \
+    order0_bit_test((heap_idx) - (1ull << max_order))
+#define BCB_ORDER0_SET(heap_idx, val) \
+    order0_bit_set((heap_idx) - (1ull << max_order), (val))
+
 // ════════════════════════════════════════════════════════════════
 // BCB_fnd_DeepFirst 实现
 //
@@ -85,9 +94,9 @@ uint64_t BCB_fnd_DeepFirst::dfs_find_free(
 
     uint8_t state;
     if (idx < (1ull << max_order))
-        state = node_read(idx);
+        state = BCB_HIGHER_GET(idx, cur_order);
     else
-        state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+        state = BCB_ORDER0_TEST(idx) ? NODE_FREE : NODE_OCCUPIED;
 
     switch (state) {
     case NODE_NONEXIST:
@@ -166,7 +175,7 @@ KURD_t BCB_fnd_DeepFirst::split_internal(
         uint64_t left_idx   = idx << 1;
         uint64_t right_idx  = (idx << 1) | 1;
 
-        if (node_read(idx) != NODE_FREE) {
+        if (BCB_HIGHER_GET(idx, order) != NODE_FREE) {
             KURD_t fatal = default_fatal();
             fatal.event_code = SPLIT;
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
@@ -174,15 +183,15 @@ KURD_t BCB_fnd_DeepFirst::split_internal(
         }
 
         if (child_order > 0) {
-            if (node_read(left_idx)  != NODE_NONEXIST ||
-                node_read(right_idx) != NODE_NONEXIST) {
+            if (BCB_HIGHER_GET(left_idx, child_order)  != NODE_NONEXIST ||
+                BCB_HIGHER_GET(right_idx, child_order) != NODE_NONEXIST) {
                 KURD_t fatal = default_fatal();
                 fatal.event_code = SPLIT;
                 fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
                 return fatal;
             }
         } else {
-            if (leaf_read(left_idx) || leaf_read(right_idx)) {
+            if (BCB_ORDER0_TEST(left_idx) || BCB_ORDER0_TEST(right_idx)) {
                 KURD_t fatal = default_fatal();
                 fatal.event_code = SPLIT;
                 fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
@@ -190,15 +199,15 @@ KURD_t BCB_fnd_DeepFirst::split_internal(
             }
         }
 
-        node_write(idx, NODE_NONLEAF);
+        BCB_HIGHER_SET(idx, order, NODE_NONLEAF);
         free_count[order]--;
 
         if (child_order > 0) {
-            node_write(left_idx, NODE_FREE);
-            node_write(right_idx, NODE_FREE);
+            BCB_HIGHER_SET(left_idx, child_order, NODE_FREE);
+            BCB_HIGHER_SET(right_idx, child_order, NODE_FREE);
         } else {
-            leaf_write(left_idx, true);
-            leaf_write(right_idx, true);
+            BCB_ORDER0_SET(left_idx, true);
+            BCB_ORDER0_SET(right_idx, true);
         }
         free_count[child_order] += 2;
 
@@ -234,7 +243,7 @@ KURD_t BCB_fnd_DeepFirst::split(
 
     uint64_t idx = order_offset_to_idx(order, offset);
 
-    uint8_t cur_state = node_read(idx);
+    uint8_t cur_state = BCB_HIGHER_GET(idx, order);
     if (cur_state != NODE_FREE) {
         error.reason = TARGET_NOT_FREE;
         return error;
@@ -256,16 +265,16 @@ KURD_t BCB_fnd_DeepFirst::occupy_internal(
     uint64_t idx, uint8_t order)
 {
     if (order == 0) {
-        leaf_write(idx, false);
-        if (leaf_read(idx)) {
+        BCB_ORDER0_SET(idx, false);
+        if (BCB_ORDER0_TEST(idx)) {
             KURD_t fatal = default_fatal();
             fatal.event_code = OCCUPY_TRY;
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
             return fatal;
         }
     } else {
-        node_write(idx, NODE_OCCUPIED);
-        if (node_read(idx) != NODE_OCCUPIED) {
+        BCB_HIGHER_SET(idx, order, NODE_OCCUPIED);
+        if (BCB_HIGHER_GET(idx, order) != NODE_OCCUPIED) {
             KURD_t fatal = default_fatal();
             fatal.event_code = OCCUPY_TRY;
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
@@ -281,12 +290,12 @@ KURD_t BCB_fnd_DeepFirst::occupy_internal(
         while (co < max_order) {
             uint64_t pi = ci >> 1;
             uint64_t bi = ci ^ 1;
-            if (node_read(pi) != NODE_NONLEAF)
+            if (BCB_HIGHER_GET(pi, co + 1) != NODE_NONLEAF)
                 break;
-            bool bo = (co == 0) ? !leaf_read(bi)
-                                : (node_read(bi) == NODE_OCCUPIED);
+            bool bo = (co == 0) ? !BCB_ORDER0_TEST(bi)
+                                : (BCB_HIGHER_GET(bi, co) == NODE_OCCUPIED);
             if (!bo) break;
-            node_write(pi, NODE_OCCUPIED);
+            BCB_HIGHER_SET(pi, co + 1, NODE_OCCUPIED);
             ci = pi;
             co = co + 1;
         }
@@ -311,9 +320,9 @@ KURD_t BCB_fnd_DeepFirst::order_occupy_try(
 
     uint8_t cur_state;
     if (order == 0)
-        cur_state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+        cur_state = order0_bit_test(offset) ? NODE_FREE : NODE_OCCUPIED;
     else
-        cur_state = node_read(idx);
+        cur_state = BCB_HIGHER_GET(idx, order);
 
     if (cur_state != NODE_FREE) {
         error.reason = TARGET_NOT_FREE;
@@ -343,20 +352,20 @@ uint8_t BCB_fnd_DeepFirst::coalesce_internal(
         uint64_t parent_idx = cur_idx >> 1;
 
         if (cur_order == 0) {
-            if (!leaf_read(cur_idx)) {
+            if (!BCB_ORDER0_TEST(cur_idx)) {
                 fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
                 kurd = fatal;
                 return ERROR_MARK + 3;
             }
         } else {
-            if (node_read(cur_idx) != NODE_FREE) {
+            if (BCB_HIGHER_GET(cur_idx, cur_order) != NODE_FREE) {
                 fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
                 kurd = fatal;
                 return ERROR_MARK + 3;
             }
         }
 
-        uint8_t parent_state = node_read(parent_idx);
+        uint8_t parent_state = BCB_HIGHER_GET(parent_idx, cur_order + 1);
         if (parent_state != NODE_NONLEAF && parent_state != NODE_OCCUPIED) {
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
             kurd = fatal;
@@ -365,29 +374,29 @@ uint8_t BCB_fnd_DeepFirst::coalesce_internal(
 
         bool buddy_free;
         if (cur_order == 0)
-            buddy_free = leaf_read(buddy_idx);
+            buddy_free = BCB_ORDER0_TEST(buddy_idx);
         else
-            buddy_free = (node_read(buddy_idx) == NODE_FREE);
+            buddy_free = (BCB_HIGHER_GET(buddy_idx, cur_order) == NODE_FREE);
 
         if (!buddy_free)
             break;
 
         if (cur_order == 0) {
-            leaf_write(cur_idx, false);
-            leaf_write(buddy_idx, false);
+            BCB_ORDER0_SET(cur_idx, false);
+            BCB_ORDER0_SET(buddy_idx, false);
         } else {
-            node_write(cur_idx, NODE_NONEXIST);
-            node_write(buddy_idx, NODE_NONEXIST);
+            BCB_HIGHER_SET(cur_idx, cur_order, NODE_NONEXIST);
+            BCB_HIGHER_SET(buddy_idx, cur_order, NODE_NONEXIST);
         }
         free_count[cur_order] -= 2;
 
-        node_write(parent_idx, NODE_FREE);
+        BCB_HIGHER_SET(parent_idx, cur_order + 1, NODE_FREE);
         free_count[cur_order + 1]++;
 
         cur_idx   = parent_idx;
         cur_order = cur_order + 1;
 
-        if (node_read(parent_idx) != NODE_FREE) {
+        if (BCB_HIGHER_GET(parent_idx, cur_order) != NODE_FREE) {
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
             kurd = fatal;
             return ERROR_MARK + 5;
@@ -401,20 +410,20 @@ uint8_t BCB_fnd_DeepFirst::coalesce_internal(
         while (wo < max_order) {
             uint64_t pi = wi >> 1;
             if (pi < 1) break;
-            uint8_t ps = node_read(pi);
+            uint8_t ps = BCB_HIGHER_GET(pi, wo + 1);
             if (ps != NODE_OCCUPIED) break;
             uint8_t cc = (wo == 0)
-                ? (leaf_read(pi << 1) ? NODE_FREE : NODE_OCCUPIED)
-                : node_read(pi << 1);
+                ? (BCB_ORDER0_TEST(pi << 1) ? NODE_FREE : NODE_OCCUPIED)
+                : BCB_HIGHER_GET(pi << 1, wo);
             if (cc == NODE_NONEXIST) break;
-            node_write(pi, NODE_NONLEAF);
+            BCB_HIGHER_SET(pi, wo + 1, NODE_NONLEAF);
             wi = pi;
             wo = wo + 1;
         }
         if (wo < max_order) {
             uint64_t pi = wi >> 1;
             if (pi >= 1) {
-                uint8_t vp = node_read(pi);
+                uint8_t vp = BCB_HIGHER_GET(pi, wo + 1);
                 if (vp != NODE_NONLEAF && vp != NODE_FREE &&
                     vp != NODE_OCCUPIED) {
                     fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
@@ -441,9 +450,9 @@ uint8_t BCB_fnd_DeepFirst::order_return(
 
     uint8_t cur_state;
     if (order == 0)
-        cur_state = leaf_read(idx) ? NODE_FREE : NODE_OCCUPIED;
+        cur_state = order0_bit_test(offset) ? NODE_FREE : NODE_OCCUPIED;
     else
-        cur_state = node_read(idx);
+        cur_state = BCB_HIGHER_GET(idx, order);
 
     if (cur_state != NODE_OCCUPIED) {
         kurd = error;
@@ -452,15 +461,15 @@ uint8_t BCB_fnd_DeepFirst::order_return(
     }
 
     if (order == 0) {
-        leaf_write(idx, true);
-        if (!leaf_read(idx)) {
+        BCB_ORDER0_SET(idx, true);
+        if (!BCB_ORDER0_TEST(idx)) {
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
             kurd = fatal;
             return ERROR_MARK + 7;
         }
     } else {
-        node_write(idx, NODE_FREE);
-        if (node_read(idx) != NODE_FREE) {
+        BCB_HIGHER_SET(idx, order, NODE_FREE);
+        if (BCB_HIGHER_GET(idx, order) != NODE_FREE) {
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
             kurd = fatal;
             return ERROR_MARK + 7;
@@ -470,7 +479,7 @@ uint8_t BCB_fnd_DeepFirst::order_return(
 
     if (order < max_order) {
         uint64_t parent_idx = idx >> 1;
-        uint8_t  parent_state = node_read(parent_idx);
+        uint8_t  parent_state = BCB_HIGHER_GET(parent_idx, order + 1);
         if (parent_state == NODE_NONEXIST ||
             parent_state == NODE_FREE) {
             fatal.reason = common_fatal_reasons::BTREE_VIOLATION;
@@ -481,3 +490,8 @@ uint8_t BCB_fnd_DeepFirst::order_return(
 
     return coalesce_internal(idx, order, kurd);
 }
+
+#undef BCB_HIGHER_GET
+#undef BCB_HIGHER_SET
+#undef BCB_ORDER0_TEST
+#undef BCB_ORDER0_SET

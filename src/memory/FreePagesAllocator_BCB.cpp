@@ -144,11 +144,10 @@ FreePagesAllocator::BuddyControlBlock::BuddyControlBlock(phyaddr_t base,vaddr_t 
     // 依据 page_frame_state_mgr（收养自 init 的 pages_arr 账本）写实 order-0 叶子位图：
     // 本 BCB 管理物理区间 [base, base + 2^max_support_order 页)，逐页查账本状态，
     // free → 叶位置 1，否则 0。随后 inherit_init 按叶子位图统计 free_count[0]。
-    // 叶子位图区 = 位偏移 [1<<N, 2<<N)，第 i 叶对应物理页 base + i*4096
-    // （与 leaf_read/leaf_write 的位偏移约定一致）。
+    // 叶子位图区 = 位偏移 [2<<N, 3<<N)，第 i 叶对应物理页 base + i*4096。
     {
         const uint64_t leaf_cnt      = 1ull << max_support_order;
-        const uint64_t leaf_bit_base = 1ull << max_support_order;
+        const uint64_t leaf_bit_base = 2ull << max_support_order;
         uint64_t* const words        = reinterpret_cast<uint64_t*>(bitmap_vbase);
 
         // 防御：先清零叶子位图区（bitmap_vbase 由调用方从池中刻出，可能含残留）
