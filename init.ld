@@ -1,6 +1,6 @@
 ENTRY(_init_entry)
 
-INIT_BASE = 0x100000000;
+INIT_BASE = 0x101000000;
 INIT_IMAGE_SIZE = 16M;
 INIT_STACK_SIZE = 64K;
 base_kernel_address = INIT_BASE;
