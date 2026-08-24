@@ -5,6 +5,7 @@
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
+#include <memory/main_phyaddr_access_window.h>
 #include <util/kout.h>
 #include <arch/x86_64/PCIe/base.h>
 #include <util/arch/x86-64/cpuid_intel.h>
@@ -44,18 +45,18 @@ static KURD_t alloc_contiguous_pages(KURD_t* kurd_out,
                                      phyaddr_t* pa_out,
                                      uint32_t page_count,
                                      size_t zero_size) {
-    *va_out = __wrapped_pgs_valloc(kurd_out, page_count,
-                                    page_state_t::kernel_pinned, 12);
-    if (error_kurd(*kurd_out) || !*va_out) {
+    const uint64_t bytes = (uint64_t)page_count << 12;
+    phyaddr_t pa = FreePagesAllocator::alloc(
+        bytes, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, *kurd_out);
+    if (error_kurd(*kurd_out) || pa == FreePagesAllocator::INVALID_ALLOC_BASE) {
+        *va_out = nullptr;
+        *pa_out = 0;
         return *kurd_out;
     }
-    ksetmem_8(*va_out, 0, zero_size);
-    *pa_out = 0;
-    *kurd_out = KspacePageTable::v_to_phyaddrtraslation(
-        (vaddr_t)*va_out, *pa_out);
-    if (error_kurd(*kurd_out) || !*pa_out) {
-        return *kurd_out;
-    }
+    void* va = (void*)PHYACC_VA(pa);
+    ksetmem_8(va, 0, zero_size);
+    *va_out = va;
+    *pa_out = pa;
     return empty_kurd;
 }
 
@@ -119,7 +120,7 @@ bool NVMe_Controller::wait_for_ready(head_regs_t* regs, bool target,
 // ============================================================
 // ============================================================
 // hmb_alloc：在 second_stage_init 中分配并部署 HMB
-// __wrapped_pgs_valloc 保证物理连续，HMB 只需一个 vm_interval 描述
+// FreePagesAllocator::alloc 保证物理连续（buddy），HMB 只需一个 vm_interval 描述
 // 描述符列表在 Set Features 时临时构建在栈上（同步命令）
 // ============================================================
 NVMe::command_result_t NVMe_Controller::hmb_alloc()
@@ -132,22 +133,16 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
     }
 
     uint32_t page_count = hmpre_4k;
+    const uint64_t buf_bytes = (uint64_t)page_count << 12;
 
-    void* buf = __wrapped_pgs_valloc(
-        &kurd, page_count, page_state_t::kernel_pinned, 12);
-    if (error_kurd(kurd) || !buf) {
+    phyaddr_t buf_pa = FreePagesAllocator::alloc(
+        buf_bytes, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+    if (error_kurd(kurd) || buf_pa == FreePagesAllocator::INVALID_ALLOC_BASE) {
         hmb_buffer = {};  // zero all fields
         return NVMe::make_not_success_kurd(kurd);
     }
-    ksetmem_8(buf, 0, page_count * 4096);
-
-    phyaddr_t buf_pa = 0;
-    kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)buf, buf_pa);
-    if (error_kurd(kurd)) {
-        __wrapped_pgs_vfree(buf, page_count);
-        hmb_buffer = {};
-        return NVMe::make_not_success_kurd(kurd);
-    }
+    void* buf = (void*)PHYACC_VA(buf_pa);
+    ksetmem_8(buf, 0, buf_bytes);
 
     uint32_t cc = head_regs->controller_configuration;
     uint32_t mps_shift = 12 + ((cc >> 7) & 0xF);
@@ -183,7 +178,7 @@ NVMe::command_result_t NVMe_Controller::hmb_alloc()
 
     NVMe::command_result_t r = cmd_submit_and_process(0, cmd);
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
-        __wrapped_pgs_vfree(buf, page_count);
+        FreePagesAllocator::free(buf_pa, buf_bytes);
         hmb_buffer = {};
         return r;
     }
@@ -211,7 +206,7 @@ NVMe::command_result_t NVMe_Controller::hmb_free()
     set_features_cmd(NVMe::features::FID_HOST_MEMORY_BUFFER,
                      dis.raw, 0);
 
-    __wrapped_pgs_vfree((void*)hmb_buffer.vbase(), hmb_buffer.byte_cnt() / 4096);
+    FreePagesAllocator::free(hmb_buffer.pbase(), hmb_buffer.byte_cnt());
     hmb_buffer = {};
 
     bsp_kout << "[NVMe] HMB freed" << kendl;
@@ -229,6 +224,8 @@ NVMe_Controller::NVMe_Controller(vaddr_t ecam) : ecam(ecam)
     msix_pending_bits_array = nullptr;
     max_msix_vectors        = 0;
     NS_count                = 0;
+    mps_shift               = 12;   // 默认 4K，second_stage_init 配置 CC 后固化
+    max_transfer_bytes      = 0;    // identify 后按 MDTS 折算
     state                   = NVMe::CTRL_UNINIT;
 }
 
@@ -284,6 +281,9 @@ KURD_t NVMe_Controller::second_stage_init()
     // ---- 5. CC.EN = 1 ----
     ctrl.field.EN = 1;
     head_regs->controller_configuration = ctrl.value;
+
+    // 固化 MPS（CC.MPS 在 EN=1 后生效，EN=0 阶段已配置）
+    mps_shift = 12 + ((head_regs->controller_configuration >> 7) & 0xF);
 
     // Clear INTMC bits before enabling
     if (!wait_for_ready(head_regs, true, to))
@@ -352,6 +352,22 @@ KURD_t NVMe_Controller::second_stage_init()
     bsp_kout.shift_dec();
     bsp_kout << " cntlid=" << (uint32_t)identity.cntlid << kendl;
 
+    // ---- 8c. MDTS → 单次传输上限 ----
+    // MDTS: 2^n × CAP.MPSMIN；0 = 无限制 → 2MB 兜底
+    {
+        uint64_t mpsmin = 1ull << (12 + cap.field.mps_min);
+        uint8_t mdts    = id_ctrl->mdts;
+        if (mdts == 0) {
+            max_transfer_bytes = 2 * 1024 * 1024;
+        } else {
+            uint64_t exp = (mdts >= 32) ? (1ull << 32) : (1ull << mdts);
+            max_transfer_bytes = exp * mpsmin;
+        }
+        bsp_kout << "[NVMe] MDTS=" << (uint32_t)mdts
+                 << " MPSMIN=" << (uint32_t)(12 + cap.field.mps_min)
+                 << " max_transfer=" << max_transfer_bytes << kendl;
+    }
+
     // ---- 9. I/O 队列 + HMB 初始化 ----
     { NVMe::command_result_t r = io_queue_init(sq_count-1,cq_count-1);
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
@@ -399,6 +415,8 @@ KURD_t NVMe_Controller::second_stage_init()
         NSs[ns - 1].sector_size   = ss;
         NSs[ns - 1].sector_count  = nsze;
         NSs[ns - 1].block_device_type = 0;
+        NSs[ns - 1].one_time_read_limit  = max_transfer_bytes;
+        NSs[ns - 1].one_time_write_limit = max_transfer_bytes;
 
         auto* priv = reinterpret_cast<NVMe_device_private_v2*>(&NSs[ns - 1].private_data);
         priv->controller = this;
@@ -439,13 +457,15 @@ KURD_t NVMe_Controller::pre_init()
     if (this->state != NVMe::CTRL_UNINIT)
         return empty_kurd;
 
-    // sqs 数组：__wrapped_pgs_valloc（物理连续，含内嵌 complete_commands_bank  / flying_slots）
+    // sqs 数组：FreePagesAllocator::alloc（物理连续，含内嵌 complete_commands_bank / flying_slots）
     {
         const uint64_t bytes = sizeof(sq_complex) * (logical_processor_count + 1);
         const uint64_t pages = align_up(bytes, 4096) >> 12;
         KURD_t ak;
-        void* va = __wrapped_pgs_valloc(&ak, pages, page_state_t::kernel_pinned, 12);
-        if (error_kurd(ak) || !va) return ak;
+        phyaddr_t pa = FreePagesAllocator::alloc(
+            pages << 12, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, ak);
+        if (error_kurd(ak) || pa == FreePagesAllocator::INVALID_ALLOC_BASE) return ak;
+        void* va = (void*)PHYACC_VA(pa);
         ksetmem_8(va, 0, bytes);
         this->sqs = static_cast<sq_complex*>(va);
     }
@@ -554,8 +574,10 @@ KURD_t NVMe_Controller::pre_init()
                     const uint64_t bytes = sizeof(cq_complex) * this->cq_count;
                     const uint64_t pages = align_up(bytes, 4096) >> 12;
                     KURD_t ak;
-                    void* va = __wrapped_pgs_valloc(&ak, pages, page_state_t::kernel_pinned, 12);
-                    if (error_kurd(ak) || !va) return ak;
+                    phyaddr_t pa = FreePagesAllocator::alloc(
+                        pages << 12, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, ak);
+                    if (error_kurd(ak) || pa == FreePagesAllocator::INVALID_ALLOC_BASE) return ak;
+                    void* va = (void*)PHYACC_VA(pa);
                     ksetmem_8(va, 0, bytes);
                     this->cqs = static_cast<cq_complex*>(va);
                 }
@@ -586,20 +608,15 @@ KURD_t NVMe_Controller::pre_init()
     // 分配 admin 缓冲区（4 页，用于 Identify 等 Admin 命令 + 命名空间 Identify 暂存）
     {
         KURD_t kurd2;
-        void* buf = __wrapped_pgs_valloc(&kurd2, 4,
-                                          page_state_t::kernel_pinned, 12);
-        if (!error_kurd(kurd2) && buf) {
+        phyaddr_t buf_pa = FreePagesAllocator::alloc(
+            4096 * 4, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd2);
+        if (!error_kurd(kurd2) && buf_pa != FreePagesAllocator::INVALID_ALLOC_BASE) {
+            void* buf = (void*)PHYACC_VA(buf_pa);
             ksetmem_8(buf, 0, 4096 * 4);
-            phyaddr_t buf_pa = 0;
-            kurd2 = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)buf, buf_pa);
-            if (!error_kurd(kurd2)) {
-                admin_buffer.vpn  = reinterpret_cast<vaddr_t>(buf) >> 12;
-                admin_buffer.ppn  = buf_pa >> 12;
-                admin_buffer.npages   = 4;
-                admin_buffer.access = KSPACE_RW_ACCESS;
-            }else{
-                return kurd2;
-            }
+            admin_buffer.vpn  = reinterpret_cast<vaddr_t>(buf) >> 12;
+            admin_buffer.ppn  = buf_pa >> 12;
+            admin_buffer.npages   = 4;
+            admin_buffer.access = KSPACE_RW_ACCESS;
         }
     }
 
@@ -663,13 +680,13 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
     // ---- 控制器已停止，以下安全释放主机端资源 ----
     // Free Admin queue ring
     if (sqs[0].sq_ring.vpn != 0) {
-        __wrapped_pgs_vfree(reinterpret_cast<void*>(sqs[0].sq_ring.vbase()),
-                             sqs[0].sq_ring.npages);
+        FreePagesAllocator::free(sqs[0].sq_ring.pbase(),
+                                 sqs[0].sq_ring.byte_cnt());
         sqs[0].sq_ring.vpn = 0;
     }
     if (cqs[0].cq_ring.vpn != 0) {
-        __wrapped_pgs_vfree(reinterpret_cast<void*>(cqs[0].cq_ring.vbase()),
-                             cqs[0].cq_ring.npages);
+        FreePagesAllocator::free(cqs[0].cq_ring.pbase(),
+                                 cqs[0].cq_ring.byte_cnt());
         cqs[0].cq_ring.vpn = 0;
     }
     bq_free(cqs[0].block_queue_id);
@@ -678,7 +695,7 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
 
     // Free admin buffer
     if (admin_buffer.vpn != 0) {
-        __wrapped_pgs_vfree(reinterpret_cast<void*>(admin_buffer.vbase()), 4);
+        FreePagesAllocator::free(admin_buffer.pbase(), admin_buffer.byte_cnt());
         admin_buffer.vpn = 0;
         admin_buffer.ppn = 0;
         admin_buffer.npages = 0;
@@ -690,13 +707,14 @@ KURD_t NVMe_Controller::offline(uint64_t flags)
             msix_table[i].vector_control |= 1;
     }
 
+    // sqs/cqs 数组分配在主窗口（PHYACC_VA），物理基址 = VA - main_window_vbase
     {
-        uint64_t pages = align_up(sizeof(sq_complex) * sq_count, 4096) >> 12;
-        __wrapped_pgs_vfree(sqs, pages);
+        uint64_t bytes = align_up(sizeof(sq_complex) * sq_count, 4096);
+        FreePagesAllocator::free((phyaddr_t)((uintptr_t)sqs - main_window_vbase), bytes);
     }
     {
-        uint64_t pages = align_up(sizeof(cq_complex) * cq_count, 4096) >> 12;
-        __wrapped_pgs_vfree(cqs, pages);
+        uint64_t bytes = align_up(sizeof(cq_complex) * cq_count, 4096);
+        FreePagesAllocator::free((phyaddr_t)((uintptr_t)cqs - main_window_vbase), bytes);
     }
     delete[] NSs;
     sqs = nullptr;

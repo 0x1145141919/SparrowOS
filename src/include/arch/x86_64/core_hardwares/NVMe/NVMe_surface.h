@@ -54,6 +54,8 @@ private:
     uint16_t IO_CQ_ENTRY_COUNT;
     vm_interval bar_intervals[6];
     vaddr_t ecam;
+    uint32_t mps_shift;            // CC.MPS 固化（second_stage_init 配置后缓存）
+    uint32_t max_transfer_bytes;   // MDTS 折算单次传输上限（MDTS=0 → 2MB）
 
     struct head_regs_t {
         uint64_t cap;
@@ -185,14 +187,18 @@ public:
     void IO_CQ_interrupt_handler(uint32_t proc_id);
 
     static KURD_t read(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
-    static KURD_t read_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
     static KURD_t write(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
-    static KURD_t write_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
     static KURD_t flush(BlockDevice* dev, uint64_t flags);
     static KURD_t discard(BlockDevice* dev,LBA_interval_t interval,uint64_t flags);
     static KURD_t write_zero(BlockDevice* dev,LBA_interval_t interval,uint64_t flags);
     static KURD_t compare(BlockDevice* dev, pbuf_t buf,LBA_interval_t interval, uint64_t flags);
-    static KURD_t compare_advance(BlockDevice* dev, mem_segs_t* segs,LBA_interval_t interval, uint64_t flags);
+
+    // PRP 模板（形态 B：与 BlockDevice 基础接口解绑，NVMe 专属）
+    //   上层预建多个模板 → prp_template_fill(segs) → cmd.DPTR1/2 = tpl.prp1/prp2 → 提交
+    //   max_bytes=0 → 按 max_transfer_bytes（MDTS 折算）全量
+    KURD_t prp_template_build(PRP_template* tpl, uint32_t max_bytes);
+    // 静态析构：模板自持页信息，不依赖 controller 实例
+    static KURD_t prp_template_destroy(PRP_template* tpl);
     // Identify wrappers
     NVMe::command_result_t identify_ctrl(phyaddr_t buf_pa);
     NVMe::command_result_t identify_ns(uint32_t nsid, phyaddr_t buf_pa);

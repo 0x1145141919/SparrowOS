@@ -307,6 +307,17 @@ namespace DEVICES_locs {
                 constexpr uint16_t nvme_status_nonzero = 0;
             }
         }
+        constexpr uint8_t PRP_template = 14;
+        namespace PRP_template_results {
+            namespace fail_reasons {
+                constexpr uint16_t tpl_null = 1;
+                constexpr uint16_t segs_invalid = 2;
+                constexpr uint16_t seg_not_mps_aligned = 3;
+                constexpr uint16_t bytes_exceed_seg_capacity = 4;
+                constexpr uint16_t entries_exceed_capacity = 5;
+                constexpr uint16_t alloc_fail = 6;
+            }
+        }
         constexpr uint8_t Offline = 0xff;
     }
 }
