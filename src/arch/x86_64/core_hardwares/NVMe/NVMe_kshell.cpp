@@ -9,6 +9,7 @@
 #include "Scheduler/kthread_abi.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
+#include <memory/main_phyaddr_access_window.h>
 using namespace kio;
 
 static KURD_t make_ok() {
@@ -87,201 +88,7 @@ static bool parse_bdf(const char* s, size_t len,
 }
 
 // ============================================================
-// 辅助：通过 BDF 找 ECAM 节点和 PCI 配置空间
-// ============================================================
-static volatile void* find_ecam_by_bdf(uint16_t seg, uint8_t bus,
-                                        uint8_t dev, uint8_t func)
-{
-    if (!global_container) return nullptr;
-    for (auto it = global_container->begin(); it != global_container->end(); ++it) {
-        const ecam_node_t& node = *it;
-        if (node.seg_group_number != seg) continue;
-        uint8_t end_bus = node.start_bus_num + node.bus_count - 1;
-        if (bus < node.start_bus_num || bus > end_bus) continue;
-
-        uint64_t off = (bus - node.start_bus_num) * 32 * 8 * 0x1000
-                     + dev  * 8 * 0x1000
-                     + func * 0x1000;
-        return (volatile void*)(node.vminterval.vbase() + off);
-    }
-    return nullptr;
-}
-
-// ============================================================
-// NVMe_on 命令
-// ============================================================
-static KURD_t cmd_nvme_on(const line_t* line)
-{
-    if (line->token_count < 2)
-        goto usage;
-
-    {
-        uint16_t seg; uint8_t bus, dev, func;
-        if (!parse_bdf(line->tokens[1].str, line->tokens[1].len, &seg, &bus, &dev, &func))
-            goto usage;
-
-        // 检查 class code（Mass Storage: 01h, NVM Subclass: 08h）
-        volatile void* cfg = find_ecam_by_bdf(seg, bus, dev, func);
-        if (!cfg) {
-            bsp_kout << "[NVMe] No PCIe config space for given BDF" << kendl;
-            return make_ok();
-        }
-
-        uint16_t vendor = *(volatile uint16_t*)((uintptr_t)cfg + 0x00);
-        uint16_t device = *(volatile uint16_t*)((uintptr_t)cfg + 0x02);
-        uint8_t  base_cls = *(volatile uint8_t*)((uintptr_t)cfg + 0x0B);
-        uint8_t  sub_cls  = *(volatile uint8_t*)((uintptr_t)cfg + 0x0A);
-
-        if (base_cls != 0x01 || sub_cls != 0x08) {
-            bsp_kout << "[NVMe] Not an NVMe device (class=";
-            bsp_kout.shift_hex();
-            bsp_kout << (uint32_t)base_cls << ":" << (uint32_t)sub_cls;
-            bsp_kout.shift_dec();
-            bsp_kout << ")" << kendl;
-            return make_ok();
-        }
-
-        // 检查是否已初始化
-        for (uint32_t i = 0; i < NVMe_Controller::controllers_count; i++) {
-            auto& n = NVMe_Controller::node_array[i];
-            if (n.pcie_bus == bus && n.pcie_dev == dev && n.pcie_func == func) {
-                // 创建新控制器
-                vaddr_t ecam_va = (vaddr_t)cfg;
-                NVMe_Controller* ctrl = new NVMe_Controller(ecam_va);
-                NVMe_Controller::node_array[i].controller = ctrl;
-                NVMe_Controller::controllers_count++;
-
-        bsp_kout << "[NVMe] Initializing device " << kendl;
-        bsp_kout.shift_hex();
-        bsp_kout << vendor << ":" << device;
-        bsp_kout.shift_dec();
-        bsp_kout << " at " << (uint32_t)bus << ":" << (uint32_t)dev << ":" << (uint32_t)func << kendl;
-
-        // 启动初始化线程
-        kthread_creating_package pkg;
-        pkg.func_raw = (uint64_t) +[](void* arg) -> void* {
-            auto* dev = (NVMe_Controller*)arg;
-            KURD_t r = NVMe_Controller::device_init(dev);
-            if (error_kurd(r)) {
-                bsp_kout << "[NVMe] init failed: reason=0x";
-                bsp_kout.shift_hex();
-                bsp_kout << r.reason;
-                bsp_kout.shift_dec();
-                bsp_kout << kendl;
-            }
-            return nullptr;
-        };
-        pkg.args[0]    = (uint64_t)ctrl;
-        pkg.args[1]    = 0;
-        pkg.args[2]    = 0;
-        pkg.args[3]    = 0;
-        pkg.args[4]    = 0;
-        pkg.launch_pid = fast_get_processor_id();
-
-        KURD_t kurd;
-        uint64_t tid = creat_kthread(&pkg, &kurd);
-        if (tid == INVALID_TID || error_kurd(kurd)) {
-            bsp_kout << "[NVMe] Failed to spawn init thread" << kendl;
-            NVMe_Controller::controllers_count--;
-        } else {
-            kthread_sleep(5000000);
-            zombie_observe_results_t zr;
-            zombie_observe(tid, &zr);
-            if (zr == ZOMBIE_DEAD) {
-                release_kthread(tid);
-            }
-        }
-    }
-    
-            }
-        }
-return make_ok();
-        
-
-usage:
-    bsp_kout << "Usage: NVMe_on <B:D:F>" << kendl;
-    return make_ok();
-}
-
-// ============================================================
-// NVMe_off 命令
-// ============================================================
-static KURD_t cmd_nvme_off(const line_t* line)
-{
-    if (line->token_count < 2)
-        goto usage;
-
-    {
-        uint16_t seg; uint8_t bus, dev, func;
-        if (!parse_bdf(line->tokens[1].str, line->tokens[1].len, &seg, &bus, &dev, &func))
-            goto usage;
-
-        // 查找控制器
-        NVMe_Controller* ctrl = nullptr;
-        uint32_t idx;
-        for (idx = 0; idx < NVMe_Controller::controllers_count; idx++) {
-            auto& n = NVMe_Controller::node_array[idx];
-            if (n.pcie_bus == bus && n.pcie_dev == dev && n.pcie_func == func) {
-                ctrl = n.controller;
-                break;
-            }
-        }
-
-        if (!ctrl) {
-            bsp_kout << "[NVMe] No active controller at given BDF" << kendl;
-            return make_ok();
-        }
-
-        bsp_kout << "[NVMe] Shutting down device " << kendl;
-        bsp_kout.shift_hex();
-        bsp_kout << (uint32_t)bus << ":" << (uint32_t)dev << ":" << (uint32_t)func;
-        bsp_kout.shift_dec();
-        bsp_kout << kendl;
-
-        kthread_creating_package pkg;
-        pkg.func_raw = (uint64_t) +[](void* arg) -> void* {
-            auto* dev = (NVMe_Controller*)arg;
-            KURD_t r = dev->offline(0);
-            if (error_kurd(r)) {
-                bsp_kout << "[NVMe] offline failed: reason=0x";
-                bsp_kout.shift_hex();
-                bsp_kout << r.reason;
-                bsp_kout.shift_dec();
-                bsp_kout << kendl;
-            } else {
-                bsp_kout << "[NVMe] offline complete" << kendl;
-            }
-            return nullptr;
-        };
-        pkg.args[0]    = (uint64_t)ctrl;
-        pkg.args[1]    = 0;
-        pkg.args[2]    = 0;
-        pkg.args[3]    = 0;
-        pkg.args[4]    = 0;
-        pkg.launch_pid = fast_get_processor_id();
-
-        KURD_t kurd;
-        uint64_t tid = creat_kthread(&pkg, &kurd);
-        if (tid == INVALID_TID || error_kurd(kurd)) {
-            bsp_kout << "[NVMe] Failed to spawn offline thread" << kendl;
-        } else {
-            kthread_sleep(5000000);
-            zombie_observe_results_t zr;
-            zombie_observe(tid, &zr);
-            if (zr == ZOMBIE_DEAD) {
-                release_kthread(tid);
-            }
-        }
-    }
-    return make_ok();
-
-usage:
-    bsp_kout << "Usage: NVMe_off <B:D:F>" << kendl;
-    return make_ok();
-}
-
-// ============================================================
-// NVMe_iotest 命令 — 锁妖塔
+// NVMe_iotest 命令 - 锁妖塔
 //
 // 用法: NVMe_iotest <B:D:F>
 //
@@ -328,11 +135,11 @@ static KURD_t cmd_nvme_iotest(const line_t* line)
 
     // ── 身份校验 ────────────────────────────────────────────
     if (!ctrl->identity_verify(&golden)) {
-        bsp_kout << "[NVMe_iotest] LOCKED — 盘身份不匹配，安全拒绝" << kendl;
+        bsp_kout << "[NVMe_iotest] LOCKED - identity mismatch, refused" << kendl;
         return make_ok();
     }
 
-    bsp_kout << "[NVMe_iotest] ⛩️  实验盘已确认 (15b7:5017, SN=25100Y402391)" << kendl;
+    bsp_kout << "[NVMe_iotest] Lab drive confirmed (15b7:5017, SN=25100Y402391)" << kendl;
 
     // ── 执行 I/O 测试 ──────────────────────────────────────
     if (ctrl->get_ns_count() == 0 || !ctrl->get_namespaces()) {
@@ -347,20 +154,14 @@ static KURD_t cmd_nvme_iotest(const line_t* line)
     bsp_kout << "[NVMe_iotest] sector_size=" << (uint32_t)ss << kendl;
 
     KURD_t kurd;
-    void* va = __wrapped_pgs_valloc(&kurd, 2, page_state_t::kernel_pinned, 12);
-    if (!va || error_kurd(kurd)) {
+    phyaddr_t pa = FreePagesAllocator::alloc(
+        8192, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+    if (error_kurd(kurd) || pa == FreePagesAllocator::INVALID_ALLOC_BASE) {
         bsp_kout << "[NVMe_iotest] Buffer alloc failed" << kendl;
         return make_ok();
     }
+    void* va = (void*)PHYACC_VA(pa);
     ksetmem_8(va, 0, 8192);
-
-    phyaddr_t pa = 0;
-    kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)va, pa);
-    if (error_kurd(kurd) || pa == 0) {
-        bsp_kout << "[NVMe_iotest] PA translation failed" << kendl;
-        __wrapped_pgs_vfree(va, 2);
-        return make_ok();
-    }
 
     pbuf_t buf      = { .pbase = pa, .size = 8192 };
     pbuf_t buf2     = { .pbase = pa + ss, .size = 8192 - ss };
@@ -381,7 +182,7 @@ static KURD_t cmd_nvme_iotest(const line_t* line)
         bsp_kout << "[NVMe_iotest] Read FAILED, reason=0x" << HEX << r1.reason << kendl;
     }
 
-    // TEST 2: Write 0xA5 → read back → verify
+    // TEST 2: Write 0xA5 -> read back -> verify
     bsp_kout << "[NVMe_iotest] --- Test 2: Write 0xA5 pattern ---" << kendl;
     ksetmem_8(va, 0xA5, ss);
     KURD_t r2w = NVMe_Controller::write(ns, buf, interval, 0);
@@ -402,13 +203,13 @@ static KURD_t cmd_nvme_iotest(const line_t* line)
         bsp_kout << "[NVMe_iotest] Readback FAILED, reason=0x" << HEX << r2r.reason << kendl;
     }
 
-    // TEST 3: Compare with self → expect SUCCESS
+    // TEST 3: Compare with self -> expect SUCCESS
     bsp_kout << "[NVMe_iotest] --- Test 3: Compare (self, expect match) ---" << kendl;
     KURD_t r3 = NVMe_Controller::compare(ns, buf, interval, 0);
     bsp_kout << "[NVMe_iotest] Compare: "
              << (!error_kurd(r3) ? "PASS" : "FAIL") << kendl;
 
-    // TEST 4: Write different → Compare → expect FAILURE
+    // TEST 4: Write different -> Compare -> expect FAILURE
     bsp_kout << "[NVMe_iotest] --- Test 4: Compare (different, expect FAIL) ---" << kendl;
     ksetmem_8((uint8_t*)va + ss, 0x5A, ss);
     KURD_t r4 = NVMe_Controller::compare(ns, buf2, interval, 0);
@@ -418,9 +219,9 @@ static KURD_t cmd_nvme_iotest(const line_t* line)
     // Cleanup
     ksetmem_8(va, 0, ss);
     NVMe_Controller::write(ns, buf, interval, 0);
-    __wrapped_pgs_vfree(va, 2);
+    FreePagesAllocator::free(pa, 8192);
 
-    bsp_kout << "[NVMe_iotest] ⛩️  测试完成" << kendl;
+    bsp_kout << "[NVMe_iotest] Test complete" << kendl;
     }
     return make_ok();
 
@@ -446,7 +247,7 @@ static bool verify_sequence(void* buf, uint64_t start_lba, uint32_t sector_size,
 }
 
 // ============================================================
-// NVMe_read_stress 命令 — PRP 压力测试
+// NVMe_read_stress 命令 - PRP 压力测试
 //
 // 用法: NVMe_read_stress <B:D:F>
 //
@@ -513,11 +314,11 @@ static KURD_t cmd_nvme_read_stress(const line_t* line)
     __builtin_memcpy(golden.model,  mn_pad, 40);
 
     if (!ctrl->identity_verify(&golden)) {
-        bsp_kout << "[NVMe_read_stress] LOCKED — 盘身份不匹配，安全拒绝" << kendl;
+        bsp_kout << "[NVMe_read_stress] LOCKED - identity mismatch, refused" << kendl;
         return make_ok();
     }
 
-    bsp_kout << "[NVMe_read_stress] ⛩️  实验盘已确认 (15b7:5017, SN=25100Y402391)" << kendl;
+    bsp_kout << "[NVMe_read_stress] Lab drive confirmed (15b7:5017, SN=25100Y402391)" << kendl;
 
     // ── 取 Namespace ─────────────────────────────────────
     if (ctrl->get_ns_count() == 0 || !ctrl->get_namespaces()) {
@@ -544,39 +345,30 @@ static KURD_t cmd_nvme_read_stress(const line_t* line)
         // 检查 LBA 范围
         if (c.start_lba + c.lba_count > max_sectors) {
             bsp_kout << "[NVMe_read_stress] --- " << c.name
-                     << " — SKIP (LBA out of range)" << kendl;
+                     << " - SKIP (LBA out of range)" << kendl;
             skipped++;
             continue;
         }
 
-        // 分配缓冲区
+        // 分配缓冲区（FPA 直接给物理基址，CPU 侧经主窗口恒等映射 VA 访问）
         KURD_t kurd;
-        void* va = __wrapped_pgs_valloc(&kurd, c.buf_pages,
-                                         page_state_t::kernel_pinned, 12);
-        if (!va || error_kurd(kurd)) {
+        const uint64_t buf_bytes = (uint64_t)c.buf_pages << 12;
+        phyaddr_t pa = FreePagesAllocator::alloc(
+            buf_bytes, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+        if (error_kurd(kurd) || pa == FreePagesAllocator::INVALID_ALLOC_BASE) {
             bsp_kout << "[NVMe_read_stress] --- " << c.name
-                     << " — SKIP (alloc fail)" << kendl;
+                     << " - SKIP (alloc fail)" << kendl;
             skipped++;
             continue;
         }
-
-        // 获取物理地址
-        phyaddr_t pa = 0;
-        kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)va, pa);
-        if (error_kurd(kurd) || pa == 0) {
-            bsp_kout << "[NVMe_read_stress] --- " << c.name
-                     << " — SKIP (PA translation fail)" << kendl;
-            __wrapped_pgs_vfree(va, c.buf_pages);
-            skipped++;
-            continue;
-        }
+        void* va = (void*)PHYACC_VA(pa);
 
         uint64_t data_size = (uint64_t)c.lba_count * ss;
         uint64_t buf_size  = (uint64_t)c.buf_pages * 4096;
         if (buf_size < data_size) {
             bsp_kout << "[NVMe_read_stress] --- " << c.name
-                     << " — SKIP (buf size mismatch)" << kendl;
-            __wrapped_pgs_vfree(va, c.buf_pages);
+                     << " - SKIP (buf size mismatch)" << kendl;
+            FreePagesAllocator::free(pa, buf_bytes);
             skipped++;
             continue;
         }
@@ -591,18 +383,18 @@ static KURD_t cmd_nvme_read_stress(const line_t* line)
         if (error_kurd(r)) {
             bsp_kout << "[NVMe_read_stress] --- " << c.name << " ("
                      << c.lba_count << " sect, " << c.buf_pages << "pg buf)"
-                     << " — READ FAIL, reason=0x" << HEX << r.reason << kendl;
+                     << " - READ FAIL, reason=0x" << HEX << r.reason << kendl;
             failed++;
         } else {
             bool ok = verify_sequence(va, c.start_lba, ss, c.lba_count);
             bsp_kout << "[NVMe_read_stress] --- " << c.name << " ("
                      << c.lba_count << " sect, " << c.buf_pages << "pg buf)"
-                     << (ok ? " — PASS" : " — FAIL (data mismatch)") << kendl;
+                     << (ok ? " - PASS" : " - FAIL (data mismatch)") << kendl;
             if (ok) passed++;
             else    failed++;
         }
 
-        __wrapped_pgs_vfree(va, c.buf_pages);
+        FreePagesAllocator::free(pa, buf_bytes);
     }
 
     bsp_kout << "[NVMe_read_stress] === " << passed << "/" << (passed + failed)
@@ -619,20 +411,6 @@ usage:
 // 命令表
 // ============================================================
 static command_entry_t nvme_commands[] = {
-    {
-        .name        = "NVMe_on",
-        .description = "Initialize NVMe controller at BDF (e.g. 1:0:0)",
-        .handler     = cmd_nvme_on,
-        .risk        = command_risk_level_t::WARNING,
-        .need_confirm= false,
-    },
-    {
-        .name        = "NVMe_off",
-        .description = "Shutdown NVMe controller at BDF",
-        .handler     = cmd_nvme_off,
-        .risk        = command_risk_level_t::WARNING,
-        .need_confirm= false,
-    },
     {
         .name        = "NVMe_iotest",
         .description = "I/O test at B:D:F, locked to WD Blue SN5000 (15b7:5017)",

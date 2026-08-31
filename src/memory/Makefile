@@ -394,6 +394,30 @@ out_surfaces.cpp.s:
 	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/out_surfaces.cpp.s
 .PHONY : out_surfaces.cpp.s
 
+page_frame_state_mgr.o: page_frame_state_mgr.cpp.o
+.PHONY : page_frame_state_mgr.o
+
+# target to build an object file
+page_frame_state_mgr.cpp.o:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/page_frame_state_mgr.cpp.o
+.PHONY : page_frame_state_mgr.cpp.o
+
+page_frame_state_mgr.i: page_frame_state_mgr.cpp.i
+.PHONY : page_frame_state_mgr.i
+
+# target to preprocess a source file
+page_frame_state_mgr.cpp.i:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/page_frame_state_mgr.cpp.i
+.PHONY : page_frame_state_mgr.cpp.i
+
+page_frame_state_mgr.s: page_frame_state_mgr.cpp.s
+.PHONY : page_frame_state_mgr.s
+
+# target to generate assembly for a file
+page_frame_state_mgr.cpp.s:
+	cd /home/PS/PS_git/OS_pj_uefi/kernel && $(MAKE) $(MAKESILENT) -f src/memory/CMakeFiles/Mem_module.dir/build.make src/memory/CMakeFiles/Mem_module.dir/page_frame_state_mgr.cpp.s
+.PHONY : page_frame_state_mgr.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -436,6 +460,9 @@ help:
 	@echo "... out_surfaces.o"
 	@echo "... out_surfaces.i"
 	@echo "... out_surfaces.s"
+	@echo "... page_frame_state_mgr.o"
+	@echo "... page_frame_state_mgr.i"
+	@echo "... page_frame_state_mgr.s"
 .PHONY : help
 
 

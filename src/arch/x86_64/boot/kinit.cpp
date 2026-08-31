@@ -101,13 +101,8 @@ extern void* bq_timeout_sweeper(void*);
 void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
-    
-    i8042_char_subscriber_init();
-    pcie_text_praser();
-    //text_input_subscriber_init();
-
-    // 启动 BQ 超时扫描线程
     {
+        // 启动 BQ 超时扫描线程
         kthread_creating_package pkg = {};
         pkg.func_raw = (uint64_t)bq_timeout_sweeper;
         pkg.args[0]  = (uint64_t)nullptr;
@@ -120,6 +115,14 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
             bsp_kout << "[BQ] sweeper thread tid="<<tid  << kendl;
         }
     }
+    i8042_char_subscriber_init();
+    //pcie_text_praser();
+    // 并行初始化所有 NVMe 控制器（每控制器一线程，共享 u64 汇报画板，≤5s 轮询提前退出）
+    nvme_parallel_init_all();
+    //text_input_subscriber_init();
+
+    
+    
 
     // 初始化 kshell 框架
     kurd=kshell_framework_t::Init();
@@ -272,7 +275,6 @@ extern "C" void ap_init()
 static uint64_t ipi_shutdown_func(void*)
 {
     asm volatile("cli; wbinvd; hlt" ::: "memory");
-    __builtin_unreachable();
     return 1;
 }
 // ─── 广播关机 ─────────────────────────────────────────────
@@ -281,6 +283,9 @@ static uint64_t ipi_shutdown_func(void*)
 
 extern "C" void broadcast_shutdown()
 {
+    // 关机：并行析构/关机所有 NVMe 控制器（每控制器一线程，汇报画板 ≤5s 轮询）
+    nvme_parallel_offline_all();
+
     uint32_t self = fast_get_processor_id();
     uint32_t nproc = logical_processor_count;
     uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
@@ -301,8 +306,6 @@ extern "C" void broadcast_shutdown()
     }
 
     // 发起者自救
-    asm volatile("cli; wbinvd; hlt" ::: "memory");
-    __builtin_unreachable();
 }
 
 

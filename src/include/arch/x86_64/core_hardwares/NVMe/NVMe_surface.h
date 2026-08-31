@@ -264,3 +264,9 @@ public:
 };
 
 extern void register_nvme_kshell_commands();
+
+// ─── 并行初始化 / 并行关机（kinit 的 kthread_ymir / broadcast_shutdown 调用）───
+// 每个控制器一个内核线程，结果写入共享 u64 汇报画板；
+// 主线程 ≤5s 轮询画板（每轮 50us），全部成功提前退出。
+void nvme_parallel_init_all();
+void nvme_parallel_offline_all();

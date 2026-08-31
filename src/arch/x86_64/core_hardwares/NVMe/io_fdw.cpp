@@ -5,6 +5,7 @@
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
+#include <memory/main_phyaddr_access_window.h>
 #include <util/kout.h>
 #include <util/arch/x86-64/cpuid_intel.h>
 
@@ -216,18 +217,12 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
 
     // ---- 分配 Range 列表缓冲区（1 页 = 最多 256 个 range，此处只用一个） ----
     KURD_t kurd;
-    void* range_va = __wrapped_pgs_valloc(&kurd, 1,
-                                           page_state_t::kernel_pinned, 12);
-    if (!range_va || error_kurd(kurd))
+    phyaddr_t range_pa = FreePagesAllocator::alloc(
+        4096, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+    if (error_kurd(kurd) || range_pa == FreePagesAllocator::INVALID_ALLOC_BASE)
         return param_error_discard(0x4);
+    void* range_va = (void*)PHYACC_VA(range_pa);
     ksetmem_8(range_va, 0, 4096);
-
-    phyaddr_t range_pa = 0;
-    kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)range_va, range_pa);
-    if (error_kurd(kurd) || range_pa == 0) {
-        __wrapped_pgs_vfree(range_va, 1);
-        return param_error_discard(0x5);
-    }
 
     // ---- 填充 Range 0 ----
     auto* range = static_cast<dsm_range_t*>(range_va);
@@ -243,7 +238,7 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
     prp_root_t prp_root{};
     kurd = build_PRP_root(range_pa, 1, mps_shift, &prp_root, kurd);
     if (error_kurd(kurd)) {
-        __wrapped_pgs_vfree(range_va, 1);
+        FreePagesAllocator::free(range_pa, 4096);
         return param_error_discard(0x6);
     }
 
@@ -270,7 +265,7 @@ KURD_t NVMe_Controller::discard(BlockDevice* dev,LBA_interval_t interval,uint64_
         KURD_t dk;
         destroy_PRP_root(prp_root, mps_shift, dk);
     }
-    __wrapped_pgs_vfree(range_va, 1);
+    FreePagesAllocator::free(range_pa, 4096);
 
     return empty_kurd;
 }

@@ -5,6 +5,7 @@
 #include "arch/x86_64/core_hardwares/NVMe/PRPs.h"
 #include <memory/FreePagesAllocator.h>
 #include <memory/phyaddr_accessor.h>
+#include <memory/main_phyaddr_access_window.h>
 #include <util/kout.h>
 #include "Scheduler/kthread_abi.h"
 
@@ -45,7 +46,7 @@ NVMe_Controller::queue_mgmt_cmd(uint8_t opcode, uint16_t qid,
 // 2. msix_vec_alloc 分配中断向量
 // 3. 初始化 cqs[] 状态
 // 4. 发送 Create I/O CQ 命令
-// 5. 失败 → 回滚释放所有资源
+// 5. 失败 -> 回滚释放所有资源
 // ============================================================
 NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsize,
                                                       bool ien)
@@ -54,23 +55,18 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
 
     // ---- 1. 分配 ring buffer ----
     uint32_t cq_bytes = align_up(qsize * CQ_ENTRY_SIZE, 4096);
-    void* cq_ring_va = __wrapped_pgs_valloc(
-        &kurd, cq_bytes / 4096, page_state_t::kernel_pinned, 12);
-    if (error_kurd(kurd) || !cq_ring_va) return NVMe::make_not_success_kurd(kurd);
-    ksetmem_8(cq_ring_va, 0, cq_bytes);
-
-    phyaddr_t cq_ring_pa = 0;
-    kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)cq_ring_va, cq_ring_pa);
-    if (error_kurd(kurd)) {
-        __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
+    phyaddr_t cq_ring_pa = FreePagesAllocator::alloc(
+        cq_bytes, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+    if (error_kurd(kurd) || cq_ring_pa == FreePagesAllocator::INVALID_ALLOC_BASE)
         return NVMe::make_not_success_kurd(kurd);
-    }
+    void* cq_ring_va = (void*)PHYACC_VA(cq_ring_pa);
+    ksetmem_8(cq_ring_va, 0, cq_bytes);
 
     // ---- 2. 分配 MSI-X vector（先 Mask，create 成功后 Unmask）----
     KURD_t msix_kurd;
     msix_kurd = msix_vec_alloc(qid - 1, qid);
     if (error_kurd(msix_kurd)) {
-        __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
+        FreePagesAllocator::free(cq_ring_pa, cq_bytes);
         return NVMe::make_not_success_kurd(msix_kurd);
     }
 
@@ -92,7 +88,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         // 失败回滚
         msix_vec_free(qid);
-        __wrapped_pgs_vfree(cq_ring_va, cq_bytes / 4096);
+        FreePagesAllocator::free(cq_ring_pa, cq_bytes);
         cqs[qid] = cq_complex{};  // zero
         return r;
     }
@@ -114,7 +110,7 @@ NVMe::command_result_t NVMe_Controller::create_io_cq(uint16_t qid, uint16_t qsiz
 // 1. 分配 ring buffer
 // 2. 构造 sq_bitmap
 // 3. 发送 Create I/O SQ 命令
-// 4. 失败 → 回滚释放所有资源
+// 4. 失败 -> 回滚释放所有资源
 // ============================================================
 NVMe::command_result_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsize,
                                                       uint16_t cqid, uint8_t qprio)
@@ -123,17 +119,12 @@ NVMe::command_result_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsiz
 
     // ---- 1. 分配 ring buffer ----
     uint32_t sq_bytes = align_up(qsize * SQ_ENTRY_SIZE, 4096);
-    void* sq_ring_va = __wrapped_pgs_valloc(
-        &kurd, sq_bytes / 4096, page_state_t::kernel_pinned, 12);
-    if (error_kurd(kurd) || !sq_ring_va) return NVMe::make_not_success_kurd(kurd);
-    ksetmem_8(sq_ring_va, 0, sq_bytes);
-
-    phyaddr_t sq_ring_pa = 0;
-    kurd = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)sq_ring_va, sq_ring_pa);
-    if (error_kurd(kurd)) {
-        __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
+    phyaddr_t sq_ring_pa = FreePagesAllocator::alloc(
+        sq_bytes, BUDDY_ALLOC_DEFAULT_FLAG, page_state_t::kernel_pinned, kurd);
+    if (error_kurd(kurd) || sq_ring_pa == FreePagesAllocator::INVALID_ALLOC_BASE)
         return NVMe::make_not_success_kurd(kurd);
-    }
+    void* sq_ring_va = (void*)PHYACC_VA(sq_ring_pa);
+    ksetmem_8(sq_ring_va, 0, sq_bytes);
 
     // ---- 2. 预填 sqs[] 状态（内嵌数据，无需额外分配）----
     sqs[qid].flying_slots.enable(sqs[qid].flying_slots_raw_map, qsize);
@@ -154,7 +145,7 @@ NVMe::command_result_t NVMe_Controller::create_io_sq(uint16_t qid, uint16_t qsiz
                         qid, qsize, cdw11.raw, sq_ring_pa);
     if (r.fields.result_type != NVMe::command_result_types::command_executed || NVMe::status::is_error(r.fields.status)) {
         // 失败回滚（内嵌数据无需释放，只回滚外部资源）
-        __wrapped_pgs_vfree(sq_ring_va, sq_bytes / 4096);
+        FreePagesAllocator::free(sq_ring_pa, sq_bytes);
         sqs[qid] = sq_complex{};  // zero
         return r;
     }
@@ -208,8 +199,8 @@ NVMe::command_result_t NVMe_Controller::delete_io_sq(uint16_t qid)
 
     // ---- 3. 释放资源（内嵌数据无需释放，只释放外部 ring）----
     if (sqs[qid].sq_ring.vpn != 0) {
-        __wrapped_pgs_vfree(reinterpret_cast<void*>(sqs[qid].sq_ring.vbase()),
-                             sqs[qid].sq_ring.npages);
+        FreePagesAllocator::free(sqs[qid].sq_ring.pbase(),
+                                 sqs[qid].sq_ring.byte_cnt());
         sqs[qid].sq_ring.vpn = 0;
     }
     sqs[qid] = sq_complex{};
@@ -236,8 +227,8 @@ NVMe::command_result_t NVMe_Controller::delete_io_cq(uint16_t qid)
 
     // ---- 2. 释放 ring ----
     if (cqs[qid].cq_ring.vpn != 0) {
-        __wrapped_pgs_vfree(reinterpret_cast<void*>(cqs[qid].cq_ring.vbase()),
-                             cqs[qid].cq_ring.npages);
+        FreePagesAllocator::free(cqs[qid].cq_ring.pbase(),
+                                 cqs[qid].cq_ring.byte_cnt());
         cqs[qid].cq_ring.vpn = 0;
     }
 
@@ -280,7 +271,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
         bsp_kout << "[NVMe] CQ " << (uint32_t)qid << " created" << kendl;
     }
 
-    // ---- 3. 创建 I/O SQ (sqid 1..iosq_count), round-robin → CQ ----
+    // ---- 3. 创建 I/O SQ (sqid 1..iosq_count), round-robin -> CQ ----
     for (uint16_t sqid = 1; sqid <= iosq_count; sqid++) {
         uint16_t cqid = ((sqid - 1) % iocq_count) + 1;
 
@@ -292,7 +283,7 @@ NVMe::command_result_t NVMe_Controller::io_queue_init(uint16_t iosq_count,
             continue;
         }
         bsp_kout << "[NVMe] SQ " << (uint32_t)sqid
-                 << " (→CQ " << (uint32_t)cqid << ") created" << kendl;
+                 << " (->CQ " << (uint32_t)cqid << ") created" << kendl;
     }
 
     bsp_kout << "[NVMe] io_queue_init done" << kendl;
