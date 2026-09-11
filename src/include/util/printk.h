@@ -14,7 +14,7 @@
  *
  *   printk(level, fmt, ...)            面层：变参 + __printf 类型安全
  *     └─ vprintk(level, sink, fmt, ap) 核心（栈上 buf，单临界区）：
- *           ts = now_ts();                                        // extern "C"，外部接入
+ *           ts = now_ts_us();                                     // 微秒；extern "C"，外部接入
  *           n  = sink->render_prefix(self, buf, cap, level, ts);  // 前缀（各 sink 自定）
  *           n += kvformat(buf + n, cap - n, fmt, ap);             // body
  *           sink->emit(self, buf, n);                             // 一发
@@ -41,9 +41,12 @@
 
 extern "C"
 {
-// —— 时基：由外部实现（ktime / tsc / host 假时钟…），返回纳秒；未就绪返回 0 ——
-// ⚠️ 本头文件【不绑定】具体实现 —— 谁接入谁提供符号。ts==0 时前缀省略时间戳段。
-uint64_t now_ts();
+// —— 时基：返回【微秒】；未就绪返回 0 ——
+// 精度语义：日志时间戳 = 微秒。纳秒精度属于「微时序测量」（另一套设施），
+// 不属 printk —— 给日志上 ns 是拿观测本身当笑话。
+// ⚠️ 本头文件【不绑定】具体实现 —— ktime / tsc / host 假时钟谁接入谁提供符号。
+//    ts_us==0 时前缀省略时间戳段。
+uint64_t now_ts_us();
 }
 
 namespace klog
@@ -65,7 +68,7 @@ struct log_sink
     //   · ring  sink → 写二进制记录头 log_rec_hdr（len 先占位，见 emit 说明）
     // 契约：调用方已持 sink_lock；不跨 cap；无分配。
     uint32_t (*render_prefix)(void* self, char* buf, uint64_t cap,
-                              level_t level, uint64_t ts_ns);
+                              level_t level, uint64_t ts_us);
 
     // 落地原语：把【整条】buf[0..len) 吐出去。dumb pipe：同步、无阻塞、无格式、无分配。
     // 契约：调用方已持 sink_lock；内部禁止调 printk。
@@ -82,9 +85,9 @@ int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap);
 
 // ——— 文本 sink 可复用的默认前缀实现（可直接挂到 log_sink::render_prefix）———
 // 取值 + 文本化只有一份，避免同一条日志三处不一致；样式（颜色/省略）归各后端。
-// ts_ns==0（早期无时基）时省略时间戳段。返回写入字节数。
+// ts_us==0（早期无时基）时省略时间戳段。返回写入字节数。
 uint32_t render_prefix_plain(void* self, char* buf, uint64_t cap,
-                             level_t level, uint64_t ts_ns);
+                             level_t level, uint64_t ts_us);
 
 // ——— 核心：唯一 formatter 入口（栈上 buffer，单次临界区）———
 void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap);
@@ -112,7 +115,7 @@ struct log_rec_hdr
     uint8_t  level;   // level_code
     uint8_t  _rsv;    // 对齐保留
     uint32_t seq;     // 单调序号（回绕/丢失检测）
-    uint64_t ts_ns;   // 记录时间戳；0 = 无时基
+    uint64_t ts_us;   // 记录时间戳（微秒）；0 = 无时基
 };
 static_assert(sizeof(log_rec_hdr) == 16, "log_rec_hdr must be 16 bytes");
 
