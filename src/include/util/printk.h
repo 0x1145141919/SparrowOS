@@ -1,33 +1,38 @@
 #pragma once
 /**
- * printk —— 唯一内核日志面层（formatter + 文本出口 + 结构化 ring 记录），bsp_kout 的接替者。
+ * printk —— 唯一内核日志面层（formatter + log_sink），bsp_kout 的接替者。
  *
- * ⚠️ 接口契约方向已冻结（方案 B）；实现细节随讨论演化。
+ * ⚠️ 接口契约方向已冻结（方案 B + 单 sink 模型）；实现细节随讨论演化。
  *    设计交流以本文件变更为锚点（草稿文档已删，见 commit a46f730）。
  *
- * 分层（B：ring 是结构化记录库，emit 家族只服务文本出口）：
+ * 模型：
+ *   - vprintk 只对【一个】log_sink 发一条日志，一发一条，一次临界区。
+ *   - 由 sink 自行决定「怎么落地」：
+ *       · ring  sink → 结构化存（二进制记录头 + body）           ← runtime 唯一目的地
+ *       · text  sink → 自己渲染前缀 + body（各后端样式自定）
+ *   - runtime printk【绑死】ring：改 screen/uart 都动不到它。
+ *   - early_printk【特殊】：多组 vprintk（ring/uart/gop…），
+ *     每组各一次临界区，body 各格式化一次（early 罕见，可接受）。
  *
- *   printk(level, fmt, ...)                    面层：变参 + __printf 类型安全
- *     └─ vprintk(level, sink, fmt, ap)         核心：body 只格式化一次，两处落地
- *           ├─ dmesg_record(level, ts, body)   ① 结构化落 ring（带二进制记录头）
- *           └─ sink->emit(self, prefix, n)     ② 文本出口（持 sink_lock，一发一条）
- *              sink->emit(self, body, m)          prefix 与 body 同临界区连发
- *                    └─ 文本 sink：UART / GOP / early（dumb 字节管道）
+ *   printk(level, fmt, ...)            面层：变参 + __printf 类型安全
+ *     └─ vprintk(level, sink, fmt, ap) 核心：kvformat 一次 → 持 sink 锁 → sink->emit 一次
+ *           └─ sink->emit(self, level, ts, body, len)   一发一条，原子
+ *                 ├─ ring_sink.emit → 二进制头 {len,level,seq,ts} + body（读侧过滤）
+ *                 └─ text_sink.emit → render_prefix() + body（UART/屏/early）
  *
  * 契约（红线）：
  *   1) formatter 唯一：kvformat（early/runtime/panic 共用）；无锁/无分配/无浮点。
  *   2) ring 里 level/ts 是【二进制字段】（log_rec_hdr），不是文本前缀。
  *      读侧（kshell dmesg）直接读字段过滤 / 排序，【禁止】字符串解析。
- *   3) emit 是【压死规格】的字节管道：同步、无阻塞、无格式、无分配。
+ *   3) emit 是【压死规格】的落地原语：同步、无阻塞、无格式、无分配。
  *      - 只能在【持有 sink->sink_lock】时调用；
  *      - emit 内部【禁止】再调 printk（同锁自旋死）。
  *   4) sink_lock 必须用 spinlock_interrupt_about_guard（irq-save）取。
- *      printk 会在 IRQ 上下文被调用（如 NVMe AER, NVMe_interrupts.cpp:134/156/223），
+ *      printk 会在 IRQ 上下文被调用（NVMe AER, NVMe_interrupts.cpp:134/156/223），
  *      裸 spinlock_cpp_t::lock() 会「线程持锁 → IRQ 里 printk → 同 CPU 自旋死」。
  *   5) panic 不走本路径：crash 现场可能正持 sink_lock，取锁即死 → panic 走 dumper 旁路。
- *   6) 一发一条：prefix 与 body 必须在同一临界区内连发，禁止跨锁拆发（会交错）。
- *
- * 关联：DmesgRingBuffer（src/include/kcirclebufflogMgr.h，本头文件先钉契约、后并实现）。
+ *   6) 无 fanout / 无全局 router：多目的地 = 多次 vprintk（early 特例），
+ *      不是 vprintk 内部分流。
  */
 #include <cstdarg>
 #include <stdint.h>
@@ -45,34 +50,31 @@ namespace level = level_code;
 // 单行 body 上限（栈缓冲；超额截断并打 "...[truncated]" 标记）。对齐 Linux LOG_LINE_MAX。
 constexpr uint32_t LOG_LINE_MAX = 1024;
 
-// ——— 文本出口：压到最死的字节管道 ———
-// 「puts 指针 + io_ctx 复合体」：指针负责吐，self 携带上下文。
+// ——— log_sink：一条日志的落地原语 ———
+// 「函数指针 + io_ctx 复合体」：指针负责落地，self 携带上下文。
 struct log_sink
 {
-    // dumb pipe：把这坨字节现在就吐给设备。同步、无阻塞、无格式。
-    // 契约：调用方必须已持有 sink_lock；内部禁止调 printk。
-    void (*emit)(void* self, const char* bytes, uint64_t len);
-    void*           self;       // io_ctx：串口端口 / 屏幕状态 / GOP 句柄 …
-    spinlock_cpp_t* sink_lock;  // 【必须非空】；vprintk 全程持锁（irq-save）
+    // 一发一条。sink 自行决定怎么用 level/ts/body：
+    //   ring sink → 存二进制头 + body；text sink → 渲染前缀 + body。
+    // 契约：调用方必须已持有 sink_lock；内部禁止调 printk；无分配、无阻塞。
+    void (*emit)(void* self, level_t level, uint64_t ts_ns,
+                 const char* body, uint64_t len);
+    void*           self;       // io_ctx：ring 模块句柄 / 串口端口 / 屏幕状态 …
+    spinlock_cpp_t* sink_lock;  // 【必须非空】；vprintk 单次临界区（irq-save）
 };
 
 // ——— 纯格式化引擎：无 I/O、无静态状态、可重入、可 host 单测 ———
 // 返回写入 out 的字节数（不含 NUL）；>= cap 表示发生截断。
 int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap);
 
-// ——— 共享前缀渲染：[  ts] <LEVEL> ——
-// ts/level 的【取值 + 文本化】只有一份，禁止各后端私造（否则同一条日志三处不一致）。
-// 后端可在此之上做「样式」（颜色/省略时间戳等）——样式归后端，取值归此处。
-// ts_ns==0（早期无时基）时省略时间戳段。返回写入字节数。
+// ——— 前缀渲染：[  ts] <LEVEL> ——
+// 供【文本 sink】复用：取值与文本化只有一份（避免同一条日志三处不一致）；
+// 样式（颜色/省略时间戳）归各后端。ts_ns==0（早期无时基）时省略时间戳段。
 uint32_t render_prefix(char* out, uint64_t cap, level_t level, uint64_t ts_ns);
 
-// ——— 核心：唯一 formatter 入口（B：level 必须到核心层，才能落二进制头）———
-// 流程（临界区内）：
-//   1) ts = now_ts();                       // 记录时打一次，三处共用
-//   2) kvformat(body, fmt, ap);             // body 只格式化一次
-//   3) dmesg_record(level, ts, body, n);    // ① 结构化落 ring
-//   4) render_prefix(pfx, level, ts) → sink->emit(pfx) ; sink->emit(body)  // ② 文本出口
-// sink 可为 nullptr（纯 ring 落库，无文本出口）。
+// ——— 核心：唯一 formatter 入口 ———
+// 流程（单次临界区）：ts=now_ts(); kvformat(body); 取 sink_lock; sink->emit(level,ts,body,len)。
+// sink 必须非空（runtime 缺省即 ring sink）。
 void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap);
 
 // ——— 面层 ———
@@ -85,12 +87,12 @@ void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap);
 
 void printk(level_t level, const char* fmt, ...) KLOG_PRINTF_ATTR(2, 3);
 
-// ——— early：薄包装，【禁止】另起 formatter / 独立 API（early 全部 INFO）———
-// 内部仍走 vprintk；多目的地（UART/GOP/…）由「fanout 文本 sink」承担——
-// fanout 只是一个 sink，其 emit 按序转发给多个子 sink，不是全局 router。
+// ——— early：特殊路径，【禁止】另起 formatter / 独立 API（early 全部 INFO）———
+// 实现：对 ring / 屏 / polling UART 等【多组 vprintk】，每组各一次临界区。
+// body 会按 sink 数重复格式化（early 罕见，接受；不为此引入 compose 缓存）。
 void early_printk(const char* fmt, ...) KLOG_PRINTF_ATTR(1, 2);
 
-// ——— ring：结构化记录库（不是普通 sink）———
+// ——— ring 结构化记录头（B 的核心契约）———
 // 定长头 + body；回绕时整条记录被覆盖（头 + body 一起丢弃，不产生半条）。
 struct log_rec_hdr
 {
@@ -102,13 +104,10 @@ struct log_rec_hdr
 };
 static_assert(sizeof(log_rec_hdr) == 16, "log_rec_hdr must be 16 bytes");
 
-// 追加一条记录（原子）；由 vprintk 调用。读者 API（cursor / 按 level 过滤）后续补。
-void dmesg_record(level_t level, uint64_t ts_ns, const char* body, uint64_t len);
-
-// ——— 缺省 sink（「三段所有权」的交接点）———
-//   runtime 默认 = 文本出口 sink（无文本出口则 null，只落 ring）；
-//   early 阶段 = fanout(屏, polling UART)；
-//   panic 走 dumper，不经此处。
+// ——— 缺省 sink（runtime 唯一目的地 = ring）———
+//   runtime : set_default_sink(ring_sink)   —— 「绑死只打印那个缓冲区模块」
+//   early   : 不走缺省；early_printk 显式多组 vprintk
+//   panic   : 走 dumper，不经此处
 void            set_default_sink(const log_sink* sink);
 const log_sink* get_default_sink();
 
