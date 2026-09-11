@@ -186,6 +186,8 @@ static void format_battery()
     klog::printk(klog::level::INFO, "ptr: %p %p", (void*)0x0, (void*)0xdeadbeefcafef00dULL);
     klog::printk(klog::level::INFO, "star: [%*d] [%-*d] [%.*d]", 6, 42, 6, 42, 5, 7);
     klog::printk(klog::level::INFO, "pct: 100%% done");
+    klog::printk(klog::level::WARNING, "float(unsupported): %f %lf %e %g %Lf", 1.5, 2.5, 3.5, 4.5, 5.5);
+    klog::printk(klog::level::WARNING, "unknown-spec: %q %y", 1, 2);
     klog::printk(klog::level::NOTICE, "notice level sample %d", 1);
     klog::printk(klog::level::WARNING, "warning level sample %s", "warn");
     klog::printk(klog::level::ERROR, "error level sample 0x%x", 0xbad);

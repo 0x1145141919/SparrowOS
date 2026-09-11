@@ -179,10 +179,14 @@ int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap)
         }
 
         // ---- length ----
+        const char* lmod = "";                       // 原样保留，用于诊断标记
         int len_mod = 0;   // 0=int/uint, 1=long/ll/size/intmax (LP64 下统一 64 位)
-        if (*p == 'h') { ++p; if (*p == 'h') ++p; }
-        else if (*p == 'l') { ++p; len_mod = 1; if (*p == 'l') ++p; }
-        else if (*p == 'z' || *p == 'j' || *p == 't') { ++p; len_mod = 1; }
+        if (*p == 'h') { lmod = "h"; ++p; if (*p == 'h') { lmod = "hh"; ++p; } }
+        else if (*p == 'l') { lmod = "l"; ++p; if (*p == 'l') { lmod = "ll"; ++p; } len_mod = 1; }
+        else if (*p == 'z') { lmod = "z"; ++p; len_mod = 1; }
+        else if (*p == 'j') { lmod = "j"; ++p; len_mod = 1; }
+        else if (*p == 't') { lmod = "t"; ++p; len_mod = 1; }
+        else if (*p == 'L') { lmod = "L"; ++p; }
 
         // ---- conversion ----
         char c = *p;
@@ -257,11 +261,27 @@ int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap)
                 fmt_str(o, va_arg(ap, const char*), f.width, f.prec, f.left);
                 break;
 
-            default:
-                // 未知转换：原样吐出 "%<c>"，便于暴露 bug
-                o.put('%');
+            // 浮点：[不实现]（对齐 Linux printk）。显式标记，且【不】va_arg
+            //   —— 本 formatter 绝不碰 XMM / FPU，保证 IRQ/early/panic 上下文安全。
+            case 'f': case 'F': case 'e': case 'E':
+            case 'g': case 'G': case 'a': case 'A':
+            {
+                o.put('<'); o.put('%');
+                for (const char* q = lmod; *q; ++q) o.put(*q);
                 o.put(c);
+                for (const char* q = "? unsupported>"; *q; ++q) o.put(*q);
                 break;
+            }
+
+            default:
+                // 未知转换：显式标记，别静默吐字面量（易被误读为“打出来了”）
+            {
+                o.put('<'); o.put('%');
+                for (const char* q = lmod; *q; ++q) o.put(*q);
+                o.put(c);
+                for (const char* q = "? unknown>"; *q; ++q) o.put(*q);
+                break;
+            }
         }
     }
 

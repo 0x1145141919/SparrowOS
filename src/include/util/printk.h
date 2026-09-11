@@ -81,6 +81,10 @@ struct log_sink
 
 // ——— 纯格式化引擎：无 I/O、无静态状态、可重入、可 host 单测 ———
 // 返回写入 out 的字节数（不含 NUL）；>= cap 表示发生截断。
+// 支持：%c %s %d %i %u %o %x %X %b(扩展) %p %% + flags(- + 空格 # 0)/width/precision/length。
+// 【不支持】：float（%f/%e/%g/…）→ 输出标记 `<%f? unsupported>` 且【不】读取参数
+//   （对齐 Linux printk；formatter 绝不碰 XMM/FPU，保 IRQ/early/panic 上下文安全）。
+//   未知转换 → 输出标记 `<%x? unknown>`（不静默吐字面量）。
 int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap);
 
 // ——— 文本 sink 可复用的默认前缀实现（可直接挂到 log_sink::render_prefix）———
