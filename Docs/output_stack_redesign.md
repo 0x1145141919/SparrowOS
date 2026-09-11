@@ -1,11 +1,11 @@
 # bsp_kout 肢解与权力真空填补草案（原「输出栈重构草案」）
 
 > 状态：**draft（待设计方确认）**
-> 版本：**v5 —— 性质变更：从「重构流式输出栈」转为「肢解 bsp_kout + 填补其权力真空」**（v4 `a0cb251`，v3 `3574cd5`，v2 `06ad24a`，v1 `0f077df`）
+> 版本：**v6 —— 补「printk 接口契约 & level 标记」**（v5 `37761f8`，v4 `a0cb251`，v3 `3574cd5`，v2 `06ad24a`，v1 `0f077df`）
 > 作者：Raven（AI 草案）
 > 日期：2026-09-11
 > 关联：`Docs/Debug/spdb_roadmap.md`、`Docs/Debug/debug_infra_decision_log_draft.md`、`Docs/kshell_framework_design.md`、`Docs/text_console_design.md`、`Docs/kout_tmp_buff.md`、`Docs/KERNEL_DISCIPLINE.md`
-> 标注约定：事实带 `file:line`；推断打 ⚠️；待拍板汇总在 **§9 对齐点清单**。
+> 标注约定：事实带 `file:line`；推断打 ⚠️；待拍板汇总在 **§10 对齐点清单**。
 
 ---
 
@@ -103,7 +103,56 @@ kshell transcript ──► chunked store（与 panic dump 共用同一引擎）
 
 ---
 
-## 5. kshell 缓冲的三分（关键：只有 transcript 落盘）
+## 5. printk 接口契约 & level 标记（v6 新增）
+
+### 5.1 签名（显式 level：偏离 Linux **编码**、同 Linux **语义**）
+
+- 核心（唯一 formatter 入口）：`void vprintk(log_level lvl, const char* fmt, va_list args)`
+- 面层：`printk(log_level lvl, const char* fmt, ...)` → `__printf(2, 3)` 保类型安全
+- 宏层（调用点手感对齐 Linux）：
+  ```cpp
+  #define pr_info(fmt, ...)  printk(log_level::INFO, fmt, ##__VA_ARGS__)
+  #define pr_err(fmt, ...)   printk(log_level::ERR,  fmt, ##__VA_ARGS__)
+  ```
+
+**与 Linux 的取舍**：Linux 把 level 焊进格式串前缀（`"\0016..."`，arg0 仍是字符串）；我们**用显式 arg0**。差异只在**编码**——
+
+| | 编码 | 优点 | 缺点 |
+|---|---|---|---|
+| Linux 式 | `KERN_INFO "..."` = `"\0016..."` 焊串 | 单变参、生态熟 | `\001` **魔法字节**（源码隐形、易漏）；**每条运行时解析前缀**（`printk_parse_prefix`）；忘写即静默降级 |
+| **本方案** | `printk(LOG_INFO, "...", ...)` | 无魔法字节、**可 grep**、level 是**编译期常量**、**免前缀解析** | 多一个参数（可忽略） |
+
+**语义完全对齐 Linux**：level **存进记录**（`{len, level, seq, ts}`）、**写侧全收**、**读侧过滤**。
+
+### 5.2 level 枚举（复用现有，钉死方向）
+
+- 直接复用 `src/include/abi/os_error_definitions.h:86` 的 `level_code`：`INVALID=0 < INFO=1 < NOTICE=2 < WARNING=3 < ERROR=4 < FATAL=5`。
+- ⚠️ 方向**与 Linux 相反**（Linux 0=EMERG 最严重；我们 5=FATAL 最严重）→ 阈值判定**统一写 `level >= threshold` 才输出**（沿用 v4 §3.3 的约定），文档钉死。
+- ⚠️ 现枚举**无低于 INFO 的 `DEBUG/TRACE`**；若要把高频调试赶出 ring，需补低端等级（见 5.4）。
+
+### 5.3 early / runtime / panic 的唯一化
+
+- **一个 formatter、一个核心签名**（early / runtime / panic 共用）。**禁止**为 early 分叉独立 API 或独立格式化代码——那正是"两套 kout"（`src/utils/` vs `src/init/util/`）的老账。
+- `early_printk(fmt, ...)` 只是**薄包装**：
+  ```cpp
+  #define early_printk(fmt, ...) printk(log_level::INFO, fmt, ##__VA_ARGS__)
+  ```
+  - **early 全部 INFO**（设计方 2026-09-11 定）。
+  - 传输顺序：**先写 dmesg ring，再发配屏幕 + polling UART**（三处各一份；早期三处均为 immediate）。
+  - ⚠️ ring 未就绪窗口：`DmesgRingBuffer::Init`（`exec_env_prepare.cpp:160`）之前 ring 不存在 → `if (ring_ready) 写 ring;` 再发屏 + UART（降级）。
+- **panic 走同一变参面**（对齐 Linux），但受三条约束：
+  1. formatter 与 runtime **共享**——**无锁、无分配、无 `%f`**；
+  2. panic 传输 = **dumper**（QR + 全量内存转储是 dumper 的活，见 `Docs/Panic/panic_qr_dmesg_dump_draft.md` / `panic_nvme_dram_dump_draft.md`）；
+  3. ⚠️ panic 时 ring 可能已回绕覆盖头部 → dumper 接受头部丢失，或双区 / 冻结。
+
+### 5.4 写侧全收 vs 高频调试（能力保留）
+
+- 默认**写侧全收**（除 panic 抑制），过滤只在读侧。
+- 编译期常量红利：`if constexpr (lvl >= kMinStored) return;` 的**零成本门控能力保留**，但**默认不开**；仅当"TRACE 确实不该进 ring"时启用（对应 Linux `dynamic_debug`）。
+
+---
+
+## 6. kshell 缓冲的三分（关键：只有 transcript 落盘）
 
 kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/kshell.cpp`）。它已有的状态只有 `line_editor_t{line,cap,len,cursor}` + `history_pool[64][256]`（`src/utils/kshell.cpp:18-58`）。所谓"独立缓冲区"要拆成三层语义：
 
@@ -118,19 +167,19 @@ kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/k
 
 ---
 
-## 6. 与 SpDB 排期的关系
+## 7. 与 SpDB 排期的关系
 
 - `Docs/Debug/spdb_roadmap.md`：**SpDB（e1000e）为唯一调试基座**（`Docs/Debug/debug_infra_decision_log_draft.md` 已确认，xDCI 否决）。
-- 本 v5 下，SpDB 的 **eth logcat = dmesg ring 的一个推式 reader**；**panic 物理区段落盘 = dumper**。→ **本改造成 SpDB 第 0 步**：模型就位后，SpDB 只需"注册一个 reader / dumper"。
+- 本方案下，SpDB 的 **eth logcat = dmesg ring 的一个推式 reader**；**panic 物理区段落盘 = dumper**。→ **本改造成 SpDB 第 0 步**：模型就位后，SpDB 只需"注册一个 reader / dumper"。
 
 ---
 
-## 7. 迁移计划
+## 8. 迁移计划
 
 | 步 | 内容 | 可验证点 |
 |----|------|----------|
-| **S0** | 修即时缺陷（§8 保留项）；补 **ring 读 API + 记录头** | ring 可被读；IRQ 写不死锁 |
-| **S1** | printk 落地（level 前缀宏 + 运行时 formatter）；驱动 / boot / memory 调用点迁移 | 输出等价、状态消失 |
+| **S0** | 修即时缺陷（§9 保留项）；补 **ring 读 API + 记录头** | ring 可被读；IRQ 写不死锁 |
+| **S1** | **printk 接口落地**（§5 契约：显式 level arg + 宏层 + 唯一 formatter）；驱动 / boot / memory 调用点迁移 | 输出等价、状态消失 |
 | **S2** | dmesg ring **全阶段写**（含 runtime）＋ 记录头 + cursor | runtime 也能 dmesg |
 | **S3** | kshell 框架接管屏幕 + 键盘（直连 `textconsole_GoP`）＋ 新增 `dmesg` 命令 | kshell 脱离日志管线；日志可查 |
 | **S4** | chunked store；接 kshell transcript + panic dump | 崩溃后能恢复 |
@@ -138,7 +187,7 @@ kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/k
 
 ---
 
-## 8. 缺陷清单（标注：随肢解自动消失 / 需保留处理）
+## 9. 缺陷清单（标注：随肢解自动消失 / 需保留处理）
 
 | # | 缺陷 | 去向 |
 |---|------|------|
@@ -153,7 +202,7 @@ kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/k
 
 ---
 
-## 9. 对齐点清单（**低带宽复核区**）
+## 10. 对齐点清单（**低带宽复核区**）
 
 > 请直接圈点：✅ 同意 / ✏️ 改 / ❌ 否。
 
@@ -168,12 +217,16 @@ kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/k
 - [ ] **D8** serial **不给** kshell（只给 printk）
 - [ ] **D9** ring 记录头 `{len, level, seq, ts}` + 读 API + 每读者 cursor
 - [ ] **D10** early / panic 直驱 + 三段所有权交接点
+- [ ] **D11** printk 签名 = **显式 level arg0 + 宏层**（偏离 Linux 编码、同 Linux 语义）
+- [ ] **D12** **early 全部 INFO**；`early_printk` = 薄包装（**不造第二个 formatter/API**）
+- [ ] **D13** formatter **唯一**（early/runtime/panic 共用）；panic 走同变参面
+- [ ] **D14** level 枚举**复用** `os_error_definitions.h`；阈值方向 `level >= threshold`
 
 ---
 
-## 10. 开放问题
+## 11. 开放问题
 
-- ⚠️ 仓内已有**未跟踪** `src/include/util/kstream.h`：探索"backend 按上下文重分类"（`udp_style` / `syn_thread` / `syn_mechain`）。**与本 v5 的"删路由"方向互斥** → 需设计方裁定**保留 / 废弃**。
+- ⚠️ 仓内已有**未跟踪** `src/include/util/kstream.h`：探索"backend 按上下文重分类"（`udp_style` / `syn_thread` / `syn_mechain`）。**与本方案的"删路由"方向互斥** → 需设计方裁定**保留 / 废弃**。
 - `PANIC_WILL_ANALYZE`(stage=2) 归属？（现路由到 `early_write`）
 - KURD 呈现：独立 `kurd_str()` vs printk 格式指令（`%K`）
 - ring 锁策略：全局 irq-save vs 每核无锁
@@ -181,4 +234,4 @@ kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/k
 
 ---
 
-*v5 由 AI 按设计方 2026-09-11 论点重构（性质：肢解 + 权力真空填补；printk/dmesg 对齐 Linux；kshell 接管 runtime 屏幕 + 键盘）。推断（⚠️）与决策点（D*）需设计方确认后升为 spec。*
+*v6 由 AI 按设计方 2026-09-11 论点重构（v5：肢解 + 权力真空；v6：补 printk 接口契约——显式 level arg + 宏层 + early=INFO + panic 变参）。推断（⚠️）与决策点（D*）需设计方确认后升为 spec。*
