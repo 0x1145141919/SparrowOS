@@ -14,6 +14,7 @@
  *
  *   printk(level, fmt, ...)            面层：变参 + __printf 类型安全
  *     └─ vprintk(level, sink, fmt, ap) 核心（栈上 buf，单临界区）：
+ *           ts = now_ts();                                        // extern "C"，外部接入
  *           n  = sink->render_prefix(self, buf, cap, level, ts);  // 前缀（各 sink 自定）
  *           n += kvformat(buf + n, cap - n, fmt, ap);             // body
  *           sink->emit(self, buf, n);                             // 一发
@@ -37,6 +38,13 @@
 #include <stdint.h>
 #include "abi/os_error_definitions.h"
 #include "util/lock.h"
+
+extern "C"
+{
+// —— 时基：由外部实现（ktime / tsc / host 假时钟…），返回纳秒；未就绪返回 0 ——
+// ⚠️ 本头文件【不绑定】具体实现 —— 谁接入谁提供符号。ts==0 时前缀省略时间戳段。
+uint64_t now_ts();
+}
 
 namespace klog
 {
