@@ -1,218 +1,184 @@
-# 输出栈重构草案（Output Stack Redesign）
+# bsp_kout 肢解与权力真空填补草案（原「输出栈重构草案」）
 
 > 状态：**draft（待设计方确认）**
-> 版本：**v4 —— 考古修正：调度器(2026-02)早于 NVMe(2026-04)**（v3 `3574cd5`，v2 `06ad24a`，v1 `0f077df`）
+> 版本：**v5 —— 性质变更：从「重构流式输出栈」转为「肢解 bsp_kout + 填补其权力真空」**（v4 `a0cb251`，v3 `3574cd5`，v2 `06ad24a`，v1 `0f077df`）
 > 作者：Raven（AI 草案）
-> 日期：2026-09-10
-> 关联：`Docs/kout_tmp_buff.md`、`Docs/Debug/spdb_roadmap.md`、`Docs/kshell_framework_design.md`、`Docs/KERNEL_DISCIPLINE.md` §11
-> 标注约定：事实带 `file:line`；推断打 ⚠️；待拍板汇总在 **§7 对齐点清单**。
+> 日期：2026-09-11
+> 关联：`Docs/Debug/spdb_roadmap.md`、`Docs/Debug/debug_infra_decision_log_draft.md`、`Docs/kshell_framework_design.md`、`Docs/text_console_design.md`、`Docs/kout_tmp_buff.md`、`Docs/KERNEL_DISCIPLINE.md`
+> 标注约定：事实带 `file:line`；推断打 ⚠️；待拍板汇总在 **§9 对齐点清单**。
 
 ---
 
-## 0. 根因（一句话）
+## 0. 性质变更（v4 → v5）
 
-**`bsp_kout` 是前调度器时代（2025-08）为「非中断轮询串口」写的「老将」——在那个年代它是合理的。** 它的设计前提是**无调度、无并发、单路同步**；而**调度器于 2026-02 落地、NVMe 于 2026-04 落地**，前提相继崩塌。真正的问题是：**runtime / kshell / panic 的多场景 I/O 栈需求，把这份纠缠已久的历史债务彻底挖掘了出来**——这份债**必须重构清偿**。
+v4 及以前的所有版本，前提都是「**bsp_kout 要保留，重构它内部的流式输出栈**」（Record/Sink/Channel/Drainer 四层、场景 kout、静态后端编排）。
 
-> 这不是「一个 kout 解决一切的野心」，而是**随时间累积、被新需求暴露的历史债务**。准确说：调度器到来时就该暴露（runtime vs early 分化），却**直到 NVMe 落成仍未清偿**。
-> 类比 STL streams：今天要求 `ifstream`/`cout`/`cerr` 各司其职——可 `bsp_kout` 出生时压根没有这些场景。
+v5 的结论相反：**bsp_kout 不要了**。任务据此重述为两步：
 
----
+1. **肢解** —— bsp_kout 越权接下的多摊活，逐一判归其主；
+2. **填补权力真空** —— 它撤走后，被它顺手占着的「终端设备」「日志路由」「early/panic 直写」出现空位，必须有人接手。
 
-## 1. 论点（三箭）
+促成这次转折的两个认识：
 
-### 1.0 债务的两个侧面（历史前提已崩塌）
-
-当年前提：**无调度器 → 单路、同步、无并发**，输出只有「早期启动」一种场景。今天前提的反面全部成立：
-
-- **A 面（结构债务）**：一个 `bsp_kout` 要同时服务早期、runtime、kshell、panic，被迫把所有场景的行为塞进一个 backend 结构 → **backend 膨胀**；kshell 只能借道日志管线 → **退格等 UI 需求难以实现**。
-- **B 面（状态债务）**：`bsp_kout` 是 **BSS 全局对象**，是「无并发」时代的产物（多线程不友好）；且内部携带**长生命周期进制子状态**，其编排范式 **AI 不友好**（谁改了状态、何时复位，靠人脑记忆）。
-
-→ 二者是**同一份历史债务**：在「无调度、无并发、单路同步」下攒成，如今被 runtime/kshell/panic 的复杂需求挖出。
-
-### 1.1 箭一（**结构性修复**，本草案重心）：不同场景 → 不同 kout
-
-- 每个场景一个 kout 对象：`log_kout` / `kshell_kout` / `panic_kout`（可再细分）。
-- **附带红利**：每个 kout 的后端数目上限**可在编译期按业务预测** → **外部编排引索、静态分配**（消掉 `register_backend` 的 `new` 与膨胀）。
-
-> 这一箭清偿 **backend 膨胀 + kshell 难以改造**，是历史债务的直接解。
-
-### 1.2 箭二（**工程抉择**）：长线 kout 的进制子状态 → `tmp_buffer` 一律栈上
-
-- 问题 1：`kout` 内部进制子状态的编排范式 **AI 不友好**。
-- 问题 2：`kout` 在 **BSS 区、多线程不友好**。
-- 解法：一律 `tmp_buffer`、**栈上分配**；内部仍保留进制选择，但**可在栈上安全调整**（per-record，不被并发/后续代码污染）。
-
-### 1.3 箭三（**工程抉择**）：level 数码比较
-
-- `kout` 与 `tmp_buffer` 各带内部**数码（`level_code`）**，比较决定是否打印 → 实现不同日志等级。
+- **(a) 能力翻转**：C++ `operator<<` 方案（把格式解决放到**编译期**）本质是 **bsp_kout 时代 agent 太弱时的拐杖**——不必写运行时 formatter。如今 agent 足够强，**printk（运行时格式）全面胜出**：一次函数调用 = 一条语义完整语句，每个数码格式**当次无状态**指定；丢失的编译期类型安全由 `__attribute__((format(printf,…)))` 找回。→ **v4 的箭二/箭三随 C++ 层一起作废**。
+- **(b) Linux 模型足够简**：dmesg/printk = **纯内存 ring + 读侧过滤 + 拉取**；panic/落盘有 `kmsg_dump` + `pstore/zone`（定长记录 + magic + counter + 回绕 + 开机恢复）现成范式可抄。
 
 ---
 
-## 2. 现状证据（服务论点）
+## 1. 根因（修正版）
 
-### 2.0 历史考古（归因依据）
+- 历史：`bsp_kout` 是**前调度器时代（2025-08）为「非中断轮询串口」写的**（提交 `b6b6751`），比调度器（`7072c3f`, 2026-02-11）早约 **5.5 个月 / 54 提交**。
+- 但真正的病不在"历史"本身，而在**越权**：它把三种**正交**的关注点焊死在一个类里——
+  - **A 格式化**（数据 → 文本）
+  - **B 传输 / 持久化**（文本 → 目的地）
+  - **C 交互终端控制**（设备状态：光标 / 清屏 / echo）
+- **量化**（全树审计，`bsp_kout` 调用点 **1188 处 / ~55 文件**）：
 
-| 事件 | 提交 | 日期 | 说明 |
-|------|------|------|------|
-| **`bsp_kout` 诞生**（「实现基本输出驱动，**非中断串口驱动**」） | `b6b6751` | 2025-08-28 | 前调度器时代：单路、同步、无并发 |
-| backend 模型 `src/include/util/kout.h` 引入 | `a5bbd89` | 2026-01-10 | 债务的「增生」阶段 |
-| **调度器基础落地** | `7072c3f` | 2026-02-11 | 距 bsp_kout 约 **5.5 个月 / 54 个提交** |
-| `tmp_buff`（「支持并发日志输出」）引入 | `f76b6bd` | 2026-03-26 | 箭二方向**已部分起步，未完成** |
-| **NVMe 控制器** | `b1d68ab` | 2026-04-28 | runtime 场景真正分化 |
-| `scheduler: 6 头文件拆分`（**仅拆分，非诞生**） | `9859e53` | 2026-07-11 | ⚠️ 易被误认作「调度器诞生」 |
+| 用途分桶 | 调用点 | 占比 |
+|---|---|---|
+| **kshell / UI（越权最重）** | 524 | **44%** |
+| panic | 100 | 8% |
+| tests | 74 | 6% |
+| 其余内核代码（drivers / boot / memory / init） | 490 | 41% |
 
-→ 准确时间线：`bsp_kout` 早于调度器约 **5.5 个月 / 54 个提交**；**调度器（2026-02）先于 NVMe（2026-04）**。前半段债务在「无调度」下攒成，调度器到来即应暴露（runtime vs early 分化），却**直到 NVMe 落成仍未清偿**。归因据此：**历史债务**，而非设计野心。
-
-### 2.1 单一 `bsp_kout` → backend 膨胀
-
-`src/include/util/kout.h`：`kout_backend` 带 **5 个函数指针**，把三个 stage 的传输塞一起：
-
-```c
-void (*running_stage_write)(const char*, uint64_t);
-void (*running_stage_putchar)(char);
-void (*running_stage_num)(uint64_t, num_format_t, numer_system_select);
-void (*panic_write)(const char*, uint64_t);
-void (*early_write)(const char*, uint64_t);
-```
-
-**决定性证据** —— `src/arch/x86_64/core_hardwares/x86_arch/PortDriver.cpp:199`，同一个 COM1：
-
-```c
-running_stage_write   = backend_submit_write,   // runtime: 投 ring
-running_stage_putchar = backend_submit_putchar,
-running_stage_num     = backend_submit_num,
-panic_write           = polling_puts,           // panic: busy-poll 同步
-early_write           = polling_puts,           // early: busy-poll 同步
-```
-
-→ **三套不同传输**硬塞进一个 struct，靠 `uniform_puts`（`src/utils/kout.cpp:306` 的 `switch(GlobalKernelStatus)`）每次挑选。
-
-### 2.2 kshell 绑定 `bsp_kout` → 退格困难
-
-- `Docs/kshell_framework_design.md:10`：「输出：统一使用 `bsp_kout`」。
-- `src/utils/kshell.cpp:37,45`：`bsp_kout << '\b';`（退格经日志管线发）。
-- `src/arch/x86_64/core_hardwares/i8042/i8042_kshell.cpp:397,625,701`：`bsp_kout << "\\b";`（打印**字面** `\b` 字符串）。
-
-→ kshell 只需要"向屏幕上屏/退格"，却借道日志后端；屏上与日志需求不一致，退格/光标一类操作实现别扭。
-
-### 2.3 panic 场景需求**相反**：不可睡眠、必须同步
-
-- `src/init/panic.cpp:29` 注释：「无条件切换 CPU 资源，**使用 BSP 的 EARLY_BOOT 那一套**」。
-- panic 走 busy-poll 直写（`polling_puts`），**不能依赖调度/中断/睡眠**。
-
-→ 与 runtime（可异步、投 ring）需求相反，挤一个对象必然畸形。
-
-### 2.4 `kout` 的 BSS 全局态 + 长生命周期进制 → AI 不友好 + 货不对版
-
-- `kout` 持 `curr_numer_system` + `shift_bin/dec/hex()`（`src/include/util/kout.h:47`）：**进制是挂共享对象上的可变全局态**；`tmp_buff` 另有一套 `num_sys` → **两套状态机**。
-- 货不对版实证：
-
-| 位置 | 现象 |
-|------|------|
-| `src/init/panic.cpp:48` | `shift_hex()` 后**从不复位** → 其后输出全变 hex |
-| `src/init/pages_alloc.cpp:600,610` | 区间内 `index`、`NumberOfPages`、`(size/1024) KB` **一起被打成 hex** |
-| `src/arch/x86_64/core_hardwares/PCIe/PCIe.cpp:23,46,68,...` | 多处 `shift_hex()`，靠后续调用自觉收尾 |
-
-### 2.5 两套实现并存
-
-`src/utils/kout.cpp`（新）与 `src/init/util/kout.cpp`（旧）各被 CMake 两 target 编译（`CMakeLists.txt:150` 与 `:210`）。
+→ **kshell 一家吃掉 44%**：越权不是零星，是主干。
 
 ---
 
-## 3. 目标架构
+## 2. 肢解：bsp_kout 名下的 7 摊活与归属
 
-### 3.1 场景 kout + 静态后端编排（箭一）
+| # | 现活 | 现状证据 | 归属 |
+|---|------|----------|------|
+| 1 | 格式化引擎（`operator<<` 家族 / `print_numer` / KURD 解释 / `now_time`） | `src/include/util/kout.h`；`src/utils/kout.cpp:164-260,676` | **printk formatter**（KURD → `kurd_str()`；时间戳由 ring 提供） |
+| 2 | 进制状态机（`shift_*` + `curr_numer_system`） | `src/include/util/kout.h:47`；约 51 处调用 | **删除**（format 串取代） |
+| 3 | 路由 / 分发（`register/mask/unregister_backend` + `uniform_puts` 按 `GlobalKernelStatus` 选 stage + `backends[]`） | `src/include/util/kout.h`；`src/utils/kout.cpp` `uniform_puts` | **删除**（路由下沉到读者） |
+| 4 | 传输后端（uart ring / textConsole ring / dmesg / USER_MODE） | `src/arch/x86_64/core_hardwares/x86_arch/PortDriver.cpp:199-203`；`src/utils/kout.cpp:559-569` | **reader / dumper**（见 §3、§4） |
+| 5 | 交互终端 UI（行编辑 / `\b` / `\a` / 清行 / 命令输出） | `src/utils/kshell.cpp:24-45,691-706`；`src/arch/x86_64/core_hardwares/i8042/i8042_kshell.cpp:397,625,701` | **kshell 框架**（独占屏幕 + 键盘） |
+| 6 | 统计 `statistics` | `src/utils/kout.cpp:670`（仅自读） | **并入 printk/ring 计数，或删** |
+| 7 | USER_MODE stdout/stderr | `src/utils/kout.cpp` 11 处 `write(1/2)` | host 侧 printk stub |
+
+---
+
+## 3. 权力真空与填补
+
+bsp_kout 撤走后，留下 **3 个真空 + 1 个缺口**：
+
+- **真空①：终端设备（屏幕 + 键盘）无人持有。** 今天它被 bsp_kout 的 sink 隐式占用（uart ring + textConsole ring）。→ **kshell 框架接管**，且 **runtime 独占**（见下方三段所有权）。
+- **真空②：日志路由 / 分发无人做。** → **不做**：printk 只认 ring；分发下沉到"读者注册表"（推式：UART / eth / dump；拉式：kshell 新命令）。
+- **真空③：early / panic 的直写通道。** 今天靠 backend 的 `early_write` / `panic_write`（`PortDriver.cpp` 的 `polling_puts`）。→ **统一 printk 接口 + 早期降级实现**（UART polling）；panic 走 dumper。
+- **缺口：ring 没有读 API。** `src/utils/kcirclebufflogMgr.cpp` 只有 `Init` / `putsk`，**没有任何 reader**（本次审计确认）→ 必须补：**记录头 `{len, level, seq, ts}` + 读 API + 每读者 cursor**。
+
+**屏幕所有权按阶段切三段**（"kshell 独占"只在 runtime 成立）：
 
 ```
-场景（调用者） ──► 该场景的 kout ──► 该 kout 的 backend 表（编译期定上限、外部编排引索）
-  log                    log_kout         [console, dmesg, spdb-eth, (file)]
-  kshell                 kshell_kout      [GOP text console]
-  panic                  panic_kout       [fb, 预注册物理区段]
+early boot ：boot 直驱 textconsole_GoP（kshell 未起）→ UART polling 兜底
+runtime    ：kshell 框架【独占】屏幕 + 键盘
+panic      ：panic 路径直驱（kshell 不在）
 ```
 
-- **无全局 current 指针**：调用者用**它认识的场景 kout**，不做运行时挑选。
-- **后端槽位数上限按业务静态预测**，由场景定义处**外部编排引索**（固定区间、静态分配）→ 消掉 `register_backend` 的 `new`（`src/utils/kout.cpp:702`）。
-- kshell 用自己的 kout → 退格/清屏/光标等 UI 操作可**直连 GOP 控制台**（`textconsole_GoP::PutChar/Clear`），不再借道日志。
+---
 
-### 3.2 `tmp_buffer` 一律栈上（箭二）
+## 4. 目标架构（两个接盘侠 + 两个共享设施）
 
-- 唯一 formatter；`LOG(lvl) << ...` 在栈上建 Record（无线程安全、随作用域回收）。
-- 进制选择搬进 buffer：`buf << HEX` 改 `num_sys`，每个数值 entry **append 时快照** → 每条记录自带进制，**免疫并发与后续代码污染**。
-- `kout` 侧只保留 `operator<<(tmp_buffer&)`（消费/投递）。
+```
+printk(fmt, ...)  ──►  dmesg ring（纯内存，全阶段统一，记录头 {len, level, seq, ts}）
+                          │
+                          ├─ 拉取 reader ──► kshell 新命令（如 dmesg / log）
+                          ├─ 推式 reader ──► UART drainer（串口调试）
+                          ├─ 推式 reader ──► eth logcat（SpDB）
+                          └─ dumper      ──► chunked store（panic / 落盘）
 
-### 3.3 level 数码比较（箭三）
+textconsole_GoP（物理渲染原语：PutChar / Clear / 光标）
+   ├─ kshell 框架（runtime：独占屏 + 键盘；编辑态 + 历史 + transcript）
+   ├─ early 直驱
+   └─ panic 直驱
 
-- `level_code`（`src/include/abi/os_error_definitions.h:86`）：`INVALID=0 < INFO=1 < NOTICE=2 < WARNING=3 < ERROR=4 < FATAL=5`。
-- Record 带 level；每个 sink/backend 带 `min_level`；`record.level >= sink.min_level` 才打印，否则丢弃**并计数**（`suppressed_count`，不可静默）。
-- 顶部宏短路：`if (lvl < g_min_level) return;` → 没人要就不建 Record。
-- ⚠️ INFO 以下无 `DEBUG/TRACE`；若要让某 sink 更啰嗦需补低端等级。
+kshell transcript ──► chunked store（与 panic dump 共用同一引擎）
+```
 
-### 3.4 场景内的上下文约束（← 你上轮的 P3，作为**机制**保留）
-
-不同场景的**上下文契约不同**，且 kshell/panic 各自独立后，剩下的痛点在 **log 场景**（它既被进程上下文、也被 IRQ 调用，而后端里有**可阻塞**者如文件）：
-
-- 后端按上下文分：**immediate**（任何上下文安全：fb、UART polling）／**deferred**（may-block：文件、eth 慢路径）。
-- **可阻塞后端永不直接被 producer 调用**，只由 **drainer（可睡眠 kthread）** 喂；IRQ/原子/panic 上下文只落 immediate。
-- **旁证**：`textconsole_GoP` **已经**自带 `RuntimeServiceThread` + `RuntimeSubmit*`（`src/include/util/textConsole.h:89`）——producer 投递、服务线程排空的 **drainer 模式你们已用过**，只是没推广到日志。
+- **接盘侠①：dmesg ring** —— 纯内存、全阶段统一、写侧全收、**读侧过滤**（level 只在读者生效）。
+- **接盘侠②：kshell 框架** —— 独占 runtime 屏幕 + 键盘；行编辑 + 光标 + 历史。
+- **共享设施 A：`textconsole_GoP`** —— 物理渲染原语，被 kshell / early / panic 三方共用，**不归任何一方**（现成：`src/include/util/textConsole.h` 网格模型；`src/arch/x86_64/boot/kinit.cpp:148`、`exec_env_prepare.cpp:177-180`）。
+- **共享设施 B：chunked record store** —— 定长记录 + magic + counter + 回绕 + 开机恢复；**kshell transcript 与 panic dump 共用**（**别造两套引擎**）。
 
 ---
 
-## 4. 与 SpDB 排期的关系
+## 5. kshell 缓冲的三分（关键：只有 transcript 落盘）
 
-`Docs/Debug/spdb_roadmap.md` 要新增两个后端：**runtime 以太网 logcat**、**panic 预注册物理区段裸写**——恰好分别落到 **log_kout 的 deferred 表** 与 **panic_kout**。**本改造是 SpDB 第 0 步**：模型就位后，SpDB 只需"注册一个后端"，不碰调用点。
+kshell 现在**没有任何输出缓冲**，输出直灌 bsp_kout（`src/utils/kshell.cpp`）。它已有的状态只有 `line_editor_t{line,cap,len,cursor}` + `history_pool[64][256]`（`src/utils/kshell.cpp:18-58`）。所谓"独立缓冲区"要拆成三层语义：
 
----
+| 层 | 语义 | 落盘 |
+|---|------|------|
+| **编辑态**（行 / 光标） | 实时 UI，可回退可擦（是"状态"不是"序列"） | ❌ |
+| **历史**（命令） | 小、固定 64×256 | 随 transcript |
+| **transcript**（会话流水） | **只追加**（`提示符 + 定稿命令 + 输出`） | ✅ **chunked store 的对象** |
 
-## 5. 迁移计划（按三箭）
-
-| 步 | 对应 | 内容 | 可验证点 |
-|----|------|------|----------|
-| **S0** | 箭二 | 冻结 kout 进制状态：删 `curr_numer_system`/`shift_*`/数值重载，只留 `operator<<(tmp_buffer&)`；过渡 shim（`bsp_kout<<X` 内部临时建 Record 再 flush，radix 来自 buffer） | panic 后不再"变 hex"；调用点语义不变 |
-| **S0.5** | — | 修 §6 即时 bug（`DmesgRingBuffer` rwlock、register/mask/unregister） | IRQ 写 ring 不再死锁 |
-| **S1** | 箭一 | 拆场景 kout（log/kshell/panic）＋静态后端编排；删 `kout_backend` 5 指针与 `uniform_puts` 的 stage 分支 | kshell 脱离日志管线；`new` 消失 |
-| **S2** | 箭三 | level 数码比较 ＋ `suppressed_count` ＋ 宏短路 | 分级打印可按 sink 配置 |
-| **S3** | 3.4 | log 场景内 immediate/deferred 分离 ＋ drainer（复用 `creat_kthread`） | FS 未起时日志积压、起后落盘 |
-| **S4** | §4 | 接 FS 文件后端 ＋ SpDB eth/panic 后端 | 新后端零调用点改动 |
-
-> **决策点 D-mig**：是否先 S0.5（低风险高收益）再进 S0。
+- **渲染复用 `textconsole_GoP`**（网格 / 光标 / 清屏），kshell **不自造网格**、也**不走 dmesg**。
+- ⚠️ **编辑过程不进 transcript，只有定稿行进** —— 这正好让 transcript 成为干净的可持久化序列。
 
 ---
 
-## 6. 待修缺陷清单（可直接当 TODO）
+## 6. 与 SpDB 排期的关系
 
-1. `src/utils/kout.cpp:702` `register_backend` 用 `new` → 静态分配。
-2. `src/utils/kout.cpp:722` `mask_backend` 语义反了（只 unmask）。
-3. `src/utils/kout.cpp:713` `unregister_backend` delete 后不置空 → 悬垂/double free。
-4. `src/utils/tmp_buff.cpp` 满时静默丢 → 加 `dropped_count` ＋ 溢出标记。
-5. `src/include/kcirclebufflogMgr.h` `DmesgRingBuffer` 用 rwlock → IRQ 死锁隐患，改无锁/每核。
-6. `defalut_KURD_module_interpator`（`src/utils/kout.cpp`）在 flush 持锁时回调 `bsp_kout` → 核实自锁（spinlock 可重入性）。
-7. 两套 kout 实现（`src/utils/` vs `src/init/util/`）→ 统一或明确边界。
-8. `print_numer` 把格式化泄漏给 `running_stage_num` hook → 后端 sink 化后去掉 num hook。
+- `Docs/Debug/spdb_roadmap.md`：**SpDB（e1000e）为唯一调试基座**（`Docs/Debug/debug_infra_decision_log_draft.md` 已确认，xDCI 否决）。
+- 本 v5 下，SpDB 的 **eth logcat = dmesg ring 的一个推式 reader**；**panic 物理区段落盘 = dumper**。→ **本改造成 SpDB 第 0 步**：模型就位后，SpDB 只需"注册一个 reader / dumper"。
 
 ---
 
-## 7. 对齐点清单（**低带宽复核区**）
+## 7. 迁移计划
+
+| 步 | 内容 | 可验证点 |
+|----|------|----------|
+| **S0** | 修即时缺陷（§8 保留项）；补 **ring 读 API + 记录头** | ring 可被读；IRQ 写不死锁 |
+| **S1** | printk 落地（level 前缀宏 + 运行时 formatter）；驱动 / boot / memory 调用点迁移 | 输出等价、状态消失 |
+| **S2** | dmesg ring **全阶段写**（含 runtime）＋ 记录头 + cursor | runtime 也能 dmesg |
+| **S3** | kshell 框架接管屏幕 + 键盘（直连 `textconsole_GoP`）＋ 新增 `dmesg` 命令 | kshell 脱离日志管线；日志可查 |
+| **S4** | chunked store；接 kshell transcript + panic dump | 崩溃后能恢复 |
+| **S5** | **删除 bsp_kout**（两套实现）＋ `backends` / `uniform_puts` / `shift_*` / `tmp_buff` 收尾 | 调用点清零 |
+
+---
+
+## 8. 缺陷清单（标注：随肢解自动消失 / 需保留处理）
+
+| # | 缺陷 | 去向 |
+|---|------|------|
+| 1 | `register_backend` 用 `new` | **随 #3 删除消失** |
+| 2 | `mask_backend` 语义反了（只 unmask） | **随 #3 消失** |
+| 3 | `unregister_backend` delete 不置空 → 悬垂 / double free | **随 #3 消失** |
+| 4 | `tmp_buff` 满时静默丢 | **随 tmp_buff 删除消失**（或并入 printk 计数） |
+| 5 | `DmesgRingBuffer` 用 `spinrwlock_cpp_t` | **需保留处理**（改无锁 / irq-save / 每核） |
+| 6 | `defalut_KURD_module_interpator` 在 flush 持锁回调 `bsp_kout` → 自锁隐患 | **随 `uniform_puts`/backends 消失** |
+| 7 | 两套 kout 实现（`src/utils/` vs `src/init/util/`） | **随肢解消失** |
+| 8 | `print_numer` 把格式化泄漏给 `running_stage_num` hook | **消失**（printk 自带 formatter） |
+
+---
+
+## 9. 对齐点清单（**低带宽复核区**）
 
 > 请直接圈点：✅ 同意 / ✏️ 改 / ❌ 否。
 
-- [ ] **D0** 承认归因 ＝「**前调度器时代的历史债务**被复杂 I/O 需求挖掘」（非设计野心）；三箭中**箭一为结构性修复（清偿核心债务）**、箭二/箭三为工程抉择。
-- [ ] **D1** 场景 kout 划分：`log_kout` / `kshell_kout` / `panic_kout`（是否还有其它场景？）
-- [ ] **D2** 后端**静态编排引索**：每个 kout 槽位上限定死、外部编排（确认采纳）
-- [ ] **D3** `kshell_kout` 是否**完全**直连 GOP 控制台（自带 UI 操作），不做 Record？
-- [ ] **D4** 箭三 level：是否补 `TRACE/DEBUG`（低于 INFO）？是否引入编译期等级？
-- [ ] **D5** §3.4 上下文约束：log 场景内 immediate/deferred 分离 ＋ drainer（确认保留）
-- [ ] **D6** panic 时是否把 dmesg 内容带进崩溃报告（读已写 ring，还是主动 dump）？
-- [ ] **D7** drainer 的 ring：**每核无锁** vs **全局 irq-save 锁**？
-- [ ] **D8** 迁移顺序：先 S0.5 再 S0，还是并行？
+- [ ] **D0** 归因 = **越权（三关注点焊死）+ agent 能力翻转**（"历史债务"叙事降为背景）
+- [ ] **D1** **bsp_kout 删除**（非重构）
+- [ ] **D2** printk 对齐 Linux：纯内存 / 全阶段统一 / 写侧全收 / **读侧过滤** / 拉取
+- [ ] **D3** kshell 框架**接管屏幕 + 键盘**，runtime 独占
+- [ ] **D4** kshell **常驻**（避免"退出后屏幕无主"的边界）
+- [ ] **D5** transcript = `提示符 + 定稿命令 + 输出`；**只有它落盘**
+- [ ] **D6** chunked store **共用引擎**（kshell transcript + panic dump）
+- [ ] **D7** 访问内核日志 = **kshell 新命令**（如 `dmesg`）
+- [ ] **D8** serial **不给** kshell（只给 printk）
+- [ ] **D9** ring 记录头 `{len, level, seq, ts}` + 读 API + 每读者 cursor
+- [ ] **D10** early / panic 直驱 + 三段所有权交接点
 
 ---
 
-## 8. 开放问题（待讨论）
+## 10. 开放问题
 
-- `PANIC_WILL_ANALYZE`(stage=2) 归哪类？（现路由到 early_write）
-- 渲染器一份 vs 每个场景自带渲染（kshell 要控制序列，日志不要）→ 是否需要一个 `UI` 专用 Record 类型？
-- deferred 的顺序性：单 drainer 保序；多 drainer 需分区。
+- ⚠️ 仓内已有**未跟踪** `src/include/util/kstream.h`：探索"backend 按上下文重分类"（`udp_style` / `syn_thread` / `syn_mechain`）。**与本 v5 的"删路由"方向互斥** → 需设计方裁定**保留 / 废弃**。
+- `PANIC_WILL_ANALYZE`(stage=2) 归属？（现路由到 `early_write`）
+- KURD 呈现：独立 `kurd_str()` vs printk 格式指令（`%K`）
+- ring 锁策略：全局 irq-save vs 每核无锁
+- early 屏幕 → kshell 的**具体交接点**（`DmesgRingBuffer::Init` @ `exec_env_prepare.cpp:160` 之后、kshell 起之前，谁驱屏？）
 
 ---
 
-*v4 由 AI 按设计方 2026-09-10 论点重构（归因：历史债务；调度器早于 NVMe）；推断（⚠️）与决策点（D*）需设计方确认后升为 spec。*
+*v5 由 AI 按设计方 2026-09-11 论点重构（性质：肢解 + 权力真空填补；printk/dmesg 对齐 Linux；kshell 接管 runtime 屏幕 + 键盘）。推断（⚠️）与决策点（D*）需设计方确认后升为 spec。*
