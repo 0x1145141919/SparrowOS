@@ -2,23 +2,23 @@
 /**
  * printk —— 唯一内核日志面层（formatter + log_sink），bsp_kout 的接替者。
  *
- * ⚠️ 接口契约方向已冻结（方案 B + 单 sink 模型）；实现细节随讨论演化。
+ * ⚠️ 接口契约方向已冻结（方案 B + 单 sink + 外部缓冲）；实现细节随讨论演化。
  *    设计交流以本文件变更为锚点（草稿文档已删，见 commit a46f730）。
  *
  * 模型：
- *   - vprintk 只对【一个】log_sink 发一条日志，一发一条，一次临界区。
- *   - 由 sink 自行决定「怎么落地」：
- *       · ring  sink → 结构化存（二进制记录头 + body）           ← runtime 唯一目的地
- *       · text  sink → 自己渲染前缀 + body（各后端样式自定）
- *   - runtime printk【绑死】ring：改 screen/uart 都动不到它。
- *   - early_printk【特殊】：多组 vprintk（ring/uart/gop…），
- *     每组各一次临界区，body 各格式化一次（early 罕见，可接受）。
+ *   - 调用侧【栈上】备 char buf，前缀由【sink 自己的前缀函数】写进 buffer，
+ *     body 由 kvformat 接着写，最后一发 emit 整条吐出 —— 无堆分配。
+ *   - vprintk 只对【一个】log_sink 发一条，一发一条，一次临界区。
+ *   - runtime printk【绑死】ring sink；early_printk 特殊：多组 vprintk（ring/uart/gop），
+ *     每组各一次临界区。
  *
  *   printk(level, fmt, ...)            面层：变参 + __printf 类型安全
- *     └─ vprintk(level, sink, fmt, ap) 核心：kvformat 一次 → 持 sink 锁 → sink->emit 一次
- *           └─ sink->emit(self, level, ts, body, len)   一发一条，原子
- *                 ├─ ring_sink.emit → 二进制头 {len,level,seq,ts} + body（读侧过滤）
- *                 └─ text_sink.emit → render_prefix() + body（UART/屏/early）
+ *     └─ vprintk(level, sink, fmt, ap) 核心（栈上 buf，单临界区）：
+ *           n  = sink->render_prefix(self, buf, cap, level, ts);  // 前缀（各 sink 自定）
+ *           n += kvformat(buf + n, cap - n, fmt, ap);             // body
+ *           sink->emit(self, buf, n);                             // 一发
+ *                 ├─ ring_sink：render_prefix 写二进制头{len,level,seq,ts}；emit 落环
+ *                 └─ text_sink：render_prefix 写 "[  ts] <LEVEL> "；emit 写设备（UART/屏）
  *
  * 契约（红线）：
  *   1) formatter 唯一：kvformat（early/runtime/panic 共用）；无锁/无分配/无浮点。
@@ -31,8 +31,7 @@
  *      printk 会在 IRQ 上下文被调用（NVMe AER, NVMe_interrupts.cpp:134/156/223），
  *      裸 spinlock_cpp_t::lock() 会「线程持锁 → IRQ 里 printk → 同 CPU 自旋死」。
  *   5) panic 不走本路径：crash 现场可能正持 sink_lock，取锁即死 → panic 走 dumper 旁路。
- *   6) 无 fanout / 无全局 router：多目的地 = 多次 vprintk（early 特例），
- *      不是 vprintk 内部分流。
+ *   6) 无 fanout / 无全局 router：多目的地 = 多次 vprintk（early 特例）。
  */
 #include <cstdarg>
 #include <stdint.h>
@@ -47,18 +46,24 @@ namespace klog
 using level_t = uint8_t;
 namespace level = level_code;
 
-// 单行 body 上限（栈缓冲；超额截断并打 "...[truncated]" 标记）。对齐 Linux LOG_LINE_MAX。
+// 单行上限（栈缓冲；超额截断并打 "...[truncated]" 标记）。对齐 Linux LOG_LINE_MAX。
 constexpr uint32_t LOG_LINE_MAX = 1024;
 
-// ——— log_sink：一条日志的落地原语 ———
-// 「函数指针 + io_ctx 复合体」：指针负责落地，self 携带上下文。
+// ——— log_sink：一条日志的落地原语 ——
 struct log_sink
 {
-    // 一发一条。sink 自行决定怎么用 level/ts/body：
-    //   ring sink → 存二进制头 + body；text sink → 渲染前缀 + body。
-    // 契约：调用方必须已持有 sink_lock；内部禁止调 printk；无分配、无阻塞。
-    void (*emit)(void* self, level_t level, uint64_t ts_ns,
-                 const char* body, uint64_t len);
+    // 各 sink 自己的前缀渲染：往 buf[0..] 写前缀，返回写入字节数。
+    //   · 文本 sink → 写 "[  ts] <LEVEL> "（样式自定；可直接挂 render_prefix_plain）
+    //   · ring  sink → 写二进制记录头 log_rec_hdr（len 先占位，见 emit 说明）
+    // 契约：调用方已持 sink_lock；不跨 cap；无分配。
+    uint32_t (*render_prefix)(void* self, char* buf, uint64_t cap,
+                              level_t level, uint64_t ts_ns);
+
+    // 落地原语：把【整条】buf[0..len) 吐出去。dumb pipe：同步、无阻塞、无格式、无分配。
+    // 契约：调用方已持 sink_lock；内部禁止调 printk。
+    // ring sink 在此回填头里的 len（前缀先于 body 格式化，头里 len 只能此时补）。
+    void (*emit)(void* self, char* buf, uint64_t len);
+
     void*           self;       // io_ctx：ring 模块句柄 / 串口端口 / 屏幕状态 …
     spinlock_cpp_t* sink_lock;  // 【必须非空】；vprintk 单次临界区（irq-save）
 };
@@ -67,14 +72,13 @@ struct log_sink
 // 返回写入 out 的字节数（不含 NUL）；>= cap 表示发生截断。
 int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap);
 
-// ——— 前缀渲染：[  ts] <LEVEL> ——
-// 供【文本 sink】复用：取值与文本化只有一份（避免同一条日志三处不一致）；
-// 样式（颜色/省略时间戳）归各后端。ts_ns==0（早期无时基）时省略时间戳段。
-uint32_t render_prefix(char* out, uint64_t cap, level_t level, uint64_t ts_ns);
+// ——— 文本 sink 可复用的默认前缀实现（可直接挂到 log_sink::render_prefix）———
+// 取值 + 文本化只有一份，避免同一条日志三处不一致；样式（颜色/省略）归各后端。
+// ts_ns==0（早期无时基）时省略时间戳段。返回写入字节数。
+uint32_t render_prefix_plain(void* self, char* buf, uint64_t cap,
+                             level_t level, uint64_t ts_ns);
 
-// ——— 核心：唯一 formatter 入口 ———
-// 流程（单次临界区）：ts=now_ts(); kvformat(body); 取 sink_lock; sink->emit(level,ts,body,len)。
-// sink 必须非空（runtime 缺省即 ring sink）。
+// ——— 核心：唯一 formatter 入口（栈上 buffer，单次临界区）———
 void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap);
 
 // ——— 面层 ———
@@ -96,7 +100,7 @@ void early_printk(const char* fmt, ...) KLOG_PRINTF_ATTR(1, 2);
 // 定长头 + body；回绕时整条记录被覆盖（头 + body 一起丢弃，不产生半条）。
 struct log_rec_hdr
 {
-    uint16_t len;     // body 字节数
+    uint16_t len;     // body 字节数（emit 时回填）
     uint8_t  level;   // level_code
     uint8_t  _rsv;    // 对齐保留
     uint32_t seq;     // 单调序号（回绕/丢失检测）
