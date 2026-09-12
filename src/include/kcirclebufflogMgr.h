@@ -15,3 +15,11 @@ public:
     static void Init(vm_interval*logbuffer);
     static void putsk(char *str,uint64_t len_in_bytes);
 };
+struct log_record_head_t{
+uint16_t len;
+uint8_t level;
+uint8_t magic1;
+uint32_t record_seq;
+uint64_t ts_us;
+uint8_t magic2;
+}alignas (8);
