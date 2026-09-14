@@ -329,7 +329,7 @@ uint32_t render_prefix_plain(void* self, char* buf, uint64_t cap,
     for (uint64_t i = 0; i < m; ++i) buf[i] = tmp[i];
     return (uint32_t)m;
 }
-
+uint64_t vprintkv2(const char* fmt, va_list ap,void*out_buff,uint32_t max_limit);//返回值为在[32:63]的flag域（暂定63bit为溢出位），[0:31]是实际解析字节数，很明显不会超过max_limit，并且调用者负责out_buff的地址的稳定性
 // ─────────────────────────── vprintk ───────────────────────────
 
 void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap)
