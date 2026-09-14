@@ -1,7 +1,7 @@
 #include "init/pages_alloc.h"
 #include "util/OS_utils.h"
 #include "init/init_heap_v3.h"
-#include "util/kout.h"
+#include "init/util/printk.h"
 // 静态成员定义
 Ktemplats::list_doubly<EFI_MEMORY_DESCRIPTORX64>* basic_allocator::memory_map = nullptr;
 phymem_segment* basic_allocator::pure_mem_view = nullptr;
@@ -497,14 +497,14 @@ phymem_segment *basic_allocator::get_pure_memory_view(uint64_t *entry_count_ptr)
 void basic_allocator::print_now_segs()
 {
    if (!memory_map) {
-       bsp_kout<< "[WARN] memory_map is nullptr, nothing to print" << kendl;
+       init_printk("memory_map is nullptr, nothing to print");
         return;
     }
     
-   bsp_kout<< kendl;
-   bsp_kout<< "========================================" << kendl;
-   bsp_kout<< "[INFO] Current Memory Map Segments (" << memory_map->size() << " entries)" << kendl;
-   bsp_kout<< "========================================" << kendl;
+   init_printk("");
+   init_printk("========================================");
+   init_printk("Current Memory Map Segments (%lu entries)", (unsigned long)memory_map->size());
+   init_printk("========================================");
     
    uint64_t index = 0;
     for (auto it = memory_map->begin(); it != memory_map->end(); ++it) {
@@ -597,21 +597,16 @@ void basic_allocator::print_now_segs()
        uint64_t physical_end = physical_start + size_bytes;
        uint64_t attribute = desc.Attribute;
         
-       bsp_kout.shift_hex();  // 切换到十六进制
-       bsp_kout<< "  [" << index << "] " 
-                     << type_str 
-                     << " | PA: 0x" << physical_start 
-                     << " - 0x" << (physical_end > 0 ? physical_end - 1 : 0)
-                     << " | Size: 0x" << size_bytes 
-                     << " (" << (size_bytes / 1024) << " KB)"
-                     << " | Pages: " << desc.NumberOfPages
-                     << " | Attr: 0x" << attribute
-                     << kendl;
-     bsp_kout.shift_dec();  // 恢复十进制
+       init_printk("  [%lx] %s | PA: 0x%lx - 0x%lx | Size: 0x%lx (%lx KB) | Pages: %lx | Attr: 0x%lx",
+                   (unsigned long)index, type_str,
+                   (unsigned long)physical_start,
+                   (unsigned long)(physical_end > 0 ? physical_end - 1 : 0),
+                   (unsigned long)size_bytes, (unsigned long)(size_bytes / 1024),
+                   (unsigned long)desc.NumberOfPages, (unsigned long)attribute);
         
         ++index;
     }
     
-   bsp_kout<< "========================================" << kendl;
-   bsp_kout<< kendl;
+   init_printk("========================================");
+   init_printk("");
 }

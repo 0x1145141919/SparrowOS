@@ -208,7 +208,12 @@ add_executable(init.elf
     src/init/pages_alloc.cpp
     src/init/initramfs_lookup.cpp
     src/init/util/kout.cpp
+    src/init/util/printk.cpp
+    src/init/util/ring_log.cpp
+    src/init/util/hpet_early.cpp
     src/init/init_fatal.cpp
+    src/utils/vprintkv2.cpp
+    src/utils/kcirclebufflogMgr_v2.cpp
     src/utils/util.cpp
     src/arch/x86_64/Processor/early_bsp_resources.cpp 
     src/arch/x86_64/Processor/gs_complex_load_gdt_tss.cpp

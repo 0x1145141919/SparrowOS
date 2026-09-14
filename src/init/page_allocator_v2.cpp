@@ -2,7 +2,7 @@
 #include "init/pages_alloc.h"           // basic_allocator：纯洁视图 / mem_map 缓冲自举
 #include "init/init_linker_symbols.h"    // __init_text_start / __init_heap_end（init 镜像自标记）
 #include "util/OS_utils.h"               // align_up / ksetmem_8
-#include "init/util/kout.h"              // bsp_kout（init.elf 侧输出）
+#include "init/util/printk.h"              // init_printk（init.elf 侧输出）
 #include <new>
 
 // ════════════════════════════════════════════════════════════════
@@ -138,11 +138,10 @@ int page_allocator_v2::init() {
     for (uint64_t i = 0; i < mem_map_page_count; i++)
         if (mem_map[i].state == page_state_t::free) free_pages++;
 
-    bsp_kout << "[page_allocator_v2] init done: intervals=" << (uint64_t)free_iv_count
-             << " total_pages=" << (uint64_t)mem_map_page_count
-             << " free=" << (uint64_t)free_pages
-             << " mem_map@0x" << HEX << (uint64_t)mem_map_pbase
-             << " dram_top=0x" << (uint64_t)dram_top_addr << DEC << kendl;
+    init_printk("page_allocator_v2 init done: intervals=%lx total_pages=%lx free=%lx mem_map@0x%lx dram_top=0x%lx",
+                (unsigned long)free_iv_count, (unsigned long)mem_map_page_count,
+                (unsigned long)free_pages, (unsigned long)mem_map_pbase,
+                (unsigned long)dram_top_addr);
     return 0;
 }
 
@@ -164,9 +163,8 @@ phyaddr_t page_allocator_v2::free_ram_explore(uint64_t page_count, uint8_t align
         if (result) {
             // 勘探成功即推进单光标（单调，不回落）
             scan_base = result + (page_count << 12);
-            bsp_kout << "[page_allocator_v2] explore: base=0x" << HEX << (uint64_t)result
-                     << " end=0x" << (uint64_t)scan_base
-                     << " pages=" << DEC << (uint64_t)page_count << kendl;
+            init_printk("page_allocator_v2 explore: base=0x%lx end=0x%lx pages=%lu",
+                        (unsigned long)result, (unsigned long)scan_base, (unsigned long)page_count);
             return result;
         }
     }

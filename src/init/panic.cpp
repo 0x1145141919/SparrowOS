@@ -1,5 +1,5 @@
 #include "panic.h"
-#include "util/kout.h"
+#include "init/util/printk.h"
 #include "util/OS_utils.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
@@ -43,64 +43,63 @@ KURD_t Panic::will_check()
  * 转储 panic_context 中的 CPU 寄存器信息
  */
 void Panic::dumpregisters(panic_context::x64_context* regs) {
-    bsp_kout<< "================= CPU REGISTERS DUMP =================" << kendl;
-    bsp_kout<< "General Purpose Registers:" << kendl;
-    bsp_kout.shift_hex();
-    bsp_kout<< "RAX: 0x" << regs->rax << kendl;
-    bsp_kout<< "RBX: 0x" << regs->rbx << kendl;
-    bsp_kout<< "RCX: 0x" << regs->rcx << kendl;
-    bsp_kout<< "RDX: 0x" << regs->rdx << kendl;
-    bsp_kout<< "RSI: 0x" << regs->rsi << kendl;
-    bsp_kout<< "RDI: 0x" << regs->rdi << kendl;
-    bsp_kout<< "RSP: 0x" << regs->rsp << kendl;
-    bsp_kout<< "RBP: 0x" << regs->rbp << kendl;
-    bsp_kout<< "R8:  0x" << regs->r8 << kendl;
-    bsp_kout<< "R9:  0x" << regs->r9 << kendl;
-    bsp_kout<< "R10: 0x" << regs->r10 << kendl;
-    bsp_kout<< "R11: 0x" << regs->r11 << kendl;
-    bsp_kout<< "R12: 0x" << regs->r12 << kendl;
-    bsp_kout<< "R13: 0x" << regs->r13 << kendl;
-    bsp_kout<< "R14: 0x" << regs->r14 << kendl;
-    bsp_kout<< "R15: 0x" << regs->r15 << kendl;
-    
-    bsp_kout<< "Control Registers:" << kendl;
-    bsp_kout<< "CR0: 0x" << regs->cr0 << kendl;
-    bsp_kout<< "CR2: 0x" << regs->cr2 << kendl;
-    bsp_kout<< "CR3: 0x" << regs->cr3 << kendl;
-    bsp_kout<< "CR4: 0x" << regs->cr4 << kendl;
-    bsp_kout<< "EFER: 0x" << regs->IA32_EFER << kendl;
-    
-    bsp_kout<< "Segment Registers:" << kendl;
-    bsp_kout<< "CS: 0x" << regs->cs << kendl;
-    bsp_kout<< "DS: 0x" << regs->ds << kendl;
-    bsp_kout<< "ES: 0x" << regs->es << kendl;
-    bsp_kout<< "FS: 0x" << regs->fs << kendl;
-    bsp_kout<< "GS: 0x" << regs->gs << kendl;
-    bsp_kout<< "SS: 0x" << regs->ss << kendl;
-    
-    bsp_kout<< "Other Registers:" << kendl;
-    bsp_kout<< "RFLAGS: 0x" << regs->rflags << kendl;
-    bsp_kout<< "RIP: 0x" << regs->rip << kendl;
-    bsp_kout<< "FS_BASE: 0x" << regs->fs_base << kendl;
-    bsp_kout<< "GS_BASE: 0x" << regs->gs_base << kendl;
-    
-    bsp_kout<< "Descriptor Tables:" << kendl;
-    bsp_kout<< "GDTR: Limit=0x" << regs->gdtr.limit << ", Base=0x" << regs->gdtr.base << kendl;
-    bsp_kout<< "IDTR: Limit=0x" << regs->idtr.limit << ", Base=0x" << regs->idtr.base << kendl;
-    
-    bsp_kout<< "=====================================================" << kendl;
+    init_printk("================= CPU REGISTERS DUMP =================");
+    init_printk("General Purpose Registers:");
+    init_printk("RAX: 0x%lx", (unsigned long)regs->rax);
+    init_printk("RBX: 0x%lx", (unsigned long)regs->rbx);
+    init_printk("RCX: 0x%lx", (unsigned long)regs->rcx);
+    init_printk("RDX: 0x%lx", (unsigned long)regs->rdx);
+    init_printk("RSI: 0x%lx", (unsigned long)regs->rsi);
+    init_printk("RDI: 0x%lx", (unsigned long)regs->rdi);
+    init_printk("RSP: 0x%lx", (unsigned long)regs->rsp);
+    init_printk("RBP: 0x%lx", (unsigned long)regs->rbp);
+    init_printk("R8:  0x%lx", (unsigned long)regs->r8);
+    init_printk("R9:  0x%lx", (unsigned long)regs->r9);
+    init_printk("R10: 0x%lx", (unsigned long)regs->r10);
+    init_printk("R11: 0x%lx", (unsigned long)regs->r11);
+    init_printk("R12: 0x%lx", (unsigned long)regs->r12);
+    init_printk("R13: 0x%lx", (unsigned long)regs->r13);
+    init_printk("R14: 0x%lx", (unsigned long)regs->r14);
+    init_printk("R15: 0x%lx", (unsigned long)regs->r15);
+
+    init_printk("Control Registers:");
+    init_printk("CR0: 0x%lx", (unsigned long)regs->cr0);
+    init_printk("CR2: 0x%lx", (unsigned long)regs->cr2);
+    init_printk("CR3: 0x%lx", (unsigned long)regs->cr3);
+    init_printk("CR4: 0x%lx", (unsigned long)regs->cr4);
+    init_printk("EFER: 0x%lx", (unsigned long)regs->IA32_EFER);
+
+    init_printk("Segment Registers:");
+    init_printk("CS: 0x%lx", (unsigned long)regs->cs);
+    init_printk("DS: 0x%lx", (unsigned long)regs->ds);
+    init_printk("ES: 0x%lx", (unsigned long)regs->es);
+    init_printk("FS: 0x%lx", (unsigned long)regs->fs);
+    init_printk("GS: 0x%lx", (unsigned long)regs->gs);
+    init_printk("SS: 0x%lx", (unsigned long)regs->ss);
+
+    init_printk("Other Registers:");
+    init_printk("RFLAGS: 0x%lx", (unsigned long)regs->rflags);
+    init_printk("RIP: 0x%lx", (unsigned long)regs->rip);
+    init_printk("FS_BASE: 0x%lx", (unsigned long)regs->fs_base);
+    init_printk("GS_BASE: 0x%lx", (unsigned long)regs->gs_base);
+
+    init_printk("Descriptor Tables:");
+    init_printk("GDTR: Limit=0x%lx, Base=0x%lx", (unsigned long)regs->gdtr.limit, (unsigned long)regs->gdtr.base);
+    init_printk("IDTR: Limit=0x%lx, Base=0x%lx", (unsigned long)regs->idtr.limit, (unsigned long)regs->idtr.base);
+
+    init_printk("=====================================================");
 }
 void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context::x64_context *context,panic_info_inshort*panic_info, uint64_t arg5)
 {
     will.kernel_final_state=GlobalStatus;
     GlobalStatus=kernel_state::PANIC;
-    bsp_kout<<"PANIC: "<<kendl;
+    init_printk("PANIC:");
     if (behaviors.interpret_arg5_as_err_locator) {
-        bsp_kout<<"[ERR_LOCATOR] "<<arg5<<kendl;
+        init_printk("ERR_LOCATOR %lx", (unsigned long)arg5);
     } else {
-        bsp_kout<<"[KURD] "<<raw_analyze(arg5)<<kendl;
+        init_printk("KURD raw=0x%lx", (unsigned long)arg5);
     }
-    if(message)bsp_kout<<message<<kendl;
+    if(message) init_printk("%s", message);
     if(context)dumpregisters(context);
     asm volatile("cli");
     asm volatile("hlt");

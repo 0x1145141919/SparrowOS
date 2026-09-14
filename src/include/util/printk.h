@@ -7,7 +7,7 @@
  *
  * 模型：
  *   - 调用侧【栈上】备 char buf，前缀由【sink 自己的前缀函数】写进 buffer，
- *     body 由 kvformat 接着写，最后一发 emit 整条吐出 —— 无堆分配。
+ *     body 由 vprintkv2 接着写，最后一发 emit 整条吐出 —— 无堆分配。
  *   - vprintk 只对【一个】log_sink 发一条，一发一条，一次临界区。
  *   - runtime printk【绑死】ring sink；early_printk 特殊：多组 vprintk（ring/uart/gop），
  *     每组各一次临界区。
@@ -16,13 +16,13 @@
  *     └─ vprintk(level, sink, fmt, ap) 核心（栈上 buf，单临界区）：
  *           ts = now_ts_us();                                     // 微秒；extern "C"，外部接入
  *           n  = sink->render_prefix(self, buf, cap, level, ts);  // 前缀（各 sink 自定）
- *           n += kvformat(buf + n, cap - n, fmt, ap);             // body
+ *           n += vprintkv2(buf + n, cap - n, fmt, ap);             // body
  *           sink->emit(self, buf, n);                             // 一发
  *                 ├─ ring_sink：render_prefix 写二进制头{len,level,seq,ts}；emit 落环
  *                 └─ text_sink：render_prefix 写 "[  ts] <LEVEL> "；emit 写设备（UART/屏）
  *
  * 契约（红线）：
- *   1) formatter 唯一：kvformat（early/runtime/panic 共用）；无锁/无分配/无浮点。
+ *   1) formatter 唯一：vprintkv2（early/runtime/panic 共用）；无锁/无分配/无浮点。
  *   2) ring 里 level/ts 是【二进制字段】（log_rec_hdr），不是文本前缀。
  *      读侧（kshell dmesg）直接读字段过滤 / 排序，【禁止】字符串解析。
  *   3) emit 是【压死规格】的落地原语：同步、无阻塞、无格式、无分配。
@@ -38,6 +38,7 @@
 #include <stdint.h>
 #include "abi/os_error_definitions.h"
 #include "util/lock.h"
+#include "util/vprintkv2.h"   // 共用纯格式化核心（freestanding，kernel/init/宿主三方共用）
 
 extern "C"
 {
@@ -57,10 +58,10 @@ namespace klog
 using level_t = uint8_t;
 namespace level = level_code;
 
-// 单行上限（栈缓冲；超额截断并打 "...[truncated]" 标记）。对齐 Linux LOG_LINE_MAX。
-constexpr uint32_t LOG_LINE_MAX = 1024;
+// 单行上限 LOG_LINE_MAX 随核心头 util/vprintkv2.h 一并提供（双向共用同一常量）。
+// 格式化核心 vprintkv2 亦见 util/vprintkv2.h（独立 TU、freestanding、双向共用）。
 
-// ——— log_sink：一条日志的落地原语 ——
+// ——— log_sink：一条日志的落地原语 ———
 struct log_sink
 {
     // 各 sink 自己的前缀渲染：往 buf[0..] 写前缀，返回写入字节数。
@@ -79,21 +80,13 @@ struct log_sink
     spinlock_cpp_t* sink_lock;  // 【必须非空】；vprintk 单次临界区（irq-save）
 };
 
-// ——— 纯格式化引擎：无 I/O、无静态状态、可重入、可 host 单测 ———
-// 返回写入 out 的字节数（不含 NUL）；>= cap 表示发生截断。
-// 支持：%c %s %d %i %u %o %x %X %b(扩展) %p %% + flags(- + 空格 # 0)/width/precision/length。
-// 【不支持】：float（%f/%e/%g/…）→ 输出标记 `<%f? unsupported>` 且【不】读取参数
-//   （对齐 Linux printk；formatter 绝不碰 XMM/FPU，保 IRQ/early/panic 上下文安全）。
-//   未知转换 → 输出标记 `<%x? unknown>`（不静默吐字面量）。
-int kvformat(char* out, uint64_t cap, const char* fmt, va_list ap);
-
 // ——— 文本 sink 可复用的默认前缀实现（可直接挂到 log_sink::render_prefix）———
 // 取值 + 文本化只有一份，避免同一条日志三处不一致；样式（颜色/省略）归各后端。
 // ts_us==0（早期无时基）时省略时间戳段。返回写入字节数。
 uint32_t render_prefix_plain(void* self, char* buf, uint64_t cap,
                              level_t level, uint64_t ts_us);
 
-// ——— 核心：唯一 formatter 入口（栈上 buffer，单次临界区）———
+// ——— 核心：唯一落地入口（栈上 buffer，单次临界区）———
 void vprintk(level_t level, const log_sink* sink, const char* fmt, va_list ap);
 
 // ——— 面层 ———

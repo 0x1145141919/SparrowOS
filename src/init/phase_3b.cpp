@@ -6,7 +6,7 @@
 #include "init/page_allocator_v2.h"
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
-#include "init/util/kout.h"
+#include "init/util/printk.h"
 
 // ============================================================================
 // va_alloc_up — 从 g_va_alloc_base 向上分配 VA（Phase 3b 专用）
@@ -49,15 +49,14 @@ struct p3b_ctx {
 static loc_code_t build_fpa_bitmaps(p3b_ctx& ctx, const char* name) {
     const uint64_t total_pages = page_allocator_v2::total_page_count();
     uint64_t sz  = align_up((total_pages * 3 + 7) >> 3, 0x1000);   // 3bit × 总空闲页
-    if (sz == 0) { bsp_kout << "[Phase3b] fpa pool size 0" << kendl; return SRC_LOC(); }
+    if (sz == 0) { init_printk("Phase 3b: fpa pool size 0"); return SRC_LOC(); }
     uint64_t npg = sz >> 12;
     phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 12);
-    if (!p) { bsp_kout << "fpa pool OOM" << kendl; return SRC_LOC(); }
+    if (!p) { init_printk("Phase 3b: fpa pool OOM"); return SRC_LOC(); }
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     ksetmem_8((void*)(uint64_t)p, 0, sz);   // 纯预留池清零：kernel FPA 自行雕刻
     asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
-    bsp_kout << "[Phase3b] FPA_bitmaps(pool): p=0x" << p 
-             << " sz=" << (void*)sz << kendl;
+    init_printk("Phase 3b: FPA_bitmaps(pool): p=0x%lx sz=%p", (unsigned long)p, (void*)sz);
     return 0;
 }
 
@@ -67,12 +66,11 @@ static loc_code_t build_fpa_bitmaps(p3b_ctx& ctx, const char* name) {
 static loc_code_t build_pages_arr(p3b_ctx& ctx, const char* name) {
     phyaddr_t p  = page_allocator_v2::get_mem_map_pbase();
     uint64_t  sz = align_up(page_allocator_v2::total_page_count(), 0x1000);  // sizeof(page)==1
-    if (!p || sz == 0) { bsp_kout << "[Phase3b] pages_arr not ready" << kendl; return SRC_LOC(); }
+    if (!p || sz == 0) { init_printk("Phase 3b: pages_arr not ready"); return SRC_LOC(); }
     uint64_t npg = sz >> 12;
     
     asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
-    bsp_kout << "[Phase3b] pages_arr: p=0x" << p
-             << " sz=0x" << sz << kendl;
+    init_printk("Phase 3b: pages_arr: p=0x%lx sz=0x%lx", (unsigned long)p, (unsigned long)sz);
     return 0;
 }
 
@@ -81,11 +79,11 @@ static loc_code_t build_log_buffer(p3b_ctx& ctx, const char* name) {
     uint64_t sz  = LOGBUFFER_SIZE;
     uint64_t npg = sz >> 12;
     phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 21);
-    if (!p) { bsp_kout << "log OOM" << kendl; return SRC_LOC(); }
+    if (!p) { init_printk("Phase 3b: log OOM"); return SRC_LOC(); }
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     ksetmem_8((void*)(uint64_t)p, 0, sz);
     asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
-    bsp_kout << "[Phase3b] log_buffer: p=0x" << p  << kendl;
+    init_printk("Phase 3b: log_buffer: p=0x%lx", (unsigned long)p);
     return 0;
 }
 
@@ -97,19 +95,19 @@ static loc_code_t build_ksymbols(p3b_ctx& ctx, const char* name) {
         sym_in_ramfs = initramfs_lookup(rh, "/ksymbols.bin", &sym_sz);
     }
     if (sym_in_ramfs == 0 || sym_sz == 0) {
-        bsp_kout << "[Phase3b] ksymbols.bin not found" << kendl;
+        init_printk("Phase 3b: ksymbols.bin not found");
         return 0;   // 可选资产，跳过
     }
     uint64_t sz  = align_up(sym_sz, 4096);
     uint64_t npg = sz >> 12;
     phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 21);
-    if (!p) { bsp_kout << "sym OOM" << kendl; return SRC_LOC(); }
+    if (!p) { init_printk("Phase 3b: sym OOM"); return SRC_LOC(); }
     // ksymbols = 从 initramfs 解包出的文件 → kernel_file_property
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_file_property) != 0) return SRC_LOC();
     ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
     ctx.iv->symtable_file = { .base_ppn = p >> 12, .size = sym_sz };
     asset_reg_add(name, new movable_file_entry_t{ .base_ppn = p >> 12, .size = sym_sz });
-    bsp_kout << "[Phase3b] symtable: p=0x" << p << " size=" << sym_sz << kendl;
+    init_printk("Phase 3b: symtable: p=0x%lx size=%lu", (unsigned long)p, (unsigned long)sym_sz);
     return 0;
 }
 
@@ -120,8 +118,7 @@ static loc_code_t build_initramfs(p3b_ctx& ctx, const char* name) {
                                    .size     = ctx.em->ramfs_size };
         asset_reg_add(name, new movable_file_entry_t{ .base_ppn = ctx.em->ramfs_base >> 12,
                                                       .size     = ctx.em->ramfs_size });
-        bsp_kout << "[Phase3b] initramfs: p=" << (void*)ctx.em->ramfs_base
-                 << " size=" << ctx.em->ramfs_size << kendl;
+        init_printk("Phase 3b: initramfs: p=%p size=%lu", (void*)ctx.em->ramfs_base, (unsigned long)ctx.em->ramfs_size);
     }
     return 0;
 }
@@ -143,7 +140,7 @@ static loc_code_t build_gop(p3b_ctx& ctx, const char* name) {
         ctx.iv->arch_info.Gop_vbase = fb_v;
         asset_reg_add(name, new vm_interval{ .vpn = fb_v >> 12, .ppn = fb_p >> 12,
                                              .npages = fb_npg, .access = KSPACE_RW_WC_ACCESS });
-        bsp_kout << HEX << "[Phase3b] GOP fb: p=0x" << fb_p << " v=0x" << fb_v << kendl;
+        init_printk("Phase 3b: GOP fb: p=0x%lx v=0x%lx", (unsigned long)fb_p, (unsigned long)fb_v);
 
         // 过渡：iv.arch_info.gop_info 仍保留（v1 kernel 消费路径未迁移）
         ksystemramcpy(gfx, &ctx.iv->arch_info.gop_info, sizeof(*gfx));
@@ -171,7 +168,7 @@ static loc_code_t build_hpet(p3b_ctx& ctx, const char* name) {
                                                    .npages = 1, .access = KSPACE_RW_UC_ACCESS};
                     asset_reg_add(name, new vm_interval{ .vpn = hv >> 12, .ppn = hp >> 12,
                                                          .npages = 1, .access = KSPACE_RW_UC_ACCESS });
-                    bsp_kout  << "[Phase3b] HPET MMIO: p=" << (void*)hp << " v=" << (void*)hv << kendl;
+                    init_printk("Phase 3b: HPET MMIO: p=%p v=%p", (void*)hp, (void*)hv);
                 }
                 break;
             }
@@ -185,7 +182,7 @@ static loc_code_t build_gs_complexes(p3b_ctx& ctx, const char* name) {
     uint64_t total_bytes    = ctx.header->logical_processor_count * GS_COMPLEX_STRIDE;
     uint64_t npg            = total_bytes >> 12;   // GS_COMPLEX_STRIDE 已页对齐
     phyaddr_t pbase         = page_allocator_v2::free_ram_explore(npg, 12);
-    if (!pbase) { bsp_kout << "gs OOM" << kendl; return SRC_LOC(); }
+    if (!pbase) { init_printk("Phase 3b: gs OOM"); return SRC_LOC(); }
     if (page_allocator_v2::pages_set({pbase, total_bytes}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     vaddr_t  vbase          = va_alloc_up(total_bytes, 12);
     ksetmem_8((void*)(uint64_t)pbase, 0, total_bytes);
@@ -199,9 +196,8 @@ static loc_code_t build_gs_complexes(p3b_ctx& ctx, const char* name) {
                                          "gs_complexes", KMMU_ENTRY_FLAG_PERSISTENT));
     asset_reg_add(name, new vm_interval{ .vpn = vbase >> 12, .ppn = pbase >> 12,
                                          .npages = npg, .access = KSPACE_RW_ACCESS });
-    bsp_kout << "[Phase3b] conjunc_GSs: vaddr=" << (void*)(uint64_t)vbase
-             << " paddr=" << (void*)(uint64_t)pbase
-             << " size=0x" << (uint64_t)(npg << 12) << kendl;
+    init_printk("Phase 3b: conjunc_GSs: vaddr=%p paddr=%p size=0x%lx",
+                (void*)(uint64_t)vbase, (void*)(uint64_t)pbase, (unsigned long)(npg << 12));
     return 0;
 }
 
@@ -213,7 +209,7 @@ static loc_code_t build_hdstacks(p3b_ctx& ctx, const char* name) {
     uint64_t total_phys     = ctx.header->logical_processor_count * stack_stride + 4096;  // + 尾 guard
     uint64_t hd_pages       = total_phys >> 12;
     phyaddr_t hd_pbase      = page_allocator_v2::free_ram_explore(hd_pages, 12);
-    if (!hd_pbase) { bsp_kout << "hdstacks OOM" << kendl; return SRC_LOC(); }
+    if (!hd_pbase) { init_printk("Phase 3b: hdstacks OOM"); return SRC_LOC(); }
     if (page_allocator_v2::pages_set({hd_pbase, hd_pages << 12}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
     vaddr_t  hd_vbase       = va_alloc_up(total_phys, 12);
     ctx.kmmu->map(kernel_mmu::make_entry(hd_pbase, hd_vbase, total_phys, KSPACE_RW_ACCESS,
@@ -224,9 +220,8 @@ static loc_code_t build_hdstacks(p3b_ctx& ctx, const char* name) {
     ctx.iv->arch_info.hdstacks_interval_vbase  = hd_vbase;
     asset_reg_add(name, new vm_interval{ .vpn = hd_vbase >> 12, .ppn = hd_pbase >> 12,
                                          .npages = hd_pages, .access = KSPACE_RW_ACCESS });
-    bsp_kout << "[Phase3b] hdstacks: paddr=0x" << HEX << hd_pbase
-             << " vaddr=" << (void*)(uint64_t)hd_vbase
-             << " pages=" << hd_pages << DEC << kendl;
+    init_printk("Phase 3b: hdstacks: paddr=0x%lx vaddr=%p pages=%lx",
+                (unsigned long)hd_pbase, (void*)(uint64_t)hd_vbase, (unsigned long)hd_pages);
     return 0;
 }
 
@@ -239,7 +234,7 @@ static loc_code_t build_phyaddr_window(p3b_ctx& ctx, const char* name) {
     vaddr_t   v   = va_alloc_up(sz, 30);
     ctx.kmmu->map(kernel_mmu::make_entry(0, v, sz, KSPACE_RW_ACCESS,
                                          "phyaddr_window", KMMU_ENTRY_FLAG_PERSISTENT));
-    bsp_kout << "[Phase3b] high_window: [0," << (void*)top << ") at" << (void*)v << kendl;
+    init_printk("Phase 3b: high_window: [0,%p) at%p", (void*)top, (void*)v);
     ctx.iv->Kspace_phyaddr_access_window = {
         .vpn    = v >> 12,
         .ppn    = 0,
@@ -259,11 +254,10 @@ static loc_code_t build_xsdt(p3b_ctx& ctx, const char* name) {
     uint64_t* copy = new uint64_t(ctx.em->xsdt_base);
     if (!copy) return SRC_LOC();
     if (!asset_reg_add(name, copy)) {
-        bsp_kout << "[Phase3b] asset dup: xsdt_pbase" << kendl;
+        init_printk("Phase 3b: asset dup: xsdt_pbase");
         return SRC_LOC();
     }
-    bsp_kout << "[Phase3b] xsdt_pbase(scalar): 0x" << HEX
-             << ctx.em->xsdt_base << DEC << kendl;
+    init_printk("Phase 3b: xsdt_pbase(scalar): 0x%lx", (unsigned long)ctx.em->xsdt_base);
     return 0;
 }
 
@@ -300,7 +294,7 @@ loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
     iv.extra_vm_arr   = new loaded_VM_interval[8];
     iv.extra_vm_count = 0;
 
-    bsp_kout << "[Phase3b] start..." << kendl;
+    init_printk("Phase 3b: start...");
 
     // ---- 恒等映射: [4KB, dram_top) WB+RWX（短暂存在，不进 info header / 资产容器） ----
     //     仅用于 init.elf 自身 CR3 切换的极小窗口 + 跳转 kernel.elf 后访问信息包。
@@ -311,7 +305,7 @@ loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
         pgaccess id_a = KSPACE_RWX_NG_ACCESS;
         kmmu->map(kernel_mmu::make_entry(0x1000, 0x1000, sz, id_a,
                                          "identity_map", KMMU_ENTRY_FLAG_TRANSIENT));
-        bsp_kout << "[Phase3b] identity: [0x1000, 0x" << top << ") WB+RWX (transient)" << kendl;
+        init_printk("Phase 3b: identity: [0x1000, 0x%lx) WB+RWX (transient)", (unsigned long)top);
     }
 
     // XSDT 基址（架构标量；HPET 生产函数消费 em->xsdt_base；标量资产由
@@ -325,7 +319,7 @@ loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
         if (rc != 0) return rc;
     }
 
-    bsp_kout << "[Phase3b] done: " << iv.extra_vm_count << " extra VM entries" << kendl;
+    init_printk("Phase 3b: done: %lu extra VM entries", (unsigned long)iv.extra_vm_count);
     *iv_out = iv;
     return 0;
 }

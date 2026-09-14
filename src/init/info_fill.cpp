@@ -2,7 +2,7 @@
 #include "abi/src_loc.h"
 #include "init/init_asset_registry.h"
 #include "init/page_allocator_v2.h"
-#include "init/util/kout.h"
+#include "init/util/printk.h"
 #include "memory/memory_base.h"
 
 // ============================================================================
@@ -31,49 +31,48 @@ static const char* memtype_str(PHY_MEM_TYPE t) {
 }
 
 static void dump_header_v2(const init_to_kernel_header_v2* h, phyaddr_t pkt_base) {
-    bsp_kout <<HEX<< kendl
-             << "=== init_to_kernel_header_v2 @ phys 0x" << pkt_base << " ===" << kendl;
-    bsp_kout << "  magic=0x" << h->magic
-             << "  self_pages=" << h->self_pages_count << kendl;
-    bsp_kout << "  phymem_segments=" << h->phymem_segment_count
-             << " @off 0x" << h->phymem_segments << kendl;
-    bsp_kout << "  properties=" << h->properties_count
-             << " @off 0x" << h->properties_table << kendl;
-    bsp_kout << "  free_segs=" << h->free_segs_count
-             << " @off 0x" << h->free_segs_descriptors_table << kendl;
-    bsp_kout << "  logical_processor_count=" << h->logical_processor_count << kendl;
+    init_printk("");
+    init_printk("=== init_to_kernel_header_v2 @ phys 0x%lx ===", (unsigned long)pkt_base);
+    init_printk("  magic=0x%lx  self_pages=%lx", (unsigned long)h->magic, (unsigned long)h->self_pages_count);
+    init_printk("  phymem_segments=%lx @off 0x%lx", (unsigned long)h->phymem_segment_count, (unsigned long)h->phymem_segments);
+    init_printk("  properties=%lx @off 0x%lx", (unsigned long)h->properties_count, (unsigned long)h->properties_table);
+    init_printk("  free_segs=%lx @off 0x%lx", (unsigned long)h->free_segs_count, (unsigned long)h->free_segs_descriptors_table);
+    init_printk("  logical_processor_count=%lx", (unsigned long)h->logical_processor_count);
 
     // phymem_segments
     if (h->phymem_segment_count) {
         const phymem_segment* map = (const phymem_segment*)(pkt_base + h->phymem_segments);
-        bsp_kout << "  -- phymem_segments (" << h->phymem_segment_count << ") --" << kendl;
+        init_printk("  -- phymem_segments (%lx) --", (unsigned long)h->phymem_segment_count);
         for (uint64_t i = 0; i < h->phymem_segment_count; i++)
-            bsp_kout << "    [" << i << "] 0x" << map[i].start
-                     << " +0x" << map[i].size
-                     << " " << memtype_str(map[i].type) << kendl;
+            init_printk("    [%lx] 0x%lx +0x%lx %s", (unsigned long)i,
+                        (unsigned long)map[i].start, (unsigned long)map[i].size,
+                        memtype_str(map[i].type));
     }
 
     // properties（name/data 存包内偏移，这里按包基址重链打印）
     if (h->properties_count) {
         const asset_entry_t* props = (const asset_entry_t*)(pkt_base + h->properties_table);
-        bsp_kout << "  -- properties (" << h->properties_count << ") --" << kendl;
+        init_printk("  -- properties (%lx) --", (unsigned long)h->properties_count);
         for (uint64_t i = 0; i < h->properties_count; i++)
-            bsp_kout << "    [" << i << "] '" << (const char*)(pkt_base + (uint64_t)props[i].name)
-                     << "' data@off 0x" << (uint64_t)props[i].data << kendl;
+            init_printk("    [%lx] '%s' data@off 0x%lx", (unsigned long)i,
+                        (const char*)(pkt_base + (uint64_t)props[i].name),
+                        (unsigned long)(uint64_t)props[i].data);
     }
 
     // free_segs（free_seg_descriptor_t 解包：索引式，无需重定位——
     //     in_pure_memview_idx → phymem_segments 下标，baseidx_in_memmap → pages_arr 下标）
     if (h->free_segs_count) {
         const free_seg_descriptor_t* descs = (const free_seg_descriptor_t*)(pkt_base + h->free_segs_descriptors_table);
-        bsp_kout << "  -- free_segs_descriptors_table (" << h->free_segs_count << ") --" << kendl;
+        init_printk("  -- free_segs_descriptors_table (%lx) --", (unsigned long)h->free_segs_count);
         for (uint64_t i = 0; i < h->free_segs_count; i++) {
-            bsp_kout << "    [" << i << "] pure_memview_idx=" << descs[i].in_pure_memview_idx
-                     << " baseidx_in_memmap=" << descs[i].baseidx_in_memmap << kendl;
+            init_printk("    [%lx] pure_memview_idx=%lx baseidx_in_memmap=%lx",
+                        (unsigned long)i, (unsigned long)descs[i].in_pure_memview_idx,
+                        (unsigned long)descs[i].baseidx_in_memmap);
         }
     }
 
-    bsp_kout << "========================================" << kendl << kendl;
+    init_printk("========================================");
+    init_printk("");
 }
 
 // ============================================================================
@@ -144,8 +143,8 @@ phyaddr_t build_init_to_kernel_header(
             for (auto it = g_asset_registry->begin(); it != g_asset_registry->end(); ++it, ++i) {
                 const uint64_t bsz = asset_desc_size(*it);
                 if (!it->name || !it->data || bsz == 0) {
-                    bsp_kout << "[BUILD_HEADER] FATAL: bad asset '"
-                             << (it->name ? it->name : "(null)") << "'" << kendl;
+                    init_printk("BUILD_HEADER FATAL: bad asset '%s'",
+                                it->name ? it->name : "(null)");
                     if (plan) delete[] plan;
                     return SRC_LOC();
                 }
@@ -165,8 +164,8 @@ phyaddr_t build_init_to_kernel_header(
 
     const uint64_t allocated = pkt_pages * 4096;
     if (total > allocated) {
-        bsp_kout << "[BUILD_HEADER] FATAL: pkt too small: need 0x"
-                 << HEX << total << " but have 0x" << allocated << DEC << kendl;
+        init_printk("BUILD_HEADER FATAL: pkt too small: need 0x%lx but have 0x%lx",
+                    (unsigned long)total, (unsigned long)allocated);
         if (plan) delete[] plan;
         return 0;
     }

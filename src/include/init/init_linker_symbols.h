@@ -43,6 +43,11 @@ extern uint8_t __init_heap_start;
 extern uint8_t __init_heap_end;
 extern const uint64_t __init_heap_size;
 
+// 日志环 backing buffer 段符号（NOLOAD；由 init_ring_bind 负责清零）
+// 长度请用 __init_ringlog_end - __init_ringlog_start 相减，勿把链接器符号当值读。
+extern uint8_t __init_ringlog_start;
+extern uint8_t __init_ringlog_end;
+
 // 初始化镜像信息
 extern const uint64_t __init_image_start;
 extern const uint64_t __init_image_end;

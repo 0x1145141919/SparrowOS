@@ -3,7 +3,7 @@
 #include "init/page_allocator_v2.h"
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
-#include "init/util/kout.h"
+#include "init/util/printk.h"
 #include <elf.h>
 
 // ============================================================================
@@ -36,39 +36,38 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
 
     // ---- 1. 从 initramfs 定位 kernel.elf，拷贝到瞬态端 ----
     if (em->ramfs_base == 0) {
-        bsp_kout << "[Phase3a] initramfs not present" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: initramfs not present"); init_fatal::halt(SRC_LOC());
     }
     const initramfs_header* rh = (const initramfs_header*)(uint64_t)em->ramfs_base;
     uint64_t kelf_sz = 0;
     phyaddr_t kelf_in_ramfs = initramfs_lookup(rh, "/kernel.elf", &kelf_sz);
     if (kelf_in_ramfs == 0 || kelf_sz == 0) {
-        bsp_kout << "[Phase3a] initramfs_lookup failed" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: initramfs_lookup failed"); init_fatal::halt(SRC_LOC());
     }
     uint64_t kelf_pages = align_up(kelf_sz, 4096) >> 12;
     kimg_pbase = page_allocator_v2::free_ram_explore(kelf_pages, 12);
     if (kimg_pbase == 0) {
-        bsp_kout << "[Phase3a] transient OOM: " << kelf_pages << " pages" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: transient OOM: %lx pages", (unsigned long)kelf_pages); init_fatal::halt(SRC_LOC());
     }
     // kimg = 从 initramfs 解包出的 kernel.elf 瞬态文件 → kernel_file_property
     if (page_allocator_v2::pages_set({kimg_pbase, kelf_pages << 12},
                                      page_state_t::kernel_file_property) != 0) {
-        bsp_kout << "[Phase3a] kimg pages_set failed" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: kimg pages_set failed"); init_fatal::halt(SRC_LOC());
     }
     ksystemramcpy((void*)(uint64_t)kelf_in_ramfs, (void*)(uint64_t)kimg_pbase, kelf_sz);
     ksetmem_8((void*)(uint64_t)(kimg_pbase + kelf_sz), 0, (kelf_pages << 12) - kelf_sz);
-    bsp_kout << "[Phase3a] kernel.elf (transient) at 0x" << kimg_pbase
-             << " size=" << kelf_sz << kendl;
+    init_printk("Phase 3a: kernel.elf (transient) at 0x%lx size=%lx",
+                (unsigned long)kimg_pbase, (unsigned long)kelf_sz);
 
     // ---- 2. ELF header 校验 ----
     uint8_t* elf_base = (uint8_t*)(uint64_t)kimg_pbase;
     Elf64_Ehdr* ehdr = (Elf64_Ehdr*)elf_base;
     if (ehdr->e_ident[EI_MAG0]!=ELFMAG0||ehdr->e_ident[EI_MAG1]!=ELFMAG1||
         ehdr->e_ident[EI_MAG2]!=ELFMAG2||ehdr->e_ident[EI_MAG3]!=ELFMAG3) {
-        bsp_kout << "[Phase3a] bad magic" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: bad magic"); init_fatal::halt(SRC_LOC());
     }
-    bsp_kout << "[Phase3a] phnum=" << ehdr->e_phnum
-             << " shnum=" << ehdr->e_shnum
-             << " entry=0x" << HEX << ehdr->e_entry << DEC << kendl;
+    init_printk("Phase 3a: phnum=%x shnum=%x entry=0x%lx",
+                (unsigned)ehdr->e_phnum, (unsigned)ehdr->e_shnum, (unsigned long)ehdr->e_entry);
 
     // 入口点经 out-param 直出（仅 init 侧 phase_4.5 跳转消费，kernel.elf 无此消费方，
     // 不进 handoff 资产注册表）
@@ -76,7 +75,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
 
     // ---- 3. 段表解析 + 精确狙击 4 段 ----
     if (ehdr->e_shnum == 0 || ehdr->e_shstrndx == SHN_UNDEF) {
-        bsp_kout << "[Phase3a] no section headers" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("Phase 3a: no section headers"); init_fatal::halt(SRC_LOC());
     }
     Elf64_Shdr* shdr = (Elf64_Shdr*)(elf_base + ehdr->e_shoff);
     Elf64_Shdr& shstr_hdr = shdr[ehdr->e_shstrndx];
@@ -110,7 +109,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
     // 失败即 halt（无降级路径）：打印出错点 + 位置戳后停机，仅成功路径正常返回。
     auto load_section = [&](Elf64_Shdr& sh, const char* kmmu_name, const char* asset_name) -> void {
         auto fail_halt = [&](const char* why) {
-            bsp_kout << "[Phase3a] " << kmmu_name << ": " << why << kendl;
+            init_printk("Phase 3a: %s: %s", kmmu_name, why);
             init_fatal::halt(SRC_LOC());
         };
         if (sh.sh_size == 0) fail_halt("section size 0");
@@ -140,8 +139,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
         acc.cache_strategy = WB;
         vm_interval iv = {.vpn = sh.sh_addr >> 12, .ppn = 0, .npages = npg, .access = acc};
         if (!iv.is_kernel_address()) {
-            bsp_kout << "[Phase3a] " << kmmu_name << " not kernel range 0x"
-                     << HEX << sh.sh_addr << DEC << kendl;
+            init_printk("Phase 3a: %s not kernel range 0x%lx", kmmu_name, (unsigned long)sh.sh_addr);
             init_fatal::halt(SRC_LOC());
         }
 
@@ -196,8 +194,8 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
 
         uint64_t vend = sh.sh_addr + sh.sh_size;
         if (vend > kernel_vaddr_top) kernel_vaddr_top = vend;
-        bsp_kout << "[Phase3a] " << kmmu_name << ": v=0x" << HEX << sh.sh_addr
-                 << " p=0x" << pa << " sz=0x" << sz << DEC << kendl;
+        init_printk("Phase 3a: %s: v=0x%lx p=0x%lx sz=0x%lx",
+                    kmmu_name, (unsigned long)sh.sh_addr, (unsigned long)pa, (unsigned long)sz);
     };
 
     // 对四个目标段分别命中（每个命中首个匹配段）并加载
@@ -213,7 +211,7 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
             break;
         }
         if (!matched) {
-            bsp_kout << "[Phase3a] section not found: " << tg.name_key << kendl;
+            init_printk("Phase 3a: section not found: %s", tg.name_key);
             init_fatal::halt(SRC_LOC());
         }
     }
@@ -230,21 +228,23 @@ loc_code_t phase_3a_load_kernel(kernel_mmu* kmmu, const ctx_early_mem* em,
             .size     = kelf_sz,
         };
         if (!asset_reg_add(asset_names::kimg, kimg_desc)) {
-            bsp_kout << "[Phase3a] asset dup: kimg" << kendl;
+            init_printk("Phase 3a: asset dup: kimg");
             init_fatal::halt(SRC_LOC());
         }
     }
 
-    bsp_kout << "[Phase3a] done: kIMG(transient) 0x" << (void*)kimg_pbase
-             << " size=" << kelf_sz << " vaddr_top=" << (void*)kernel_vaddr_top << kendl;
+    init_printk("Phase 3a: done: kIMG(transient) %p size=%lu vaddr_top=%p",
+                (void*)kimg_pbase, (unsigned long)kelf_sz, (void*)kernel_vaddr_top);
 
     // 资产树 dump（handoff 清单，字典序）
     if (g_asset_registry) {
-        bsp_kout << "[Phase3a] asset tree (" << g_asset_registry->size() << "):";
+        char line[512]; uint32_t o = 0;
+        o += init_format(line + o, sizeof(line) - o, "Phase 3a: asset tree (%lu):",
+                         (unsigned long)g_asset_registry->size());
         for (auto it = g_asset_registry->begin(); it != g_asset_registry->end(); ++it) {
-            bsp_kout << " [" << it->name << "]";
+            o += init_format(line + o, sizeof(line) - o, " [%s]", it->name);
         }
-        bsp_kout << kendl;
+        init_printk("%s", line);
     }
     return 0;
 }

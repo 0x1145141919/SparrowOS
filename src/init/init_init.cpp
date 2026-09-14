@@ -4,7 +4,9 @@
 #include "init/page_allocator_v2.h"
 #include "init/pages_alloc.h"
 #include "init/util/textConsole.h"
-#include "init/util/kout.h"
+#include "init/util/printk.h"
+#include "init/util/ring_log.h"
+#include "init/util/hpet_early.h"
 #include "init/core_hardwares/PortDriver.h"
 #include "init/init_fatal.h"
 #include "init/init_linker_symbols.h"
@@ -72,13 +74,11 @@ uint64_t va_alloc(uint64_t size,uint8_t align_log2){
 // Phase 1: 输出器 + 堆
 // ============================================================================
 static loc_code_t init_io_and_heap(BootInfoHeader* header) {
-    bsp_kout.Init();
     // 初始化 V3 伴侣堆 (BCB-based, 单线程, 无锁)
     uint64_t heap_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_heap_start;
     g_init_heap.linktime_init((vaddr_t)&__init_heap_start,
                               (uint32_t)heap_sz,
                               (vaddr_t)s_heap_bitmap);
-    bsp_kout.shift_hex();
     // pass-through: 初始化 GOP
     for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {
         if (header->pass_through_devices[i].device_info == PASS_THROUGH_DEVICE_GRAPHICS_INFO) {
@@ -90,7 +90,16 @@ static loc_code_t init_io_and_heap(BootInfoHeader* header) {
     init_textconsole::Init(
         (const unsigned char*)ter16x32_data, {16, 32}, 0xFFFFFFFF, 0xFF000000);
     serial_init_stage1();
-    bsp_kout << "[INIT] Phase 1: I/O + heap ready" << kendl;
+
+    // 摸黑时基：HPET（phase1 已在恒等映射下，直接爬 ACPI + 编程；失败静默）
+    init_hpet_early(header);
+    // 日志环：.ringlog 段（2M）绑定后背靠 DmesgRingBuffer_v2
+    // 长度用【段符号相减】算——INIT_RING_SIZE 是链接器符号，当 C 值用会误读该地址内容
+    init_ring_bind((void*)&__init_ringlog_start,
+                   (uint64_t)&__init_ringlog_end - (uint64_t)&__init_ringlog_start);
+
+    // 日志：init_printk 全面接管（bsp_kout 已不再用于输出）
+    init_printk("Phase 1: I/O + heap ready");
     return 0;
 }
 
@@ -122,13 +131,13 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
         }
     }
     if (em.xsdt_base)
-        bsp_kout << "[INIT] XSDT at phys 0x" << em.xsdt_base << kendl;
+        init_printk("XSDT at phys 0x%lx", (unsigned long)em.xsdt_base);
     else
-        bsp_kout << "[WARN] ACPI 2.0 XSDT not found" << kendl;
+        init_printk("ACPI 2.0 XSDT not found");
 
     // 2b. basic_allocator 自举
     int r = basic_allocator::Init(header->memory_map_ptr, header->memory_map_entry_count);
-    if (r != 0) { bsp_kout << "[INIT] basic_allocator::Init failed: " << r << kendl; return em; }
+    if (r != 0) { init_printk("basic_allocator::Init failed: %x", (unsigned)r); return em; }
 
     // 2c. 标记 init 自身映像
     uint64_t init_img_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_text_start;
@@ -152,7 +161,7 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
         uint64_t segcnt = 0;
         phymem_segment* view = basic_allocator::get_pure_memory_view(&segcnt);
         if (!view || segcnt == 0) {
-            bsp_kout << "[INIT] get_pure_memory_view failed" << kendl; return em;
+            init_printk("get_pure_memory_view failed"); return em;
         }
 
         // DRAM 物理上界：freeSystemRam 最高末尾（纯视图快照，替代 page_allocator::dram_top）
@@ -164,11 +173,12 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
         }
 
         if (page_allocator_v2::init() != 0) {
-            bsp_kout << "[INIT] page_allocator_v2::init failed" << kendl; return em;
+            init_printk("page_allocator_v2::init failed"); return em;
         }
-        bsp_kout << "[INIT] page_allocator_v2 up: managed=" << page_allocator_v2::total_page_count()
-                 << " free=" << page_allocator_v2::free_page_count()
-                 << " mem_map@0x" << HEX << page_allocator_v2::get_mem_map_pbase() << DEC << kendl;
+        init_printk("page_allocator_v2 up: managed=%lx free=%lx mem_map@0x%lx",
+                    (unsigned long)page_allocator_v2::total_page_count(),
+                    (unsigned long)page_allocator_v2::free_page_count(),
+                    (unsigned long)page_allocator_v2::get_mem_map_pbase());
 
         // init() 已自标记 init 镜像 / 区间数组 / low-1MB。此处补 header + loaded files：
         // 纯视图快照里它们仍是 freeSystemRam，账本不钉住分配器就会把它们交出去。
@@ -176,7 +186,7 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
         if (page_allocator_v2::pages_set(
                 {(uint64_t)header, (uint64_t)header->total_pages_count * 4096},
                 page_state_t::init_tmp_property) != 0) {
-            bsp_kout << "[INIT] header pages_set failed" << kendl; return em;
+            init_printk("header pages_set failed"); return em;
         }
         for (uint64_t i = 0; i < header->loaded_file_count; i++) {
             if (header->loaded_files[i].file_type == LOADED_FILE_ENTRY_TYPE_ELF_REAL_LOAD) continue;
@@ -184,14 +194,13 @@ static ctx_early_mem init_memory_early(BootInfoHeader* header) {
                     {(uint64_t)header->loaded_files[i].raw_data,
                      align_up(header->loaded_files[i].file_size, 4096)},
                     page_state_t::init_tmp_property) != 0) {
-                bsp_kout << "[INIT] loaded_file[" << i << "] pages_set failed" << kendl;
+                init_printk("loaded_file[%lu] pages_set failed", (unsigned long)i);
                 return em;
             }
         }
     }
 
-    bsp_kout << "[INIT] Phase 2: memory ready, free pages="
-             << page_allocator_v2::free_page_count() << kendl;
+    init_printk("Phase 2: memory ready, free pages=%lu", (unsigned long)page_allocator_v2::free_page_count());
     return em;
 }
 
@@ -210,7 +219,7 @@ static void initramfs_mark_used(BootInfoHeader* header, ctx_early_mem* em) {
         }
     }
     if (!ramfs || ramfs->raw_data == 0) {
-        bsp_kout << "[INIT] initramfs not loaded" << kendl;
+        init_printk("initramfs not loaded");
         em->ramfs_base = 0;
         em->ramfs_size = 0;
         return;
@@ -225,13 +234,13 @@ static void initramfs_mark_used(BootInfoHeader* header, ctx_early_mem* em) {
     const phyaddr_t ramfs_hi = (em->ramfs_base + em->ramfs_size + 0xFFFull) & ~0xFFFull;
     if (page_allocator_v2::pages_set({ramfs_lo, ramfs_hi - ramfs_lo},
                                      page_state_t::kernel_file_property) != 0) {
-        bsp_kout << "[INIT] initramfs pages_set failed" << kendl;
+        init_printk("initramfs pages_set failed");
         em->ramfs_base = 0;
         em->ramfs_size = 0;
         return;
     }
-    bsp_kout << "[INIT] initramfs in-place: base=0x" << HEX << em->ramfs_base
-             << " size=0x" << em->ramfs_size << DEC << kendl;
+    init_printk("initramfs in-place: base=0x%lx size=0x%lx",
+                (unsigned long)em->ramfs_base, (unsigned long)em->ramfs_size);
 }
 uint64_t g_va_alloc_base=0;
 
@@ -269,14 +278,14 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         const uint64_t init_img_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_text_start;
         erase_pages((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
         erase_pages((uint64_t)header, (uint64_t)header->total_pages_count * 4096);
-        bsp_kout << "[Phase4.5] self-eliminated: init image + BootInfoHeader erased from BCB" << kendl;
+        init_printk("Phase 4.5: self-eliminated: init image + BootInfoHeader erased from BCB");
     }
 
     // 4.5-1: CR3
     // 回收职能由 mem_map 账本（page_allocator_v2 状态数组，pages_arr mem 资产）接替，
     // kernel 收养账本后按每页状态正常回收。
     phyaddr_t root = kmmu->get_root_table_base();
-    bsp_kout << "[Phase4.5] CR3 <- 0x" << root << kendl;
+    init_printk("Phase 4.5: CR3 <- 0x%lx", (unsigned long)root);
     asm volatile("sfence");
     asm volatile("mov %0, %%cr3" :: "r"(root) : "memory");
     
@@ -321,13 +330,13 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
             cx->stacks_ptr = st;
             cx->slots[PROCESSOR_RSP0_STACK_BTM_IDX] = cx->tss.rsp0 ;
         }
-        bsp_kout << "[Phase4.5] prepare " << pcount << " GS complexes" << kendl;
+        init_printk("Phase 4.5: prepare %u GS complexes", (unsigned)pcount);
     }
     //outb(0xDB, 0x80);
     // 4.5-3: 加载 BSP 的 GDT + TSS（上一步已完全构建，此步仅 LGDT+LTR）
     {
         gs_complex_t* bsp_cx = (gs_complex_t*)(uint64_t)(iv->arch_info.conjunc_GSs.vbase());
-        bsp_kout << "[Phase4.5] LGDT+LTR: complex @ 0x" << HEX << (uint64_t)bsp_cx << kendl;
+        init_printk("Phase 4.5: LGDT+LTR: complex @ 0x%lx", (unsigned long)(uint64_t)bsp_cx);
         gs_complex_load_gdt_tss(bsp_cx);
     }
     
@@ -346,9 +355,8 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         ctx.core_ctx.idtctx.iret.rflags     = KERNEL_INIT_RFLAGS;
         ctx.core_ctx.idtctx.iret.rsp        = bsp_rsp0;
         ctx.core_ctx.idtctx.iret.ss         = K_ds_ss_idx << 3;
-        bsp_kout << "[Phase4.5] init_jump_to_kernel: entry=" << (void*)(uint64_t)entry_vaddr
-                 << " rsp=" << (void*)(uint64_t)bsp_rsp0
-                 << " rdi=" << (void*)(uint64_t)info_pbase << kendl;
+        init_printk("Phase 4.5: init_jump_to_kernel: entry=%p rsp=%p rdi=%p",
+                    (void*)(uint64_t)entry_vaddr, (void*)(uint64_t)bsp_rsp0, (void*)(uint64_t)info_pbase);
         init_jump_to_kernel(&ctx);
     }
 }
@@ -380,7 +388,7 @@ extern "C" void init_main(BootInfoHeader* header) {
         if (!gfx) break;
         GlobalBasicGraphicInfoType* gop_copy = new GlobalBasicGraphicInfoType(*gfx);
         if (!asset_reg_add("gop_info gop", gop_copy)) {
-            bsp_kout << "[INIT] asset dup: gop_info" << kendl;
+            init_printk("asset dup: gop_info");
             init_fatal::halt(SRC_LOC());
         }
         break;
@@ -399,21 +407,20 @@ extern "C" void init_main(BootInfoHeader* header) {
     phymem_segment* pure_view = basic_allocator::get_pure_memory_view(&segcnt);
     constexpr uint64_t PKT_PAGES = 8;   // v2 含 free_segs_descriptors_table，8 页预算
     phyaddr_t pkt = page_allocator_v2::free_ram_explore(PKT_PAGES, 12);
-    if (!pkt) { bsp_kout << "pkt OOM" << kendl; init_fatal::halt(SRC_LOC()); }
+    if (!pkt) { init_printk("pkt OOM"); init_fatal::halt(SRC_LOC()); }
     if (page_allocator_v2::pages_set({pkt, PKT_PAGES * 4096},
                                      page_state_t::transfer_package) != 0) {
-        bsp_kout << "pkt pages_set failed" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("pkt pages_set failed"); init_fatal::halt(SRC_LOC());
     }
     ksetmem_8((void*)(uint64_t)pkt, 0, PKT_PAGES * 4096);
 
     if (!build_init_to_kernel_header(pkt, PKT_PAGES, header, pure_view, segcnt)) {
-        bsp_kout << "build_init_to_kernel_header failed" << kendl; init_fatal::halt(SRC_LOC());
+        init_printk("build_init_to_kernel_header failed"); init_fatal::halt(SRC_LOC());
     }
 
-    bsp_kout << "[Phase4] info_pkt: paddr=" << (void*)(uint64_t)pkt
-             << " pages=" << (uint32_t)PKT_PAGES
-             << " phymem_segments=" << (uint64_t)segcnt
-             << " processors=" << (uint32_t)header->logical_processor_count << kendl;
+    init_printk("Phase 4: info_pkt: paddr=%p pages=%u phymem_segments=%lu processors=%u",
+                (void*)(uint64_t)pkt, (unsigned)PKT_PAGES, (unsigned long)segcnt,
+                (unsigned)header->logical_processor_count);
 
     // Phase 4.5
     phase_45_finalize(kmmu, pkt, &iv, entry_vaddr, header);

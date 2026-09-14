@@ -5,11 +5,13 @@ INIT_IMAGE_SIZE = 16M;
 INIT_STACK_SIZE = 64K;
 base_kernel_address = INIT_BASE;
 INIT_HEAP_SIZE = 2M;
+INIT_RING_SIZE = 2M;
 
 PROVIDE(INIT_BASE = INIT_BASE);
 PROVIDE(INIT_IMAGE_SIZE = INIT_IMAGE_SIZE);
 PROVIDE(INIT_STACK_SIZE = INIT_STACK_SIZE);
 PROVIDE(INIT_HEAP_SIZE = INIT_HEAP_SIZE);
+PROVIDE(INIT_RING_SIZE = INIT_RING_SIZE);
 
 MEMORY {
     INIT_RAM (rwx) : ORIGIN = INIT_BASE, LENGTH = INIT_IMAGE_SIZE
@@ -61,12 +63,20 @@ SECTIONS {
         __init_heap_end = .;
     } > INIT_RAM :heap
 
+    /* 日志环 backing buffer（init_printk / DmesgRingBuffer_v2）——NOLOAD，靠 init_ring_bind 清零 */
+    .ringlog (NOLOAD) : ALIGN(4096) {
+        __init_ringlog_start = .;
+        . = . + INIT_RING_SIZE;
+        __init_ringlog_end = .;
+    } > INIT_RAM :bss
+
     PROVIDE(__init_text_size = SIZEOF(.text));
     PROVIDE(__init_rodata_size = SIZEOF(.rodata));
     PROVIDE(__init_data_size = SIZEOF(.data));
     PROVIDE(__init_bss_size = SIZEOF(.bss));
     PROVIDE(__init_stack_size = SIZEOF(.stack));
     PROVIDE(__init_heap_size = SIZEOF(.heap));
+    PROVIDE(__init_ringlog_size = SIZEOF(.ringlog));
 
     PROVIDE(__init_image_start = ORIGIN(INIT_RAM));
     PROVIDE(__init_image_end = .);

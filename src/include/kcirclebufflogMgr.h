@@ -4,6 +4,14 @@
 #include "stdint.h"
 #include "util/lock.h"
 #include "abi/boot.h"
+
+// —— 时基（与 util/printk.h 同一约定）：返回【微秒】；未就绪返回 0 ——
+// v2 环记录头要打 ts；各 ELF 各自提供符号（kernel 接 ktime / init 暂桩 0）。
+extern "C" uint64_t now_ts_us();
+
+// —— 记录头 magic 锚点（magic1→magic2 固定距离 13B，供扫描定位）——
+static constexpr uint8_t LOG_REC_MAGIC1 = 0xA5;
+static constexpr uint8_t LOG_REC_MAGIC2 = 0x5A;
  class DmesgRingBuffer
 {
 private:
