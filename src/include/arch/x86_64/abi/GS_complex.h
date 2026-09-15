@@ -128,6 +128,18 @@ static inline gs_complex_t* get_gs_base()
     return (gs_complex_t*)ptr;
 }
 
+// ── GS_BASE 合法性钳位 ────────────────────────────────────────────────
+// 判定一个外来的 "GS_BASE"（典型来源：panic_context，可能已被内存损坏污染）
+// 是否可信到可以解引用。依据：gs_complex_t 为 alignas(4096) 且 sizeof 为
+// 4096 倍数，故任何真实实例地址必然落在内核高半区且 4096 对齐。
+// 损坏时该值常为 0x86 之类的野值；若不加检查直接解引用会引发 #GP，
+// 进而把 panic 处理程序自身也卡死（panic 中的 panic）。
+static inline bool gs_base_is_sane(uint64_t gs_base)
+{
+    constexpr uint64_t KERNEL_HALF_BASE = 0xFFFF800000000000ULL; // PGLV_4 高半区基址
+    return gs_base >= KERNEL_HALF_BASE && (gs_base & 0xFFFULL) == 0;
+}
+
 // ── GDT/TSS 加载接口 ──────────────────────────────────────────────────
 // 从 gs_complex_t 的内嵌 GDT + TSS 描述符中加载 GDT 和 TSS（LGDT + LTR）。
 // 调用前需确保 GDT 条目、TSS 描述符和栈指针已就绪。

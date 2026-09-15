@@ -118,7 +118,7 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     if (prev == 0) {
         will.kernel_final_state=GlobalKernelStatus;
     GlobalKernelStatus=kernel_state::PANIC;
-    resources_shift();
+    //resources_shift();
     will.magic=panic_will_magic;
     if(panic_info)will.latest_panic_info=*panic_info;
     if (behaviors.interpret_arg5_as_err_locator) {
@@ -145,8 +145,8 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     if(context){
         /* ── 打印肇事者 PID / APICID ── */
         uint64_t gs_slot1 = 0;
-        /* gs_base 是罪犯 CPU 的 GS_BASE，直接当作 gs_complex_t* 读 slots[1] */
-        if (context->gs_base) {
+        /* gs_base 是罪犯 CPU 的 GS_BASE；先做合法性钳位再当作 gs_complex_t* 读 slots[1] */
+        if (gs_base_is_sane(context->gs_base)) {
             gs_complex_t* guilty = (gs_complex_t*)context->gs_base;
             gs_slot1 = guilty->slots[PROCESSOR_ID_GS_INDEX];
             uint32_t pid  = (uint32_t)(gs_slot1 & 0xFFFFFFFF);
@@ -166,7 +166,7 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
         else_trace((void*)context->rbp);
 
         /* ── 若栈上命中 allkthread_true_enter，从 GS 捞 task TID ── */
-        if (kptrace_stack_has_kthread_entry((void*)context->rbp) && context->gs_base) {
+        if (kptrace_stack_has_kthread_entry((void*)context->rbp) && gs_base_is_sane(context->gs_base)) {
             gs_complex_t* guilty = (gs_complex_t*)context->gs_base;
             task* t = (task*)guilty->slots[PROCESSOR_NOW_RUNNING_TASK_GS_INDEX];
             if (t)
@@ -181,7 +181,10 @@ void Panic::panic(panic_behaviors_flags behaviors, char *message, panic_context:
     
     
     asm volatile("cli");
-    asm volatile("hlt");
+    /* panic 绝不返回：单条 hlt 一旦被 NMI/SMI 唤醒，就会 fallthrough 到编译器生成的
+       epilogue（mov -8(%rbp),%rbx; leave; ret），ret 到损坏/栈上的返回地址 → 在野地址
+       取指 → NX #PF 风暴。改为死循环停机，保证 panic 后不可能“返回”。 */
+    for (;;) asm volatile("hlt");
 }
 
 

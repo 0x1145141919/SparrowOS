@@ -511,6 +511,16 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
         }
         case ipi_vecs::IPI_RETURNABLE:{
             local_ipi_complex_fnbox_t* fnbox=(local_ipi_complex_fnbox_t*)local_ipi_complex;
+            if (!fnbox->func) {
+                /* 空槽防御：发送端 100ms 超时会先 cmpxchg16b 释放槽（清零），而 IPI
+                   可能仍在途 → 这里读到 func=NULL。若直接 fnbox->func(...) 就是
+                   call 0 → RIP=0 取指 #PF 风暴，现场尽失。改为显式记录 + EOI 返回。 */
+                bsp_kout << now << "[vec_demux] IPI_RETURNABLE with NULL func! cpu=" << pid
+                         << " slot=0x" << HEX << (uint64_t)*local_ipi_complex << DEC
+                         << " (sender likely released the slot / timeout)" << kendl;
+                x2apic::x2apic_driver::write_eoi();
+                return;
+            }
             uint64_t result=(uint64_t)fnbox->func(fnbox->arg);
             __uint128_t result_box=(__uint128_t)result << 64 | 1;   // hi64=返回值, lo64=1
             cmpxchg16b(local_ipi_complex,&fnbox_copy,&result_box);
@@ -519,6 +529,15 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
         }
         case ipi_vecs::IPI_RUNAWAY:{
             local_ipi_complex_fnbox_t fnbox=*(local_ipi_complex_fnbox_t*)local_ipi_complex;
+            if (!fnbox.func) {
+                /* 同 RETURNABLE：空槽直接 fnbox.func(...) = call 0 → RIP=0 取指 #PF 风暴。
+                   显式记录现场后 EOI 返回。 */
+                bsp_kout << now << "[vec_demux] IPI_RUNAWAY with NULL func! cpu=" << pid
+                         << " slot=0x" << HEX << (uint64_t)*local_ipi_complex << DEC
+                         << " (sender likely released the slot / timeout)" << kendl;
+                x2apic::x2apic_driver::write_eoi();
+                return;
+            }
             __uint128_t get_func_mail = 1;
             // bsp_kout<<"interrupt_sended"<<kendl; — 真机串口慢，去掉节省 ~1.5ms
             cmpxchg16b(local_ipi_complex,&fnbox_copy,&get_func_mail);
