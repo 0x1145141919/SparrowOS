@@ -66,3 +66,34 @@ Tools/tcg-trace/tcg-trace.sh --tag hunt --repeat 30 --timeout 90 --cap-gb 3
 - `idt_vec_demux_entry` 的 IPI 空槽 → `call 0` → `RIP=0` 风暴；
 - AP 的 `GS_BASE` 被 `resources_shift()` 的 `mov gs,sel` 清 0（长模式描述符 base=0）；
 - `Panic::panic` 收尾单条 `hlt` 被唤醒后 fallthrough 到 `leave;ret` → 返回栈上野地址 → NX `#PF` 风暴。
+
+## 符号化精读（trace-sym.py）＋ 物理内存读取（ram-read.py）
+
+裸 `.trace` 是 `-d in_asm` 的裸汇编，且 init.elf / kernel.elf / UEFI 固件三段地址混排，直接读 64 万行不可行。两件配套工具：
+
+**`trace-sym.py`** — 把 `.trace` 按链接域解析成「符号+偏移 @ 源文件:行」：
+- 链接域：init.elf @`0x101000000`；kernel.elf @`0xffff800000000000`（含低半区 `0x4000–0x8000`）。
+- 每行输出 = `<sym+off @ src:line> | <原始未解析行>`（原始行逐字保留，便于对照）。
+- 立即数（含 large model 的 `movabsq $<十进制巨值>`）与 RIP-相对（`disp(%rip)`）里的地址也解析，尾注 `; addr[...]`；含护栏（无 DWARF 覆盖 / 偏移过大 → 判为非常量，不解析）。
+- `--src`：在指令流里插 C++ 源码行批注（`── file:line [func]` + 该行源码；`.asm/.s` 自动跳过）。
+- 事件行的 `#N` 是 QEMU **全局事件序号**，**不是 CPU id**。
+```bash
+trace-sym.py w22_01.trace --start kernel --only-domain kernel --src --out w22_01.kernel.src.log
+```
+
+**`ram-read.py`** — 从 `--dump-mem` 产出的 `<tag>.ram`（物理 0 起、小端直出）按**虚拟地址**取字节（x86-64 4 级页表 walk）：
+```bash
+ram-read.py w22_01.ram 0x306000 0xffff8002dc604218 -n 128 --walk --ascii   # CR3 取自 panic serial
+```
+
+**已知坑**：`qmp-memdump.py` 的 socket 超时 30s —— 满负载下 8GiB `pmemsave` 常超时 → `DUMPFAIL`，且留**截断** `.ram`（字节数 ≠ `0x200000000` 即不可信）。
+
+**`ram-mkcore.py`** — 把 `.ram`(+serial) 合成为 **GDB 可读的 ELF ET_CORE**（按 `assets_remap` 静态表 + 页表 walk 写成 PT_LOAD，GDB 直接按内核虚拟地址读）：
+```bash
+ram-mkcore.py w22_01.ram w22_01.serial --out w22_01.core --gdb-out w22_01.gdb
+gdb kernel.elf w22_01.core     # 或 gdb -x w22_01.gdb -q kernel.elf w22_01.core
+```
+- 数据用**稀疏文件**（`p_offset=物理地址`），同物理页只落一次 → 实体占用 ≈ 被映射物理页之和（默认预算 1GiB 后截断）。
+- 从 serial 抄寄存器写 `NT_PRSTATUS` NOTE → `info registers` / `x/i $rip` / `bt` 全活。
+- 低端 `0..0x1100` 被 ELF 头覆盖（real-mode 区，无碍）。
+- 校验：`x/8xb 0xffff8000000053a0` 应 = `49 89 ff 48 b8 f9 22 01`。

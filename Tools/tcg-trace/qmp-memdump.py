@@ -84,7 +84,15 @@ def main():
         r = cmd("pmemsave", {"val": base, "size": size, "filename": outfile}, _id=3)
         if "error" in r:
             fail("pmemsave 错误: %s" % r["error"], 2)
-        cmd("quit", _id=4)
+        # 额外：抓全部 CPU 寄存器（HMP `info registers -a`）→ <outfile>.regs
+        try:
+            rr = cmd("human-monitor-command", {"command-line": "info registers -a"}, _id=4)
+            if isinstance(rr, dict) and "return" in rr:
+                with open(outfile + ".regs", "w") as g:
+                    g.write(rr["return"])
+        except Exception:
+            pass
+        cmd("quit", _id=5)
         dt = time.time() - t0
     except Exception as e:
         fail("QMP 交互失败: %s" % e, 3)
