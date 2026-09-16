@@ -148,7 +148,7 @@ void per_processor_scheduler::sleep_tasks_wake()
         miusecond_time_stamp_t current_stamp = ktime::get_microsecond_stamp();
 
         {
-            reentrant_spinlock_guard g(this->sched_lock);
+            spinlock_interrupt_about_guard g(this->sched_lock);
             while (batch_count < BATCH_MAX) {
                 task** candidate = this->sleep_queue.front();
                 if (!candidate) break;
@@ -161,14 +161,14 @@ void per_processor_scheduler::sleep_tasks_wake()
         if (batch_count == 0) break;
 
         for (uint8_t i = 0; i < batch_count; i++) {
-            reentrant_spinlock_guard g(batch[i]->task_lock);
+            spinlock_interrupt_about_guard g(batch[i]->task_lock);
             batch[i]->on_blockers_queue_bit = false;
             if (!batch[i]->set_ready())
                 panic_with_kurd(make_sched_set_state_fatal());
         }
 
         {
-            reentrant_spinlock_guard g(this->sched_lock);
+            spinlock_interrupt_about_guard g(this->sched_lock);
             for (uint8_t i = 0; i < batch_count; i++) {
                 kurd = this->insert_ready_task(batch[i]);
                 if (error_kurd(kurd)) {
@@ -182,7 +182,7 @@ void per_processor_scheduler::sched()
 {
     task* to_run=[&]()->task*{
         {
-            reentrant_spinlock_guard g(this->sched_lock);
+            spinlock_interrupt_about_guard g(this->sched_lock);
             if(this->ready_queue.size()){
                 task**candidate=this->ready_queue.front();
                 if(*candidate){
@@ -196,7 +196,7 @@ void per_processor_scheduler::sched()
             per_processor_scheduler*other=get_other_scheduler(i);
             if(other==this)continue;
             {
-            reentrant_spinlock_guard g(other->sched_lock);
+            spinlock_interrupt_about_guard g(other->sched_lock);
                 if(other->ready_queue.size()){
                     task**candidate=other->ready_queue.front();
                     if(*candidate){
@@ -210,7 +210,7 @@ void per_processor_scheduler::sched()
         return &this->idle;
     }();
     {
-    reentrant_spinlock_guard g1(to_run->task_lock);
+    spinlock_interrupt_about_guard g1(to_run->task_lock);
     if (!to_run->set_running())
         panic_with_kurd(make_sched_set_state_fatal());
     to_run->belonged_processor_id=fast_get_processor_id();

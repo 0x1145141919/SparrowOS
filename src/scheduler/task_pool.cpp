@@ -72,7 +72,7 @@ extern "C" uint64_t zombie_observe(uint64_t tid, zombie_observe_results_t* resul
         return INVALID_TID;
     }
     {
-        reentrant_spinlock_guard l(t->task_lock);
+        spinlock_interrupt_about_guard l(t->task_lock);
         if (t->get_state() != task_state_t::zombie) {
             *result = ZOMBIE_ALIVE;
             return INVALID_TID;

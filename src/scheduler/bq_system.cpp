@@ -66,7 +66,7 @@ KURD_t block_queue::push_tail(task *t)
         return fail;
     }/*
     {
-        reentrant_spinlock_guard g(t->task_lock);
+        spinlock_interrupt_about_guard g(t->task_lock);
         t->task_event_shift(this->queue_event);
         t->on_blockers_queue_bit = true;
     }*/ //错误的写法,这些状态改变，应该在一个临界区，也就是外部的
@@ -203,7 +203,7 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
     for (uint32_t i = 0; i < clamp->batch_count; ++i) {
         task* t = clamp->arr[i];
         if (!t) continue;
-        reentrant_spinlock_guard gt(t->task_lock);
+        spinlock_interrupt_about_guard gt(t->task_lock);
         t->priv_ctx.rax = rax_enc;
         t->set_ready();
         t->on_blockers_queue_bit = false;
@@ -214,7 +214,7 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
         task* t = clamp->arr[i];
         if (!t) continue;
         per_processor_scheduler* target = get_other_scheduler(t->belonged_processor_id);
-        reentrant_spinlock_guard gs(target->sched_lock);
+        spinlock_interrupt_about_guard gs(target->sched_lock);
         KURD_t kurd = target->insert_ready_task(t, false);
         if (error_kurd(kurd)) {
             panic_info_inshort inshort = {

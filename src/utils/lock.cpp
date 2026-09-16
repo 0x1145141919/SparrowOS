@@ -61,15 +61,18 @@ constexpr lock_flags DISABLE_INTERRUPT_FLAG=lock_flags{.if_enable_accept_interru
 spinlock_interrupt_about_guard::spinlock_interrupt_about_guard(spinlock_cpp_t& lock)
     : lock_ref(lock)
 {
-    lock_ref.lock();
+    // 先关中断再拿锁：否则存在"已持锁但中断仍开"的窗口，同核中断重入同一把
+    // 自旋锁会自旋等待自己（普通自旋锁不按 CPU 认主，无法放行）→ 自死锁。
     flag.if_enable_accept_interrupt=get_if_enable_accept_interrupt();
     #ifdef KERNEL_MODE
     disable_interrupts();
     #endif
+    lock_ref.lock();
 }
 
 spinlock_interrupt_about_guard::~spinlock_interrupt_about_guard()
 {
+    lock_ref.unlock();
     #ifdef KERNEL_MODE
     if(flag.if_enable_accept_interrupt){
         enable_interrupts();
@@ -77,84 +80,6 @@ spinlock_interrupt_about_guard::~spinlock_interrupt_about_guard()
         disable_interrupts();
     }
     #endif
-    lock_ref.unlock();
-}
-
-reentrant_spinlock_cpp_t::reentrant_spinlock_cpp_t()
-{
-    complex.store(0);
-}
-
-void reentrant_spinlock_cpp_t::lock()
-{
-    const uint64_t pid = static_cast<uint64_t>(fast_get_processor_id());
-
-    while (true) {
-        uint64_t cur = complex.load();
-        uint64_t depth = cur & DEPTH_MASK;
-        uint64_t owner = cur >> PID_SHIFT;
-
-        if (depth == 0) {
-            uint64_t desired = (pid << PID_SHIFT) | 1;
-            if (complex.cmpxchg_strong(cur, desired)) {
-                return;
-            }
-        } else if (owner == pid) {
-            if (depth >= DEPTH_MASK) {
-                __builtin_trap();
-            }
-            uint64_t desired = (cur & ~DEPTH_MASK) | (depth + 1);
-            if (complex.cmpxchg_strong(cur, desired)) {
-                return;
-            }
-        } else {
-            cpu_relax();
-        }
-    }
-}
-
-void reentrant_spinlock_cpp_t::unlock()
-{
-    const uint64_t pid = static_cast<uint64_t>(fast_get_processor_id());
-    while (true) {
-        uint64_t cur = complex.load();
-        uint64_t depth = cur & DEPTH_MASK;
-        uint64_t owner = cur >> PID_SHIFT;
-
-        if (depth == 0 || owner != pid) {
-            return;
-        }
-
-        uint64_t desired;
-        if (depth == 1) {
-            desired = 0;
-        } else {
-            desired = (cur & ~DEPTH_MASK) | (depth - 1);
-        }
-
-        if (complex.cmpxchg_strong(cur, desired)) {
-            return;
-        }
-        cpu_relax();
-    }
-}
-
-bool reentrant_spinlock_cpp_t::is_locked()
-{
-    constexpr uint64_t DEPTH_MASK = 0xFULL;
-    uint64_t cur = complex.load();
-    return (cur & DEPTH_MASK) != 0;
-}
-
-reentrant_spinlock_guard::reentrant_spinlock_guard(reentrant_spinlock_cpp_t& lock)
-    : lock_ref(lock)
-{
-    lock_ref.lock();
-}
-
-reentrant_spinlock_guard::~reentrant_spinlock_guard()
-{
-    lock_ref.unlock();
 }
 
 bool trylock_cpp_t::try_lock()
@@ -220,33 +145,33 @@ void spinrwlock_cpp_t::write_unlock() {
 spinrwlock_interrupt_about_read_guard::spinrwlock_interrupt_about_read_guard(spinrwlock_cpp_t& lock)
     : lock_ref(lock)
 {
-    lock_ref.read_lock();
     flag.if_enable_accept_interrupt=get_if_enable_accept_interrupt();
     disable_interrupts();
+    lock_ref.read_lock();
 }
 
 spinrwlock_interrupt_about_read_guard::~spinrwlock_interrupt_about_read_guard()
 {
+    lock_ref.read_unlock();
     if(flag.if_enable_accept_interrupt){
         enable_interrupts();
     }else disable_interrupts();
-    lock_ref.read_unlock();
 }
 
 spinrwlock_interrupt_about_write_guard::spinrwlock_interrupt_about_write_guard(spinrwlock_cpp_t& lock)
     : lock_ref(lock)
 {
-    lock_ref.write_lock();
     flag.if_enable_accept_interrupt=get_if_enable_accept_interrupt();
     disable_interrupts();
+    lock_ref.write_lock();
 }
 
 spinrwlock_interrupt_about_write_guard::~spinrwlock_interrupt_about_write_guard()
 {
+    lock_ref.write_unlock();
     if(flag.if_enable_accept_interrupt){
         enable_interrupts();
     }else disable_interrupts();
-    lock_ref.write_unlock();
 }
 interrupt_guard::interrupt_guard()
 {

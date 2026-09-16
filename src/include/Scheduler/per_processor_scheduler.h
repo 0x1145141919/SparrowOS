@@ -32,7 +32,7 @@ public:
         KURD_t insert(task* task_ptr);
     };
     sleep_queue_t sleep_queue;
-    reentrant_spinlock_cpp_t sched_lock;
+    spinlock_cpp_t sched_lock;
     bool is_idle;
     void next_task_with_routine();
     KURD_t insert_ready_task(task* task_ptr, bool front = false);

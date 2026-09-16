@@ -21,27 +21,6 @@ public:
     bool is_locked();
     void unlock();
 };
-class reentrant_spinlock_cpp_t {
-    
-    u64ka complex;
-    static constexpr uint64_t PID_SHIFT = 32;
-    static constexpr uint64_t DEPTH_MASK = 0xFULL;
-    //[0:3]为深度，超过0xF就panic,[31:63]为pid标记，用fast_get_processor_id获取
-    //显然深度为0且pid为0时为未上锁
-    public:
-    reentrant_spinlock_cpp_t();
-    void lock();
-    void unlock();
-    bool is_locked();
-};
-class reentrant_spinlock_guard {
-    reentrant_spinlock_cpp_t& lock_ref;
-public:
-    explicit reentrant_spinlock_guard(reentrant_spinlock_cpp_t& lock);
-    ~reentrant_spinlock_guard();
-    reentrant_spinlock_guard(const reentrant_spinlock_guard&) = delete;
-    reentrant_spinlock_guard& operator=(const reentrant_spinlock_guard&) = delete;
-};
 class spinlock_interrupt_about_guard {
     spinlock_cpp_t& lock_ref;
     lock_flags flag;

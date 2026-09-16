@@ -7,7 +7,7 @@
  *
  * ── scheduler.sched() ──
  *   执行流飞走性调用。取下一个任务 → atomic_load → iretq 跳到新任务。
- *   调用前必须释放所有 RAII 锁守卫（spinlock_guard / reentrant_spinlock_guard），
+ *   调用前必须释放所有 RAII 锁守卫（spinlock_guard / spinlock_interrupt_about_guard），
  *   否则锁在析构前就飞走，永久泄漏。
  *
  * ── scheduler.sleep_tasks_wake() ──
@@ -174,7 +174,7 @@ KURD_t task_launch(task *t, uint32_t pid)
 
     // ⑤ 状态机：init → ready
     {
-        reentrant_spinlock_guard g(t->task_lock);
+        spinlock_interrupt_about_guard g(t->task_lock);
         if(!t->set_ready()){
             KURD_t k = mkfail();
             k.reason = fr::STATE_TRANSITION_FAIL;
@@ -185,7 +185,7 @@ KURD_t task_launch(task *t, uint32_t pid)
     // ⑥ 插入目标 ready_queue
     KURD_t kurd;
     {
-        reentrant_spinlock_guard g(target->sched_lock);
+        spinlock_interrupt_about_guard g(target->sched_lock);
         kurd=target->insert_ready_task(t,false);
     }
 
@@ -197,14 +197,14 @@ KURD_t task_launch(task *t, uint32_t pid)
     per_processor_scheduler&scheduler=*get_self_scheduler();
     task* yield_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
-        reentrant_spinlock_guard g(yield_task->task_lock);
+        spinlock_interrupt_about_guard g(yield_task->task_lock);
         kthread_common_save(context,true,yield_task);
         if (!yield_task->set_ready())
             panic_with_kurd(context, make_kthreads_set_state_fatal());
     }
     if(!scheduler.is_the_idle_task(yield_task))
     {
-        reentrant_spinlock_guard g(scheduler.sched_lock);
+        spinlock_interrupt_about_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(yield_task);
     }
     scheduler.next_task_with_routine();
@@ -215,7 +215,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     task* interrupted_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     bool is_user_context=((frame->core_ctx.idtctx.iret.cs&3)==3);
     {
-        reentrant_spinlock_guard g(interrupted_task->task_lock);
+        spinlock_interrupt_about_guard g(interrupted_task->task_lock);
         if(!is_user_context){
             kthread_common_save(frame,true,interrupted_task);
         }
@@ -224,7 +224,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     }
     if(!scheduler.is_the_idle_task(interrupted_task))
     {
-        reentrant_spinlock_guard g(scheduler.sched_lock);
+        spinlock_interrupt_about_guard g(scheduler.sched_lock);
         scheduler.insert_ready_task(interrupted_task);
     }
     scheduler.next_task_with_routine();
@@ -234,7 +234,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     per_processor_scheduler&scheduler=*get_self_scheduler();
     task*exit_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
-        reentrant_spinlock_guard g(exit_task->task_lock);
+        spinlock_interrupt_about_guard g(exit_task->task_lock);
         kthread_common_save(context,true,exit_task);
         if (!exit_task->set_zombie())
             panic_with_kurd(context, make_kthreads_set_state_fatal());
@@ -246,7 +246,7 @@ extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
     per_processor_scheduler&scheduler=*get_self_scheduler();
     task* blocked_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
-        reentrant_spinlock_guard g(blocked_task->task_lock);
+        spinlock_interrupt_about_guard g(blocked_task->task_lock);
         kthread_common_save(context,true,blocked_task);
         if (!blocked_task->set_blocked())
             panic_with_kurd(context, make_kthreads_set_state_fatal());
@@ -268,7 +268,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
     if(!success_all_kurd(kurd)){
         return kurd_get_raw(kurd);
     }
-    reentrant_spinlock_guard l(task_ptr->task_lock);
+    spinlock_interrupt_about_guard l(task_ptr->task_lock);
     per_processor_scheduler*target_scheduler=get_other_scheduler(task_ptr->belonged_processor_id);
     if(task_ptr->get_state()==task_state_t::ready||
     task_ptr->get_state()==task_state_t::running){
@@ -282,7 +282,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         if (!task_ptr->set_ready())
             panic_with_kurd(make_kthreads_set_state_fatal());
         {
-            reentrant_spinlock_guard h(target_scheduler->sched_lock);
+            spinlock_interrupt_about_guard h(target_scheduler->sched_lock);
             kurd=target_scheduler->insert_ready_task(task_ptr, front_insert);
             return kurd_get_raw(kurd);
         }
@@ -296,7 +296,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
     per_processor_scheduler*scheduler=get_other_scheduler(fast_get_processor_id());
     task* sleeper_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     {
-        reentrant_spinlock_guard g(sleeper_task->task_lock);
+        spinlock_interrupt_about_guard g(sleeper_task->task_lock);
         kthread_common_save(context,true,sleeper_task);
         sleeper_task->min_wakeup_stamp=ktime::get_microsecond_stamp()+context->rdi;
         if (!sleeper_task->set_blocked())
@@ -304,7 +304,7 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         sleeper_task->on_blockers_queue_bit = true;
         sleeper_task->task_event_shift( task::event_type_t::sleep);
         {
-        reentrant_spinlock_guard h(scheduler->sched_lock);
+        spinlock_interrupt_about_guard h(scheduler->sched_lock);
         scheduler->sleep_queue.insert(sleeper_task);
         }
     }
@@ -336,7 +336,7 @@ void block_if_equal_cppenter(x64_standard_context_v2 *context)
             {
             context->rax|=1;
             task::event_type_t qevt=waite_queue->get_queue_event();
-            reentrant_spinlock_guard h(blocked_task->task_lock);
+            spinlock_interrupt_about_guard h(blocked_task->task_lock);
             kthread_common_save(context,true,blocked_task);
             if (!blocked_task->set_blocked())
                 panic_with_kurd(context, make_kthreads_set_state_fatal());

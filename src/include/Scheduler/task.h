@@ -36,7 +36,7 @@ public:
 
     bool on_blockers_queue_bit = false;
     uint32_t belonged_processor_id;
-    reentrant_spinlock_cpp_t task_lock;
+    spinlock_cpp_t task_lock;
     miusecond_time_stamp_t min_wakeup_stamp;
     x64_standard_context_v2 priv_ctx;
     vaddr_t priv_stack_base;
