@@ -23,7 +23,9 @@
     push rbx
     push rax
     ; swapgs if from user mode
-    mov rax, [rsp + 15 * 8]     ; CS at offset 120 (15 GPR)
+    ;   帧布局: 15 GPR(120) + RIP(8) + CS(8)  → CS 在 [rsp+136]
+    ;   （原写 [rsp+120]=RIP，漏算 RIP；参照 vec_demux_common 的正确取法）
+    mov rax, [rsp + 15 * 8 + 16]    ; CS = [rsp+136]
     test al, 3
     jz %%skip_gs
     swapgs
@@ -37,7 +39,7 @@
     call rax
     pop rsp
     ; reverse swapgs if needed
-    mov rax, [rsp + 15 * 8]     ; CS
+    mov rax, [rsp + 15 * 8 + 16]    ; CS = [rsp+136]
     test al, 3
     jz %%skip_gs_back
     swapgs
@@ -79,7 +81,9 @@
     push rbx
     push rax
     ; swapgs if from user mode
-    mov rax, [rsp + 15 * 8 + 8] ; CS at offset 120 + 8 (errcode)
+    ;   帧布局: 15 GPR(120) + errcode(8) + RIP(8) + CS(8)  → CS 在 [rsp+136]
+    ;   （原写 [rsp+128]=RIP，漏算 RIP）
+    mov rax, [rsp + 15 * 8 + 16]    ; CS = [rsp+136]
     test al, 3
     jz %%skip_gs
     swapgs
@@ -93,7 +97,7 @@
     call rax
     pop rsp
     ; reverse swapgs if needed
-    mov rax, [rsp + 15 * 8 + 8] ; CS
+    mov rax, [rsp + 15 * 8 + 16]    ; CS = [rsp+136]
     test al, 3
     jz %%skip_gs_back
     swapgs
