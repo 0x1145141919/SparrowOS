@@ -26,13 +26,19 @@
 #     --dump-mem MB  异常停止时额外抓「最终物理内存镜像」MB 兆字节 → <tag>.ram
 #     --mem-base A   内存转储起始物理地址（默认 0；支持 0x… 十六进制）
 #     --dump-always  连正常样本也转储（默认只对 PANIC/HANG/SIZECAP 转储）
+#     --dump-vmcore  异常停止时抓【官方 vmcore】（QMP dump-guest-memory, 非 paging,
+#                    物理, 只 RAM, 含全 CPU 寄存器）→ <tag>.vmcore（建议首选）
+#     --mkcore       在 vmcore 基础上合成【虚拟视角 GDB core】→ <tag>.core
+#                    （隐含 --dump-vmcore；单根 kspace_up_half + 附 .map-report.txt）
 #     -h|--help
 #   环境: SMP(默认 6) BASE(同 --base)
 #
 # 输出: <outdir>/<tag>.trace  (QEMU -D 日志)
 #       <outdir>/<tag>.serial (串口)
-#       <outdir>/<tag>.ram    (物理内存镜像；仅 --dump-mem 且命中异常时)
-#       末行: TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= RAM=
+#       <outdir>/<tag>.ram    (pmemsave 物理镜像；仅 --dump-mem 且命中异常时)
+#       <outdir>/<tag>.vmcore (官方 vmcore；仅 --dump-vmcore 且命中异常时)
+#       <outdir>/<tag>.core   (虚拟视角 core + .map-report.txt；仅 --mkcore)
+#       末行: TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= RAM= VMCORE= CORE=
 #       退出码: 0=正常(KSHELL/OTHER) 10=抓到异常样本(PANIC/HANG/SIZECAP)
 # =============================================================================
 set -uo pipefail
@@ -42,9 +48,9 @@ SMP="${SMP:-6}"
 D_CATS='in_asm,int,guest_errors,unimp,cpu_reset,pcall'
 
 OUTDIR=""; TAG="trace"; TIMEOUT=90; CAP_GB=3; STOP_ON='PANIC|kshell>'; REPEAT=1
-DUMP_MEM_MB=0; MEM_BASE=0; DUMP_ALWAYS=0
+DUMP_MEM_MB=0; MEM_BASE=0; DUMP_ALWAYS=0; DUMP_VMCORE=0; DO_MKCORE=0
 
-usage() { sed -n '2,40p' "$0"; exit "${1:-0}"; }
+usage() { awk 'NR==1{next} /^set /{exit} {print}' "$0"; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,6 +64,8 @@ while [ $# -gt 0 ]; do
     --dump-mem) DUMP_MEM_MB="${2:?}"; shift;;
     --mem-base) MEM_BASE="${2:?}";    shift;;
     --dump-always) DUMP_ALWAYS=1;;
+    --dump-vmcore) DUMP_VMCORE=1;;
+    --mkcore)      DO_MKCORE=1; DUMP_VMCORE=1;;
     -h|--help) usage 0;;
     *) echo "未知参数: $1" >&2; usage 1;;
   esac
@@ -95,7 +103,7 @@ run_one() {
   local qsock="$OUTDIR/$1.qmp"
   # 仅转储时才挂 QMP（避免非转储轮被多一个 chardev 扰动 TCG 交织）
   local qmp_arg=()
-  if [ "$DUMP_MEM_MB" -gt 0 ]; then rm -f "$qsock"; qmp_arg=(-qmp "unix:$qsock,server=on,wait=off"); fi
+  if [ "$DUMP_MEM_MB" -gt 0 ] || [ "$DUMP_VMCORE" -gt 0 ]; then rm -f "$qsock"; qmp_arg=(-qmp "unix:$qsock,server=on,wait=off"); fi
   stage_esp
   qemu-system-x86_64 \
     -no-reboot -bios "$VM/OVMF.fd" -smp "$SMP" \
@@ -144,13 +152,35 @@ run_one() {
     fi
   fi
 
+  # ── 官方 vmcore：dump-guest-memory（自带 stop/resume；只 RAM + 全 CPU 寄存器）──
+  local vmcore="-" core="-"
+  if [ "$DUMP_VMCORE" -gt 0 ]; then
+    if [ "$DUMP_ALWAYS" -gt 0 ] || { [ "$res" != KSHELL ] && [ "$res" != OTHER ]; }; then
+      if python3 "$SELF_DIR/qmp-dump-vmcore.py" "$qsock" "$OUTDIR/$1.vmcore" \
+                 --timeout "${VMCORE_TIMEOUT:-900}" 2>&1; then
+        vmcore="$(du -h "$OUTDIR/$1.vmcore" 2>/dev/null | cut -f1)"
+        if [ "$DO_MKCORE" -gt 0 ]; then
+          if python3 "$SELF_DIR/vmcore-mkcore.py" "$OUTDIR/$1.vmcore" "$ser" \
+                     --kernel "$BASE/kernel/kernel.elf" --out "$OUTDIR/$1.core" \
+                     --report "$OUTDIR/$1.map-report.txt" 2>&1 | sed 's/^/  /'; then
+            core="$(du -h "$OUTDIR/$1.core" 2>/dev/null | cut -f1)"
+          else
+            core="MKFAIL"
+          fi
+        fi
+      else
+        vmcore="DUMPFAIL"; rm -f "$OUTDIR/$1.vmcore"
+      fi
+    fi
+  fi
+
   kill -TERM "$pid" 2>/dev/null; sleep 0.3; kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   rm -f "$qsock"
 
-  printf 'TAG=%s RESULT=%s REASON=%s ELAPSED=%ss TRACE=%s LINES=%s SERIAL=%s RAM=%s\n' \
+  printf 'TAG=%s RESULT=%s REASON=%s ELAPSED=%ss TRACE=%s LINES=%s SERIAL=%s RAM=%s VMCORE=%s CORE=%s\n' \
     "$tag" "$res" "$reason" "$el" \
     "$(du -h "$tr" 2>/dev/null | cut -f1)" \
-    "$(wc -l <"$tr" 2>/dev/null || echo 0)" "$ser" "$ram"
+    "$(wc -l <"$tr" 2>/dev/null || echo 0)" "$ser" "$ram" "$vmcore" "$core"
   case "$res" in KSHELL|OTHER) return 0;; *) return 10;; esac
 }
 

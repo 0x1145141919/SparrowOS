@@ -86,7 +86,7 @@ trace-sym.py w22_01.trace --start kernel --only-domain kernel --src --out w22_01
 ram-read.py w22_01.ram 0x306000 0xffff8002dc604218 -n 128 --walk --ascii   # CR3 取自 panic serial
 ```
 
-**已知坑**：`qmp-memdump.py` 的 socket 超时 30s —— 满负载下 8GiB `pmemsave` 常超时 → `DUMPFAIL`，且留**截断** `.ram`（字节数 ≠ `0x200000000` 即不可信）。
+**已知坑（旧 pmemsave 路径）**：`qmp-memdump.py` 的 socket 超时 30s —— 满负载下 8GiB `pmemsave` 常超时 → `DUMPFAIL`，且留**截断** `.ram`。**该路径已由下方官方 `dump-guest-memory` 取代。**
 
 **`ram-mkcore.py`** — 把 `.ram`(+serial) 合成为 **GDB 可读的 ELF ET_CORE**（按 `assets_remap` 静态表 + 页表 walk 写成 PT_LOAD，GDB 直接按内核虚拟地址读）：
 ```bash
@@ -97,3 +97,27 @@ gdb kernel.elf w22_01.core     # 或 gdb -x w22_01.gdb -q kernel.elf w22_01.core
 - 从 serial 抄寄存器写 `NT_PRSTATUS` NOTE → `info registers` / `x/i $rip` / `bt` 全活。
 - 低端 `0..0x1100` 被 ELF 头覆盖（real-mode 区，无碍）。
 - 校验：`x/8xb 0xffff8000000053a0` 应 = `49 89 ff 48 b8 f9 22 01`。
+
+## 官方 vmcore + 虚拟视角 core（新，首选内存转储路径）
+
+不再手捣 `pmemsave`/自拼骨架，改用 **QEMU 官方 `dump-guest-memory`** 拿物理 vmcore，
+再用自造 `vmcore-mkcore.py` 折成【虚拟视角】GDB core：
+
+- **`qmp-dump-vmcore.py`** —— QMP `dump-guest-memory{paging:false, format:elf,
+  protocol:file:<out>, detach:true}` + 轮询 `query-dump`。自带 `vm_stop/resume`（**不用先 stop**）；
+  只枚举 **RAM 段**（洞跳过），写全 CPU `NT_PRSTATUS`；结束时**校验文件 size**（不再有 30s 假失败）。
+- **`vmcore-mkcore.py`** —— 以 **`kspace_up_half`**（高半 128TB 的**扁平 PDPTE 表**，
+  索引 `(v-0xFFFF800000000000)>>30`，17 位）为**单一根**走 `PDPTE→PD→PT`，
+  产出 `p_vaddr=虚拟 / p_offset=物理` 的稀疏 core；NOTE 段原样搬运。
+  - **收页判据（两信号取交）**：`P=1 且 phys∈vmcore RAM 段 且 缓存∉{UC,UC-}`。
+    排设备 MMIO（HPET/IOMMU/ECAM/NVMe BAR 全 UC）；保留 WC 帧缓冲（RAM-backed）；
+    **切忌“==WB”一刀切**（WC 会误杀；`phyaddr_window` 巨别名本就是 WB）。
+  - 越界/不可信页表项 → `<tag>.map-report.txt`（**WRAITH 探针**：树↔页表分歧/野帧）。
+
+**一条龙**：
+```bash
+Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --dump-vmcore --mkcore
+# 产物: <tag>.vmcore(物理,~8G) + <tag>.core(虚拟) + <tag>.map-report.txt（仅命中异常时）
+gdb kernel.elf <tag>.core     # 6×LWP + info registers + 虚拟栈 x/… 全活
+```
+（旧 `--dump-mem`(pmemsave)/`qmp-memdump.py` 保留兼容，但推荐新路径。）
