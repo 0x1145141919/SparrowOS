@@ -73,6 +73,9 @@ SparrowOS 在 **SMP 多核 + TCG 软件模拟** 下，于 **NVMe 并行初始化
   本轮**未复现**（panic 期已注释 `resources_shift`）。
 - ✅ **确认**：commit `42f6bbe` 的 IPI 空槽防御**生效过一次**（hp19 抓到 `[vec_demux] IPI_RETURNABLE with NULL func!`），
   但它**不是根因**。
+- ✅ **确认（2026-09-16）**：**日志档位只能守 `in_asm` + `--dump-vmcore`**。逐执行级档位
+  （`-d exec` / `-d cpu` / TCG plugin）**观测效应过强**（拖慢 100~1000×，且会把失败模式推去 AP bringup）
+  → **判死路**；实测数据与归属替代法见 `TCG_TRACE_ARSENAL.md` §9。
 - ❌ **排除**：内核堆 `kpoolmemmgr` 是 **per-HCB 上锁**的，非裸的（`spintrylock_*`）。
 - ⚠️ **bisect（临时改动，见 §6）效果**：`kthread_sleep`→`microsecond_polling`（忙等）后
   **风暴 2→0**；总体异常率预-bisect `8/20` → post-bisect `5/120 ≈ 4%`。

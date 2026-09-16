@@ -133,3 +133,27 @@ $SPARROW_DEBUG_STORE/            ← 默认 /mnt/huge_data/sparrowos_debug（独
   别用 `tail -1`（否则会把 RESULT 解析成空 → 误删样本）。
 - `-qmp` 仅在有 `--dump-mem` 时才挂（避免给非转储轮多挂一个 chardev 扰动 TCG 交织）。
 - QEMU `-no-reboot`：风暴不会重启，会一直写到帽。
+
+---
+
+## 9. ⛔ 档位死路：只保留 `in_asm`（2026-09-16 定）
+
+**结论**：WRAITH 这类时序敏感 SMP 竞态，日志档位**只守 `-d in_asm,...` + `--dump-vmcore`**；
+`-d exec` / `-d cpu` / TCG plugin（逐 TB）等**向上升档一律否决**。
+
+**实测（TCG + SMP6）**：
+
+| 档位 | 现象 |
+|---|---|
+| `-d exec(+nochain)` | 90 s 仅 5.9 GB，仍停在 OVMF（连 BdsDxe 都没到） |
+| `-d cpu` | 26 s / 5.3 GB 仍在固件；叠 `-dfilter` 只圈内核映像，到 `[FPA::Init]` 就 20 GB+ |
+| TCG plugin（insn 级 `arm=create_first_kthread`，逐 TB 带 cpu/rip/rsp） | 61 s / 1.4 GB、14.6 M 行；且**挂上后两次都停在 AP bringup** |
+
+**判据**：逐执行级把 VM 拖慢 **100~1000×**，**"观测效应过强"会直接改写失败模式**（把竞态推去
+AP 启动超时）⇒ 比"磁盘不友好"致命得多。代价：时序信息只能靠 `int` 事件的 **GS/GDT/SP 指纹**
++ 事后 vmcore 复原。
+
+**执行者归属的替代手段**（`in_asm` 档下）：`int` 事件带 `GS=<base>`（每核 GS 复合体
+`0xffff800000fe9000 + k*0x5000`，slot[1]=cpu id）与 `GDT=`(=GS+0x2801) 双指纹定 CPU；`SP` → 栈
+→ task/hdstack（再对 `task_pool::m_tree` / `belonged_processor_id`）。
+（备而不用：`-d exec` 行自带 vCPU 号 `Trace %d:`；`-dfilter <lo>+<size>` 按 guest PC 过滤且同时门控 `-d cpu`。）
