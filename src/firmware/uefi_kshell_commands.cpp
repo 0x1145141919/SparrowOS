@@ -130,7 +130,7 @@ KURD_t cmd_legacy_reboot(const line_t* line) {
     bsp_kout << "[legacy_reboot] Halting APs..." << kendl;
     broadcast_shutdown();
     __asm__ volatile("wbinvd");
-    outb(0xcf9, val);
+    outb(val,0xcf9);
     __asm__ volatile("1: hlt; jmp 1b");
     return ok;
 }
