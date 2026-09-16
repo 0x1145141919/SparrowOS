@@ -87,6 +87,8 @@ static void fred_init_stklvls()
         FRED_STKLVL(x86_exceptions::DEBUG,              FRED_DB_STACK_LEVEL)  |
         FRED_STKLVL(x86_exceptions::NMI,                FRED_NMI_STACK_LEVEL) |
         FRED_STKLVL(x86_exceptions::MACHINE_CHECK,       FRED_MC_STACK_LEVEL)  |
+        FRED_STKLVL(x86_exceptions::PAGE_FAULT,          FRED_MC_STACK_LEVEL)  |  /* ⚠️WRAITH 权宜: 同 IDT 借 #MC 栈级 */
+        FRED_STKLVL(x86_exceptions::GENERAL_PROTECTION_FAULT, FRED_NMI_STACK_LEVEL) |  /* ⚠️WRAITH 权宜: 同 IDT 借 #NMI 栈级 */
         FRED_STKLVL(x86_exceptions::DOUBLE_FAULT,       FRED_DF_STACK_LEVEL);
 
     wrmsr_func(msr::fred::IA32_FRED_STKLVLS, val);
@@ -130,7 +132,18 @@ void vec_demux::early_init()
 
     template_idt[x86_exceptions::GENERAL_PROTECTION_FAULT].handler = &general_protection_bare_enter;
 
+    /* ══════ WRAITH 权宜加固：给 #PF / #GP 挂 IST（借空缺槽） ══════
+     * 病象：#PF/#GP 此前 ist_index=0（用「当前栈」）。栈一旦被踩脏，异常入口
+     *      压栈自身就 fault → 升级 #DF → 异常入口自噬风暴（hp11: 2.47M×#PF / 871k×#DF）。
+     * 处置：挂 IST 后异常入口永远有独立可写栈，把风暴收敛成一次可打印的 panic。
+     *
+     * ⚠️ 权宜之计（临时止血）：不改竞态本身 ⇒ 复现率不变，只是让失败模式可读。
+     * ⚠️ 一旦 #PF/#GP 根因修好，必须把下面两个 ist_index 回落到 0（还原「用当前栈」）。
+     *
+     * 槽位：QEMU 下 #MC / #NMI 不会发生，借用安全。 */
     template_idt[x86_exceptions::PAGE_FAULT].handler     = &page_fault_bare_enter;
+    template_idt[x86_exceptions::PAGE_FAULT].ist_index   = 2;   // 借 #MC 的 IST2（⚠️权宜，见上）
+    template_idt[x86_exceptions::GENERAL_PROTECTION_FAULT].ist_index = 3; // 借 #NMI 的 IST3（⚠️权宜，见上）
 
     template_idt[x86_exceptions::MACHINE_CHECK].handler   = &machine_check_bare_enter;
     template_idt[x86_exceptions::MACHINE_CHECK].ist_index = 2;

@@ -129,7 +129,7 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 
 ---
 
-## 7. ⚠️ 仓库中未提交的改动（接手必读）
+## 7. 仓库改动状态（接手必读）
 
 | 文件 | 改动 | 性质 |
 |---|---|---|
@@ -137,6 +137,21 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 | `Tools/tcg-trace/tcg-trace.sh` | 新增 `--dump-mem/--mem-base/--dump-always`；QMP 仅转储时挂；默认 outdir 切到 `/mnt/huge_data/...` | 工具增强 |
 | `Tools/tcg-trace/qmp-memdump.py` | 新增 | 工具增强 |
 | `Tools/tcg-trace/README.md` | 更新 | 文档 |
+
+> 注（2026-09-16 晚）：上述改动**均已提交**（HEAD 附近若干笔，含 `4b300a0` 的 `[BISECT]` 忙等）；本文档此前标「未提交」已过时。
+
+### 7.1 ⚠️ 当前加固 —— 权宜之计（2026-09-16 晚已提交）
+
+- **给 `#PF` 挂 `IST2`（借 #MC）、给 `#GP` 挂 `IST3`（借 #NMI）**，让异常入口永远有独立可写栈，
+  把“栈脏 → 入口压栈即 fault → #DF 自噬风暴”**收敛成一次可打印的 panic**。
+  同 IDT 语义已同步到 FRED `IA32_FRED_STKLVLS`（#PF→MC 级、#GP→NMI 级）。
+- **⚠️ 这是临时止血，不碰竞态本身 ⇒ 复现率不变，只是让失败模式可读。**
+  **一旦 `#PF/#GP` 根因修好，两个 `ist_index` 必须回落到 0（还原“用当前栈”）。**
+- **顺带修掉的真 bug**：异常入口 asm 的 swapgs 判据 CS 偏移错误（`Sysdef_exception_entries.asm`）——
+  两个宏漏算 RIP，分别读到了 RIP(带错误码)/shim(无错误码) 而非 CS；已统一改为 `[rsp+15*8+16]`（CS@136）。
+  旁证：`vec_demux_common`（向量 32–255）一直是正确的 `VEC_OFFSET+16`。
+- 验证：`make kernel.elf initramfs` ✓；空载 TCG 探针 `istcheck`/`istcheck2` → `KSHELL`，无回归。
+- 残留疑点：FRED `STKLVLS` 的 NMI/#DF 级（2/3 → RSP2/RSP3=ist[2]/ist[3]）与 IDT 的 `#NMI=IST3 / #DF=IST1` **不一致**（既存；FRED 在 TCG 未启用，另立条目）。
 
 ---
 
@@ -146,7 +161,8 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
    目标是钓出 §3-D/E 那条 NVMe-worker 竞态，而非 AP-bringup 超时。
 2. **啃现有样本**：`ld18/ld20` 有完整 8G RAM 镜像；用 trace 的 `CR3` 做 vaddr→phys，
    检查 AP 启动为何失败（可能仍是同一套 IPI/GS 机器）。
-3. **结构性防风暴**：给 `#PF/#DF` 配 **IST 独立栈**，把风暴收敛成一次可打印的 panic（Linux 早这么做）。
+3. ~~**结构性防风暴**：给 `#PF/#DF` 配 **IST 独立栈**，把风暴收敛成一次可打印的 panic。~~
+   ✅ **已做（权宜）**：`#PF→IST2`、`#GP→IST3`，见 §7.1；**根因修好后须回落 `ist_index=0`**。
 4. **收口调度序列**：把 `sleep_tasks_wake`/`resched` 的「出队→set_ready→入队」整段原子化（一锁/一段关中断），
    堵掉 IPI 重入窗口。
 5. **上限/断言**：`get_other_scheduler` 加边界检查；`kthread_sleep`/`resched` 入口加 `pid`/`task` 合法性自证
@@ -185,9 +201,9 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 | `src/arch/x86_64/core_hardwares/x86_arch/HPET.cpp:122-127` | 受害者函数 |
 | `src/scheduler/per_processor_scheduler.cpp:141/289/297` | `sleep_tasks_wake` / `next_task_with_routine` / `get_other_scheduler` |
 | `src/scheduler/kthread_interfaces.cpp:100/212/256/294` | `kthread_common_save` / `resched` / `wakeup_thread` / `kthread_sleep_cppenter` |
-| `src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm` | 异常入口（**无 IST**）|
+| `src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm` | 异常入口（原**无 IST**；现权宜挂 #PF/#GP，见 §7.1）|
 | `src/arch/x86_64/Interrupts/exceptions_handler.cpp:25` | `page_fault_handler`（内核态→panic）|
-| `src/arch/x86_64/Interrupts/x86_vecs_deliver_mgr.cpp` | `idt_vec_demux_entry`（IPI 分发 + 空槽防御）|
+| `src/arch/x86_64/Interrupts/x86_vecs_deliver_mgr.cpp` | `idt_vec_demux_entry`（IPI 分发 + 空槽防御）；`early_init`/`fred_init_stklvls`（IST 槽位与权宜加固，§7.1）|
 | `src/memory/out_surfaces.cpp:323` | `broadcast_invalidate_tlb`（TLB shootdown 等待循环）|
 | `src/memory/arch/x86_64/AddresSpace.cpp:1125` | PCID 分配（`get_gs_base()->pcid_complex`）|
 | `src/arch/x86_64/boot/kinit.cpp:147` | `create_first_kthread`（AP 启动 IPI，ld18/20 崩点）|
