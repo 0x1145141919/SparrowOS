@@ -72,9 +72,40 @@ benchmark_triple: $(BENCH_OBJS)
 # printk_ring_test — printk 宿主验收（file sink + mmap 环，freestanding 风味）
 printk_ring_test.o: printk_ring_test.cpp
 	$(CXX) $(CXXFLAGS) -O0 -c -o $@ $<
-PRINTK_OBJS = printk_ring_test.o ../utils/printk.o ../utils/lock.o
+PRINTK_OBJS = printk_ring_test.o ../utils/printk.o ../utils/vprintkv2.o ../utils/lock.o
 printk_ring_test: $(PRINTK_OBJS)
 	$(CXX) -o $@ $(PRINTK_OBJS) $(LDFLAGS)
+
+# vprintkv2_test — 核心格式化引擎用户态验收（puts 输出 + 栈缓冲）
+# 只依赖 freestanding 核心，无需 lock.o
+vprintkv2_test.o: vprintkv2_test.cpp
+	$(CXX) $(CXXFLAGS) -O0 -c -o $@ $<
+VK2_OBJS = vprintkv2_test.o ../utils/vprintkv2.o
+vprintkv2_test: $(VK2_OBJS)
+	$(CXX) -o $@ $(VK2_OBJS) $(LDFLAGS)
+
+# ring_v2_test — DmesgRingBuffer_v2 宿主验收（共用资产）
+ring_v2_test.o: ring_v2_test.cpp
+	$(CXX) $(CXXFLAGS) -O0 -c -o $@ $<
+RINGV2_OBJS = ring_v2_test.o ../utils/kcirclebufflogMgr_v2.o
+ring_v2_test: $(RINGV2_OBJS)
+	$(CXX) -o $@ $(RINGV2_OBJS) $(LDFLAGS)
+
+# init_printk_test — init_printk 宿主验收（mmap 文件当 ring buffer + 自实现 now_ts_us）
+../init/%.o: ../init/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+init_printk_test.o: init_printk_test.cpp
+	$(CXX) $(CXXFLAGS) -O0 -c -o $@ $<
+IPK_OBJS = init_printk_test.o ../init/util/printk.o ../utils/kcirclebufflogMgr_v2.o ../utils/vprintkv2.o
+init_printk_test: $(IPK_OBJS)
+	$(CXX) -o $@ $(IPK_OBJS) $(LDFLAGS)
+
+# ring_bind_test — 复现 init.elf 真实路径 init_ring_bind + init_printk
+ring_bind_test.o: ring_bind_test.cpp
+	$(CXX) $(CXXFLAGS) -O0 -c -o $@ $<
+RBT_OBJS = ring_bind_test.o ../init/util/ring_log.o ../init/util/printk.o ../utils/kcirclebufflogMgr_v2.o ../utils/vprintkv2.o
+ring_bind_test: $(RBT_OBJS)
+	$(CXX) -o $@ $(RBT_OBJS) $(LDFLAGS)
 
 # init_asset_registry_test — init 资产树 CRUD 测试（host，g++）
 # 依赖 strcmp 系列在测试 TU 内以 host 桩实现（对齐 wheels.asm 语义）
@@ -100,5 +131,9 @@ clean:
 	rm -f bsp_kout_stub.o panic_stub.o
 	rm -f test_kpoolmemmgr/test_main.o
 	rm -f printk_ring_test printk_ring_test.o ../utils/printk.o
+	rm -f vprintkv2_test vprintkv2_test.o vprintkv2_test.out.txt ../utils/vprintkv2.o
+	rm -f ring_v2_test ring_v2_test.o ring_v2_test.out.txt ../utils/kcirclebufflogMgr_v2.o
+	rm -f init_printk_test init_printk_test.o init_printk_test.out.txt init_printk_ring.bin ../init/util/printk.o
+	rm -f ring_bind_test ring_bind_test.o ../init/util/ring_log.o
 
 .PHONY: clean
