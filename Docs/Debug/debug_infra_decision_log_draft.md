@@ -132,7 +132,9 @@ Phase 3 (可选):
 
 ```
 00:0d.0  USB4 xHCI              → USB DBC 候选
+00:0d.1  USB xDCI (7ec1)        → DWC3 从设备控制器（TSCC_ENABLE_xDCI 解锁，2026-09-06 发现，见附录 C）
 00:0d.3  TB4 NHI#1              → ICM mailbox + XDomain (需第二台TB)
+00:14.1  USB Device Controller  → PCH xDCI (7e7e)，DWC3 从设备控制器（enable_xDCI 解锁，2026-09-06 发现，见附录 C）
 00:1f.6  I219-LM Ethernet       → SpDB 物理层 (选)
 00:1f.7  Trace Hub              → 否决
 ```
@@ -146,4 +148,79 @@ Linux e1000e 驱动:     ~/PS_git/custom-kernel/linux-vfio/src/linux-7.0.6/drive
 DMAR 初始化:           ~/PS_git/OS_pj_uefi/kernel/src/arch/x86_64/core_hardwares/x86_arch/DMAR.cpp
 内核主 init:           ~/PS_git/OS_pj_uefi/kernel/src/arch/x86_64/boot/kinit.cpp
 内存初始化:            ~/PS_git/OS_pj_uefi/kernel/src/arch/x86_64/boot/mem_init.cpp
+
+---
+
+## 附录 C：xDCI（DWC3 USB Device Controller）补充评估
+
+日期：2026-09-06
+来源：BIOS 解锁两个"从设备"控制器后，Linux host 侧观察 + kernel 源码（linux-7.1.5）ID 表对照
+
+### 发现
+
+BIOS 两项开关解锁了两颗 USB device（从设备）控制器，Linux 下均被 `dwc3-pci` 接管并注册 UDC：
+
+| PCI | ID | 名称 | 解锁开关 | UDC |
+|-----|-----|------|----------|-----|
+| 00:14.1 | 8086:7e7e (rev 20) | PCH USB Device Controller | enable_xDCI | dwc3.10.auto |
+| 00:0d.1 | 8086:7ec1 (rev 10) | USB Type-C 子系统 xDCI | TSCC_ENABLE_xDCI（命名推断） | dwc3.9.auto |
+
+映射推断依据：TSCC ≈ Type-C Subsystem Controller，0d.x 簇在 lspci 命名即 "USB Type-C Subsystem"；若实际映射相反请修正。
+
+Linux 源码 ID 表：7e7e = `INTEL_MTL`，7ec1 = `INTEL_MTLP`（drivers/usb/dwc3/dwc3-pci.c）。
+属性：`dr_mode = "peripheral"`（dwc3_pci_intel_swnode 硬编码）→ 纯 device 角色，无 host/OTG。
+
+### 与 0d 簇其他成员的关系（Type-C/USB4 子系统全景）
+
+```
+00:0d.0  xHCI (7ec0)   → 管 usb1/usb2（20Gbps Type-C 口组）
+00:0d.1  xDCI (7ec1)   → DWC3 从设备控制器 ← 本次解锁
+00:0d.2  NHI0 (7ec2)   → 缺失（+ 空桥 07.0-[08-31]、06.2-[03-07]）→ USB4/TB 本体未全开
+00:0d.3  NHI1 (7ec3)   → 被 Linux thunderbolt 驱动以 ICM 模式接管（印证第 1 节结论）
+```
+
+### 能力
+
+DWC3 全功能外设控制器：可呈现任意 USB 类（ECM/RNDIS 网卡、ACM 串口、mass storage、HID、FunctionFS 自定义协议）——比 xHCI DBC（第 3 节，debug-only 通道）通用得多，属"DBC 加强版数据面"。
+
+### 评估（对 SpDB = 裸机调试基座场景）
+
+| 维度 | 结论 |
+|------|------|
+| 驱动成本 | 裸机 DWC3 device 全栈（global reg + PHY + event ring + ep0 SETUP + CDC 类）≈ 2-4k 行，远超 e1000e ~400 行 |
+| 隐性依赖 | Type-C 口 device 角色需 TCPC/mux 配合；物理布线到哪个口未知（Linux 由固件/ACPI 管，裸机全自研） |
+| 上手时机 | 晚：时钟/PHY/角色协商前提多，抓不到早期崩溃 |
+| QEMU 可验证 | 不可（无 device-mode 控制器模型）→ 打不了 QEMU-first 迭代循环 |
+| 可移植性 | 绑死 MTL + BIOS 开关 |
+| 调试能力 | 无 halt/断点，与 DBC 同类 |
+
+### 决策
+
+**维持 SpDB (e1000e) 为调试基座**；xDCI 归入**搁置**（与 xHCI DBC 同类理由，且理由更充分：成本更高、依赖更深）。
+未来若做"本机当 USB 外设"产品功能（模拟键盘/存储/NIC/串口），xDCI 是现成基座——功能开发优先级排调试基建之后，需接受平台绑定。
+
+### 备注（Linux host 侧，与 SparrowOS 无关）
+
+configfs 绑 ECM/RNDIS 到 `dwc3.9.auto` 后，本机可被手机/另一台 PC 识别为 USB 网卡——零成本工具玩法（手机反向 SSH 等），不影响上述决策。
+
+---
+
+### 追加：2026-09-09 裸机端实证——固件把 C 口钉死 data-host（决定性）
+
+**结论更新：xDCI 从"搁置"升级为"确认否决"（作为裸机调试基座 / 本机 USB 外设功能均不可行），SpDB(e1000e) 为唯一调试基座。**
+
+#### 实测链条（详见 workspace memory `DCI-USB-device-2026-09-09-2003.md`）
+
+1. **固件 UCSI OPMode 报告 0x61**（GET_CONNECTOR_CAPABILITY）：port0/port1 均 = DFP + USB2 + USB3、Provider-only，**无 UFP/DRP**；且运行时 pr 能翻 [sink]（与外供电逻辑真实），但数据角色 dr **永远 [host]**——固件把 C 口建模成"数据永远 host"
+2. **PD 场景也不翻**：C2C 接 PD 2.0 对端（port1 报 pd2+usb_power_delivery），dr 仍 host；PD 规范 sink→UFP 的默认角色被固件无视 → 数据角色钉死是固件策略，不是线/对端/legacy 问题
+3. **对端无 PD 能力**（LpVice Vostro 3400）：其 C 口是 USB3.2 Gen1 纯数据口，Linux 下无 typec/UDC 设备、dmesg 零 C 口事件 → 不具备当 PD host 对端的条件
+4. **OS 改 setup 变量被固件写保护**：efivarfs 写 Setup+0x8B6 返回 errno=1 EPERM（EFI_WRITE_PROTECTED）→ 裸机/OS 阶段无法改 BIOS 口角色，只能 BIOS 界面内改（固件自写）；被 UI 隐藏的角色项（如 USBC connector manager selection / UCSI 版本 0x8B6）更无从下手
+5. **BIOS 逆向**(IFR/VarStore)翻遍 TCSS Platform Setting 表单：无直接的"端口数据角色"配置项；唯一相关 `USBC DataRole Swap Platform Disable`(Setup+0xB12) 已设 False，仅解锁 PD DR-swap 允许性，不影响 OPMode 声明
+
+#### 对上述评估表的修正
+
+- 冗余项："隐性依赖 Type-C 口 device 角色需 TCPC/mux 配合"→ 实测**固件层就切不动**，非 TCPC/mux 问题，而是 UCSI/EC 固件把口钉死
+- 驱动成本 2-4k 行 → 仍是桎梏，但**更致命的是固件根本不放行 device 角色**：即使裸机写全 DWC3 栈，口角色仍由固件（CC/mux/data_role）控制，裸机无法绕过
+- 结论：xDCI 在本机型 = **固件钉死，无法作为调试基座或 USB 外设功能**。若未来要本机当 USB 随从，需 BIOS 隐藏项改口角色（被 UI 隐藏+OS 写保护→需固件环境工具/改镜像刷写，高风险）或换支持机型
+
 ```
