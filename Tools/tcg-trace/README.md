@@ -108,16 +108,29 @@ gdb kernel.elf w22_01.core     # 或 gdb -x w22_01.gdb -q kernel.elf w22_01.core
   只枚举 **RAM 段**（洞跳过），写全 CPU `NT_PRSTATUS`；结束时**校验文件 size**（不再有 30s 假失败）。
 - **`vmcore-mkcore.py`** —— 以 **`kspace_up_half`**（高半 128TB 的**扁平 PDPTE 表**，
   索引 `(v-0xFFFF800000000000)>>30`，17 位）为**单一根**走 `PDPTE→PD→PT`，
-  产出 `p_vaddr=虚拟 / p_offset=物理` 的稀疏 core；NOTE 段原样搬运。
+  产出 `p_vaddr=虚拟 / p_offset=物理窗口基址(PA_BASE)+物理` 的稀疏 core；NOTE 段原样搬运。
+  布局：`[0,PA_BASE)`=ehdr/段表/NOTE；`[PA_BASE,..)`=**物理内存窗口**（稀疏，
+  所有段——内核虚拟视图 + 恒等窗口——共用这一个物理窗口）。
   - **收页判据（两信号取交）**：`P=1 且 phys∈vmcore RAM 段 且 缓存∉{UC,UC-}`。
     排设备 MMIO（HPET/IOMMU/ECAM/NVMe BAR 全 UC）；保留 WC 帧缓冲（RAM-backed）；
     **切忌“==WB”一刀切**（WC 会误杀；`phyaddr_window` 巨别名本就是 WB）。
   - 越界/不可信页表项 → `<tag>.map-report.txt`（**WRAITH 探针**：树↔页表分歧/野帧）。
+  - **恒等窗口默认保留**：很多资产（内存元数据如 `fpa_bitmaps`/`pages_arr`）经 `phyaddr_window`
+    恒等别名访问，故 `.core` 会胀到≈全 RAM（但可由 `.vmcore` 随时重清洗）。
+    代价可弃时用 `--skip-alias` 丢窗口换瘦身（~20MB）。
 
-**一条龙**：
+**工作流（两阶段）**：
+- **原始阶段**（每次实验自动产出）：`<tag>.vmcore`（物理）+ `qmp-dump-vmcore.py` 顺带落的
+  `<tag>.regs`（最后寄存器上下文，HMP `info registers -a`，全 CPU）。——只这一对。
+- **高质处理**（仅对**确定有价值**的样本再做）：`vmcore-mkcore.py` → `<tag>.core`；
+  `trace-sym.py ... --src` → `<tag>.kernel.sym.log` / `.src.log`。
+
+**一条龙（默认出原始）**：
 ```bash
-Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --dump-vmcore --mkcore
-# 产物: <tag>.vmcore(物理,~8G) + <tag>.core(虚拟) + <tag>.map-report.txt（仅命中异常时）
-gdb kernel.elf <tag>.core     # 6×LWP + info registers + 虚拟栈 x/… 全活
+Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --dump-vmcore        # 只出 .vmcore(+.regs)
+# 挑出有价值样本后再：
+Tools/tcg-trace/vmcore-mkcore.py <tag>.vmcore <tag>.serial --kernel kernel.elf --out <tag>.core
+Tools/tcg-trace/trace-sym.py <tag>.trace --start kernel --only-domain kernel --src --out <tag>.kernel.src.log
 ```
+
 （旧 `--dump-mem`(pmemsave)/`qmp-memdump.py` 保留兼容，但推荐新路径。）

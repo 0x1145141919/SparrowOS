@@ -9,7 +9,9 @@
 #   有一张【扁平 PDPTE 表】kspace_up_half[256*512] 作为权威根：
 #       index = (vaddr - 0xFFFF800000000000) >> 30      (17 位，1GiB 粒度)
 #   于是自造核心 = 以该表为根走 PDPTE→PD→PT，把「虚拟→物理」写成 PT_LOAD
-#   (p_vaddr=虚拟, p_offset=物理)，数据用稀疏文件承载；NOTE 段原样搬运。
+#   (p_vaddr=虚拟, p_offset=PA_BASE+物理)，数据用稀疏文件承载；NOTE 段原样搬运。
+#   文件布局： [0,PA_BASE)=ehdr/段表/NOTE； [PA_BASE,..)=物理内存窗口(稀疏)；
+#   所有段(内核虚拟视图 + 恒等窗口)共用这一个物理窗口。
 #
 #   相比老 ram-mkcore.py：根不同（kspace_up_half，不再从 CR3 走），且加了
 #   【健全性闸】——页表项解析出的物理帧若不在 vmcore 的 RAM 段内，判为可疑，
@@ -17,14 +19,16 @@
 #
 # 用法:
 #   vmcore-mkcore.py <vmcore> <serial> [--kernel KERNEL_ELF] [--out CORE]
-#                    [--pdpt-phys 0x..] [--no-skip-alias] [--with-phys]
+#                    [--pdpt-phys 0x..] [--skip-alias] [--with-phys]
 #                    [--report FILE] [--max-suspicious N]
 #     <vmcore>   dump-guest-memory 产物(ELF, 物理)
 #     <serial>   同次 panic 串口（取 assets_remap：kernel_bss 等 v->p）
 #     --kernel   解析符号 kspace_up_half（默认 ./kernel.elf）
 #     --pdpt-phys 直接给 kspace_up_half 物理基址（跳过符号/资产推导）
-#     --no-skip-alias 不跳过 assets 里名为 phyaddr_window 的整段 PA 别名
-#     --with-phys     额外为 RAM 段加 p_vaddr=物理 的 LOAD（同物理地址也能读）
+#     --skip-alias    跳过 assets 里名为 phyaddr_window 的整段 PA 恒等别名
+#                     （默认【保留】——很多资产如内存元数据(fpa_bitmaps/pages_arr)
+#                      经恒等窗口访问；代价是 core 会胀到≈全 RAM）
+#     --with-phys     额外为已映射帧加 p_vaddr=物理 的 LOAD（同物理地址也能读）
 #     --report F      把「可疑页表项」清单写 F
 #
 # 输出: <out> (默认 <vmcore>.core)  —— gdb kernel.elf <out>
@@ -95,7 +99,8 @@ def main():
     ap.add_argument('--kernel', default='kernel.elf')
     ap.add_argument('--out')
     ap.add_argument('--pdpt-phys', default=None)
-    ap.add_argument('--no-skip-alias', action='store_true')
+    ap.add_argument('--skip-alias', action='store_true',
+                    help='跳过 phyaddr_window 恒等别名（默认保留）')
     ap.add_argument('--with-phys', action='store_true')
     ap.add_argument('--report', default=None)
     ap.add_argument('--baseline', default=None,
@@ -147,7 +152,7 @@ def main():
 
     # ── 3. 从 kspace_up_half 走内核半段 ────────────────────────────────
     skip_alias = []
-    if not a.no_skip_alias:
+    if a.skip_alias:
         for nm, vb, pb, sz in segs:
             if 'phyaddr_window' in nm:
                 skip_alias.append((vb, vb + sz))
@@ -250,11 +255,23 @@ def main():
           % (stats['pdpte'], stats['pdpte_1g'], stats['pde_2m'], stats['pte_4k'],
              len(regions), len(merged), stats['skipped']))
 
-    # ── 5. 写稀疏 core：数据落 file offset = 物理地址；NOTE 放尾部 ─────
+    # ── 5. 布局：文件头/段表/NOTE 在前；其后为【物理内存窗口】基座 ──────
+    #    [0, PA_BASE)        = ehdr + 段表 + NOTE(寄存器)
+    #    [PA_BASE, PA_BASE+PA)= 物理内存窗口（稀疏；file offset = PA_BASE + phys）
+    #    所有 LOAD（内核虚拟视图 + 恒等窗口）都共用这一个物理窗口。
     loads = list(merged)
     if a.with_phys:
         for v, p, sz, kind in merged:
             loads.append((p, p, sz, 'RAM'))          # 物理别名 LOAD
+    phnum_out = len(loads) + (1 if note_bytes else 0)
+    phoff_out = 0x40
+    hdr_end = phoff_out + phnum_out * 56
+    note_off = (hdr_end + 7) & ~7
+    note_end = note_off + len(note_bytes)
+    PA_BASE = (note_end + 0xfff) & ~0xfff            # 物理窗口文件基址
+    if PA_BASE < 0x1000:
+        PA_BASE = 0x1000
+
     core = open(out, 'wb'); core.truncate(0)
     written = set(); used = 0; missing = 0
     for _, p, sz, _ in merged:
@@ -266,15 +283,9 @@ def main():
             if b is None:
                 missing += 1
                 continue
-            core.seek(pa); core.write(b); used += 0x1000
+            core.seek(PA_BASE + pa); core.write(b); used += 0x1000
 
-    note_off = ((max((p + sz for _, p, sz, _ in merged), default=0) + 0xfff) & ~0xfff)
-    note_off = note_off if note_off > 0x100 else 0x100
-    phnum_out = len(loads) + (1 if note_bytes else 0)
-    phoff_out = 0x40
-    hdr_end = phoff_out + phnum_out * 56
-
-    # 先数据后头（头/段表会覆盖低物理区前 ~hdr_end 字节，仅 real-mode 区，无碍）
+    # 头/段表/NOTE 写在前面（不再覆盖物理 0..）
     core.seek(0)
     ident = b'\x7fELF' + bytes([2, 1, 1, 0]) + b'\x00' * 8
     core.write(ident)
@@ -282,17 +293,17 @@ def main():
                            0x40, 56, phnum_out, 64, 0, 0))
     core.seek(phoff_out)
     for v, p, sz, _ in loads:
-        core.write(struct.pack('<IIQQQQQQ', PT_LOAD, 7, p, v, p, sz, sz, 0x1000))
+        core.write(struct.pack('<IIQQQQQQ', PT_LOAD, 7, PA_BASE + p, v, p, sz, sz, 0x1000))
     if note_bytes:
         core.write(struct.pack('<IIQQQQQQ', PT_NOTE, 4, note_off, 0, 0,
                                len(note_bytes), len(note_bytes), 4))
-    if note_bytes:
         core.seek(note_off); core.write(note_bytes)
-        core.truncate(note_off + len(note_bytes))
+    maxoff = PA_BASE + max((p + sz for _, p, sz, _ in merged), default=0)
+    core.truncate(max(maxoff, note_end))
     core.close()
 
-    print("[mkcore] core=%s LOAD=%d NOTE=%dB data≈%.1fMB missing_pages=%d"
-          % (out, len(loads), len(note_bytes), used / 1048576.0, missing))
+    print("[mkcore] core=%s LOAD=%d NOTE=%dB data≈%.1fMB missing_pages=%d PA_BASE=%#x"
+          % (out, len(loads), len(note_bytes), used / 1048576.0, missing, PA_BASE))
     print("[mkcore] 非 RAM 映射: MMIO/设备=%d(合法,UC+保留)  基线已知=%d  真异常=%d"
           % (stats['n_mmio'], stats['n_known'], stats['n_anom']))
     if stats['n_unc_ram']:

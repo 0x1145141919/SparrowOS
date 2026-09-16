@@ -20,6 +20,9 @@
 #     --timeout SEC  等待 dump 完成的上限（默认 900；到点判失败并删残件）
 #     --no-quit      抓完后不 quit（便于继续用该 QEMU 实例）
 #
+# 产物: <outfile>（物理 vmcore）+ <outfile>.regs（最后寄存器上下文：HMP info registers -a，
+#       全 CPU 段基址等；与 core 内 NT_PRSTATUS 互补）
+#
 # 语义要点（源码 dump/dump.c）:
 #   * dump_init: 若 running 则 vm_stop(RUN_STATE_SAVE_VM) → 自带暂停，无需先 stop；
 #     dump_cleanup 结束后 vm_start（resume）。
@@ -152,6 +155,15 @@ def main():
                 rm(outfile)
                 fail("dump 超时 %ds（已删残件）" % timeout, 2)
             time.sleep(POLL_INTERVAL)
+
+        # 结尾补一份「最后的寄存器上下文」（HMP info registers -a：全 CPU 段基址等）
+        try:
+            rr = cmd("human-monitor-command", {"command-line": "info registers -a"})
+            if isinstance(rr, dict) and "return" in rr:
+                with open(outfile + ".regs", "w") as g:
+                    g.write(rr["return"])
+        except Exception:
+            pass
     except Exception as e:
         rm(outfile)
         fail("QMP 交互失败: %s" % e, 3)
