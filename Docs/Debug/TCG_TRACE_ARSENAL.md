@@ -53,11 +53,14 @@ poll 串口，命中 `PANIC|kshell>` / 超时 / 超帽即停；`--repeat` 连跑
 | `--dump-mem MB` | **异常停止时额外转储 MB 物理内存 → `<tag>.ram`** |
 | `--mem-base A` | 转储起始物理地址（默认 0，可 `0x…`）|
 | `--dump-always` | 连正常样本也转储（基线用）|
+| `--selfcheck` | 只校验 `QEMU_BIN` 是否带 ioport80 魔法断点补丁（不启动 VM）；`SELFCHECK=PASS/FAIL` |
 
-环境变量：`SMP`（默认 6）。退出码 `10` = 抓到异常样本。
-末行结构化输出：`TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= RAM=`。
+环境变量：`SMP`（默认 6）、**`QEMU_BIN`**（默认 PATH 里的 `qemu-system-x86_64`；
+⚠️ 跑取证请显式指向打过补丁的构建，并用 `--selfcheck` 自检）。退出码 `10` = 抓到异常样本。
+末行结构化输出：`TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= RAM= VMCORE= CORE=`。
 
-`RESULT` 分类：`KSHELL`（正常到提示符）/ `PANIC` / `HANG`（无 panic 无 kshell）/ `SIZECAP`（风暴到帽）/ `OTHER`。
+`RESULT` 分类：`KSHELL`（正常到提示符）/ `PANIC` / **`FAULT`（guest 首爆即冻结，见 §3.3）** /
+`HANG`（无 panic 无 kshell）/ `SIZECAP`（风暴到帽）/ `OTHER`。
 
 ### 3.2 `Tools/tcg-trace/qmp-memdump.py` —— 最终内存镜像
 停止瞬间经 **QEMU QMP**：`qmp_capabilities → stop（冻结全部 vCPU，一致快照）→ pmemsave(base,size,file) → quit`。
@@ -65,6 +68,27 @@ poll 串口，命中 `PANIC|kshell>` / 超时 / 超帽即停；`--repeat` 连跑
 storm/panic 下 TCG 主循环是独立线程，故仍可用；这正是"把内存镜像和 trace 一起留下"的关键。
 
 输出 `<tag>.ram` = 原始物理内存镜像（little-endian 直出），可用 `dd`/python 按 offset 取任意页。
+
+### 3.3 首爆冻结：魔法断点 + `qmp-wait-stop.py`（2026-09-17）
+
+**问题**：风暴（异常自噬）在 host 侧 0.2s 轮询粒度下已经写了几百 MB；且 panic/风暴
+会把现场毁掉。要"以首爆速度"止损并保住全核快照，必须在 **guest 侧**自己停。
+
+**机制**（两层，默认安全）：
+1. **guest 侧钩子**：`src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm` 的
+   `FAULT_FREEZE` 宏，挂在 `#PF`/`#GP` **入口**（post-fault，零观测效应）。默认关闭，
+   取消文件内 `%define SPDB_FAULT_FREEZE` 注释即启用（或 `nasm -DSPDB_FAULT_FREEZE`）。
+   动作：串口打 `#WF#` → `outb(0x80,0xDB)` → `cli;hlt` 兜底。
+2. **QEMU 本地补丁**：`ioport80_write` 见 `0xDB` → `vm_stop(RUN_STATE_DEBUG)`：
+   **暂停整机、进程不退出** → QMP 仍可用 → 可 dump。补丁与部署纪律见
+   **`Tools/tcg-trace/patches/README.md`**（含"别 cp 进 /usr/bin，会被 pacman 覆盖"血泪）。
+
+**host 侧停止判据**（任一命中即停，命中后按现有 `--dump-mem/--dump-vmcore` 分支转储）：
+- 串口 `#WF#`（零轮询开销，首选）；
+- `qmp-wait-stop.py` 常驻监听 QMP `STOP` 事件（串口不可用时的兜底；**不要**每 0.2s 起
+  python 去 `query-status` —— 那是宿主负载，而宿主负载是竞态复现的关键变量）。
+
+**验证配方**：`QEMU_BIN=<补丁构建> ./tcg-trace.sh --selfcheck` → 必须 `PASS`。
 
 ---
 

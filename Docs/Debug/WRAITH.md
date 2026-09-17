@@ -153,6 +153,31 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 - 验证：`make kernel.elf initramfs` ✓；空载 TCG 探针 `istcheck`/`istcheck2` → `KSHELL`，无回归。
 - 残留疑点：FRED `STKLVLS` 的 NMI/#DF 级（2/3 → RSP2/RSP3=ist[2]/ist[3]）与 IDT 的 `#NMI=IST3 / #DF=IST1` **不一致**（既存；FRED 在 TCG 未启用，另立条目）。
 
+### 7.2 旧魔法断点拆除 + 首爆冻结钩子（2026-09-17）
+
+**拆掉的旧机制**：`breakpoint_cpp_enter`（`#BP`/int3）里的 `outb(0xDB, 0x80)`——它是
+"往 guest 放 `int3` → QEMU 暂停 → 挂 GDB"那套老设计（`kvm_gdb_debug_notes.md`）的残留。
+现改为不依赖外部补丁的 `cli;hlt` 干净停机（同 init.elf 侧）。同时删掉 `init_init.cpp` 里
+注释残留的 `//outb(0xDB,0x80)` 与不再需要的 `#include "sys/io.h"`。
+
+**新增首爆冻结钩子**（post-fault，零观测效应）：
+- `src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm` 新增 `FAULT_FREEZE` 宏，
+  挂在 `#PF`(`0x0E`)/`#GP`(`0x0D`)**入口**，`call` C handler **之前**；
+- **默认关闭**，取消文件内 `;%define SPDB_FAULT_FREEZE` 注释即开启（跑取证必开）；
+- 动作：串口 `#WF#` → `outb(0x80,0xDB)` → `cli;hlt` 兜底；
+- 已实测（临时注入只读 `.text` 写）：`RESULT=FAULT REASON=MAGICBP`，256MB RAM 成功落盘，
+  且默认构建（钩子关）回归到 `kshell>` 无影响。
+
+**QEMU 侧**：ioport80 魔法断点补丁已固化为
+**`Tools/tcg-trace/patches/qemu-ioport80-magic-bp.patch`**（+ README，含部署纪律）。
+⚠️ **血泪教训**：旧补丁是手工 `cp` 进 `/usr/bin` 的构建，**2026-08-29 Arch 升 qemu 11.1.1
+时被无声覆盖**，导致此前的 WRAITH 狩猎全程跑的都是没断点的原版。现在改用 `QEMU_BIN` 显式
+路径 + `tcg-trace.sh --selfcheck` 自检（探针镜像 `outb(0x80,0xDB)` 后 `status==debug`）。
+
+**host 侧**：`tcg-trace.sh` 新增 `QEMU_BIN` / `--selfcheck` / `FAULT` 结果类；
+`qmp-wait-stop.py` 常驻监听 QMP `STOP` 事件（零轮询开销，避免每 0.2s 起 python 的宿主负载污染复现）。
+武器库已同步（`TCG_TRACE_ARSENAL.md` §3.1/§3.3）。
+
 ---
 
 ## 8. 下一步实验清单

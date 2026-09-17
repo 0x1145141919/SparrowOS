@@ -8,7 +8,6 @@
 #include "arch/x86_64/abi/pt_regs.h"
 #include "util/kptrace.h"
 #include "util/arch/x86-64/cpuid_intel.h"
-#include "sys/io.h"
 static void double_fault_handler(x64_standard_context_v2* frame,uint64_t errcode){
     panic_info_inshort inshort={
         .is_bug=1,
@@ -111,7 +110,13 @@ void nmi_cpp_enter(x64_standard_context_v2 *frame)
 
 void breakpoint_cpp_enter(x64_standard_context_v2 *frame)
 {
-    outb(0xDB, 0x80);
+    // 原「魔法断点」outb(0xDB,0x80) 已拆除（2026-09-17）：
+    //   该机制依赖打过补丁的 QEMU（ioport80 写 0xDB → vm_stop(DEBUG)），
+    //   且 QEMU 侧补丁不随发行包走、易丢；现改为不依赖外部补丁的干净停机。
+    //   kernel.elf 异常取证统一改走 #PF/#GP 入口的 FAULT_FREEZE 钩子
+    //   （Sysdef_exception_entries.asm，编译期宏 SPDB_FAULT_FREEZE 门控）。
+    (void)frame;
+    for (;;) { asm volatile("cli; hlt"); }
 }
 
 void overflow_cpp_enter(x64_standard_context_v2 *frame)
