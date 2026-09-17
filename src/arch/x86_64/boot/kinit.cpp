@@ -5,11 +5,14 @@
 #include "arch/x86_64/core_hardwares/tsc.h"
 #include "arch/x86_64/mem_init.h"
 #include "kcirclebufflogMgr.h"
+#include "util/debug_tmp_ring_buff.h"   // interrupt_log_ring（IRQ-safe 断言/日志环）
 #include "16x32AsciiCharacterBitmapSet.h"
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "arch/x86_64/Interrupt_system/x86_vecs_deliver_mgr.h"
 #include "arch/x86_64/core_hardwares/lapic.h"
 #include "memory/kpoolmemmgr.h"
+#include "memory/FreePagesAllocator.h"            // FreePagesAllocator::alloc（4MiB 环内存）
+#include "memory/main_phyaddr_access_window.h"    // PHYACC_VA（主窗口直映射重链）
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "memory/AddresSpace.h"
 #include "memory/all_pages_arr.h"
@@ -198,6 +201,10 @@ loaded_VM_interval* VM_intervals;
 GlobalBasicGraphicInfoType gop_info;
 XSDT_Table *XSDT;
 
+// interrupt_log_ring 的对象本体：.bss 对齐存储。
+// 全局 C++ 构造函数被禁 ⇒ 由 kernel_start 运行时 placement new 出生。
+alignas(debug_tmp_ring_buff) static uint8_t g_interrupt_log_ring_obj[sizeof(debug_tmp_ring_buff)];
+
 extern "C" void fred_enable(gs_complex_t*gs_complex);
 
 
@@ -235,6 +242,35 @@ extern "C" void kernel_start()
         global_schedulers[i].placed_init(cx->stacks_ptr);
     }
     gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
+
+    // ── IRQ-safe 断言 / 日志环：AP bring-up 前就绪 ──
+    // AP 起来后所有核都会写它（断言 / 中断），故必须早于 ap_init_one_by_one。
+    {
+        constexpr uint64_t IRQ_LOG_RING_BYTES = 4ull << 20;   // 4 MiB
+        KURD_t ring_kurd = KURD_t();
+        phyaddr_t ring_pbase = FreePagesAllocator::alloc(
+            IRQ_LOG_RING_BYTES, BUDDY_ALLOC_DEFAULT_FLAG,
+            page_state_t::kernel_pinned, ring_kurd);
+        if (ring_pbase == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(ring_kurd)) {
+            panic_info_inshort inshort = {
+                .is_bug = true, .is_policy = false,
+                .is_hw_fault = false, .is_mem_corruption = false,
+                .is_escalated = false
+            };
+            Panic::panic(default_panic_behaviors_flags,
+                (char*)"interrupt_log_ring: FPA alloc failed", nullptr, &inshort,
+                kurd_get_raw(ring_kurd));
+        }
+        // 基址是物理地址 → 经主窗口（恒等窗口，pbase=0）换算成本 ELF 可访问 VA。
+        DmesgRingBuffer_soul ring_soul = {
+            (void*)PHYACC_VA(ring_pbase), IRQ_LOG_RING_BYTES, 0, 0
+        };
+        interrupt_log_ring = new (g_interrupt_log_ring_obj) debug_tmp_ring_buff(&ring_soul);
+        bsp_kout << "interrupt_log_ring online: pbase=0x" << HEX << ring_pbase
+                 << " va=0x" << (uint64_t)interrupt_log_ring->get_soul()->buff << DEC
+                 << " bytes=" << IRQ_LOG_RING_BYTES << kendl;
+    }
+
     bsp_init_kurd = ap_init_one_by_one();
     if (error_kurd(bsp_init_kurd)) {
         bsp_kout << "x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug" << kendl;

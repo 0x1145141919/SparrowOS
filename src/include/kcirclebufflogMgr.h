@@ -4,6 +4,7 @@
 #include "stdint.h"
 #include "util/lock.h"
 #include "abi/boot.h"
+#include "abi/kring_soul.h"   // DmesgRingBuffer_soul（环之灵魂，已下沉 ABI 层，多环共用）
 
 // —— 时基（与 util/printk.h 同一约定）：返回【微秒】；未就绪返回 0 ——
 // v2 环记录头要打 ts；各 ELF 各自提供符号（kernel 接 ktime / init 暂桩 0）。
@@ -40,12 +41,7 @@ uint64_t ts_us;
 uint32_t record_seq;
 };
 
-struct DmesgRingBuffer_soul{
-    void *buff;
-    uint64_t buffSize;
-    uint64_t accumulate_mileage;//通过accumulate_mileage与buffSize做除法，余数是圈内，下一个可写引索，商则是累计回绕次数，整个变量也可以解释为游标移动总里程（单位字节）
-    uint64_t accumulate_record_count;//累计这个里面塞了多少个记录
-};//转生结构体
+// DmesgRingBuffer_soul（转生结构体）已下沉至 abi/kring_soul.h —— 多环共用同一份「环之灵魂」。
 class DmesgRingBuffer_v2{
     private:
     DmesgRingBuffer_soul working_soul;
@@ -56,3 +52,6 @@ public:
     void putsk(char *str,uint16_t len_in_bytes);//从tail_offset开始向后写这个字符缓冲区，会自动处理回绕计数以及tail_offset
     const DmesgRingBuffer_soul*get_soul();//灵魂泄露出去，自己看着办拿不拿锁，比如panic时分不拿锁，要获取内核缓冲区的时候自己拿锁尽可能短的缓冲区快速搬走内存，而后锁外自己文本化解析
 };
+
+// debug_tmp_ring_buff（裸文本暂存环）已隔离到 util/debug_tmp_ring_buff.h ——
+// 它是调试场景的长青件，不再与上面两件罕见底层原语同处一室。

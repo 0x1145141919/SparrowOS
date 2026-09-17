@@ -166,6 +166,8 @@ add_executable(kernel.elf
     src/arch/x86_64/boot/asset_table.cpp
     src/KImage_Introspection.cpp
     src/utils/kcirclebufflogMgr.cpp
+    src/utils/vprintkv2.cpp
+    src/utils/debug_tmp_ring_buff.cpp
     src/arch/x86_64/boot/kernel_entry.asm
     src/arch/x86_64/boot/ap_init_pemode_exceptions.asm
     src/arch/x86_64/panic_processor_resources_shift.asm
