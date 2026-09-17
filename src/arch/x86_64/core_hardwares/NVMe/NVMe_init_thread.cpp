@@ -325,9 +325,9 @@ static bool poll_report_board(volatile uint64_t* board, uint32_t count,
         if (reported == count) break;
         // 超时硬上限
         if (ktime::get_microsecond_stamp() >= deadline) break;
-        // [BISECT] 临时实验：降级为纯忙等，绕开 sleep/wake 调度路径。
-        //   原: kthread_sleep(poll_us);  （走 kthread_sleep_cppenter → next_task_with_routine）
-        ktime::microsecond_polling(poll_us);
+        // 非忙等（原始触发面）：走 kthread_sleep_cppenter → next_task_with_routine（sleep/wake 调度路径）。
+        //   （曾于 4b300a0 临时改为 ktime::microsecond_polling 忙等做 bisect；此处回滚以恢复复现率 ~8/20）
+        kthread_sleep(poll_us);
     }
 
     if (ok_count_out) *ok_count_out = ok;
