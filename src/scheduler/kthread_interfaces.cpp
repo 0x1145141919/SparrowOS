@@ -30,6 +30,7 @@
 #include "util/kout.h"
 #include "util/rb_map.h"
 #include "memory/FreePagesAllocator.h"
+#include "util/wraith_probe.h"   // WRAITH 首爆取证：帧自证 / 留证环
 extern rb_map<bq_id_t, block_queue*> container;
 extern spinrwlock_cpp_t container_lock;
 namespace {
@@ -103,12 +104,25 @@ void kthread_common_save(x64_standard_context_v2*frame,bool expect_running,task*
         KURD_t fatal = make_kthreads_fatal(
             Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
             Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::NULL_RUNNING_TASK);
+        WRAITH_LOG("KS0 null-task pid=%u cs=%llx rip=%llx rsp=%llx gs=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)frame->core_ctx.idtctx.iret.cs,
+            (unsigned long long)frame->core_ctx.idtctx.iret.rip,
+            (unsigned long long)frame->core_ctx.idtctx.iret.rsp,
+            (unsigned long long)wraith::gs_now());
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: null running task");
     }
     if (expect_running && task_ptr->get_state() != task_state_t::running) {
         KURD_t fatal = make_kthreads_fatal(
             Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
             Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::BAD_TASK_STATE);
+        WRAITH_LOG("KS1 bad-state pid=%u tsk=%llx cs=%llx rip=%llx rsp=%llx gs=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)(uint64_t)task_ptr,
+            (unsigned long long)frame->core_ctx.idtctx.iret.cs,
+            (unsigned long long)frame->core_ctx.idtctx.iret.rip,
+            (unsigned long long)frame->core_ctx.idtctx.iret.rsp,
+            (unsigned long long)wraith::gs_now());
         panic_with_kurd(frame, fatal, (char*)"kthread_common_save: not running");
     }
     task_ptr->task_event_shift(task::event_type_t::offline);
@@ -127,6 +141,18 @@ void kthread_common_save(x64_standard_context_v2*frame,bool expect_running,task*
                 KURD_t fatal = make_kthreads_fatal(
                     Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
                     Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::PRIVCTX_STACKPTR_OOR);
+                // 栈指针越界 = 上下文已被踩（WRAITH 受害链常见首爆）——先落证再 panic。
+                WRAITH_LOG("KS2 STACK-OOR pid=%u tsk=%llx rsp=%llx sbase=%llx spg=%u top=%llx bot=%llx rip=%llx cs=%llx gs=%llx\n",
+                    (unsigned)fast_get_processor_id(),
+                    (unsigned long long)(uint64_t)task_ptr,
+                    (unsigned long long)rsp,
+                    (unsigned long long)stack_top,
+                    (unsigned)task_ptr->priv_stack_pages,
+                    (unsigned long long)stack_top,
+                    (unsigned long long)stack_bottom,
+                    (unsigned long long)frame->core_ctx.idtctx.iret.rip,
+                    (unsigned long long)frame->core_ctx.idtctx.iret.cs,
+                    (unsigned long long)wraith::gs_now());
              panic_with_kurd(frame, fatal, (char*)"kthread_common_save: stack ptr OOR");
             }
             task_ptr->priv_ctx = *frame;
@@ -211,6 +237,49 @@ KURD_t task_launch(task *t, uint32_t pid)
 }
 extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
 {
+    // ── WRAITH 首爆取证：中断内嵌套调度的「首入口」指纹 ──
+    // 报告 w22：NVMe CQ 中断 → idt_vec_demux_entry(默认分支) → resched(raw_frame)。
+    // 记录被中断上下文的 iret.cs/rip/rsp + 当前 rsp/gs，并断言 iret.cs 合法；
+    // 另给「帧内 rsp / 当前 rsp 是否落在当前 task 私栈」自证位（栈被踩的自证指纹）。
+    const uint64_t rcs   = frame->core_ctx.idtctx.iret.cs;
+    const uint64_t rlo   = rcs & 0x3ULL;
+    const uint64_t rrip  = frame->core_ctx.idtctx.iret.rip;
+    const uint64_t rirsp = frame->core_ctx.idtctx.iret.rsp;
+    const uint64_t cur_rsp = wraith::rsp_now();
+    task* const cur_task = (task*)wraith::now_running_task();
+    uint64_t sb = 0; uint32_t sp = 0;
+    if (cur_task && (uint64_t)cur_task >= 0xFFFF800000000000ULL) {
+        sb = cur_task->priv_stack_base;
+        sp = cur_task->priv_stack_pages;
+    }
+    WRAITH_TRACE("R0 resched pid=%u cs=%llx rip=%llx irsp=%llx rsp=%llx gs=%llx tsk=%llx sbase=%llx spg=%u irsp_in=%u rsp_in=%u\n",
+        (unsigned)fast_get_processor_id(),
+        (unsigned long long)rcs,
+        (unsigned long long)rrip,
+        (unsigned long long)rirsp,
+        (unsigned long long)cur_rsp,
+        (unsigned long long)wraith::gs_now(),
+        (unsigned long long)(uint64_t)cur_task,
+        (unsigned long long)sb, (unsigned)sp,
+        (unsigned)wraith::in_range(rirsp, sb, sp),
+        (unsigned)wraith::in_range(cur_rsp, sb, sp));
+    if (rlo != 0 && rlo != 3) {
+        // iret.cs 低位既非内核(0) 也非用户(3) ⇒ 中断帧已被踩坏（w22 首爆的形态）。
+        // 不修时序，只把「本该静默地 iretq 回野帧」变成「留证 + panic」。
+        WRAITH_LOG("R1 BAD-FRAME-CS pid=%u cs=%llx lo=%llx rip=%llx irsp=%llx rsp=%llx gs=%llx tsk=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)rcs, (unsigned long long)rlo,
+            (unsigned long long)rrip,
+            (unsigned long long)rirsp,
+            (unsigned long long)cur_rsp,
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)(uint64_t)cur_task);
+        panic_with_kurd(frame,
+            make_kthreads_fatal(
+                Scheduler::KTHREADS_EVENTS::EVENT_CODE_KTHREAD_COMMON_SAVE,
+                Scheduler::KTHREADS_EVENTS::COMMON_FATAL_REASONS::BAD_TASK_STATE),
+            (char*)"resched: iret.cs corrupted (interrupt frame clobbered)");
+    }
     per_processor_scheduler&scheduler=*get_self_scheduler();
     task* interrupted_task=(task*)read_gs_u64(PROCESSOR_NOW_RUNNING_TASK_GS_INDEX);
     bool is_user_context=((frame->core_ctx.idtctx.iret.cs&3)==3);

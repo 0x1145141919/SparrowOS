@@ -9,6 +9,7 @@
 #include "util/kout.h"
 #include "exec_env_detect.h"
 #include "arch/x86_64/Interrupt_system/loacl_processor.h"
+#include "util/wraith_probe.h"   // WRAITH 取证：取时分派自证探针（H0/H1）
 
 // ── RTC 锚定状态 ─────────────────────────────────────────────
 static bool        g_rtc_ready        = false;
@@ -46,7 +47,18 @@ static inline uint64_t tsc_to_ns(uint64_t ticks)
 miusecond_time_stamp_t ktime::get_microsecond_stamp()
 {
     if (g_env == ENV_TCG)
+    {
+        // WRAITH 取证（廉价、仅异常时写环）：分派指针被踩 = 即将 call 到野地址。
+        // wh02：CPU1 经此路径 RIP=0 取指 #PF。热路径只加一次比较。
+        if (!wraith::kernel_va_ok(readonly_timer))
+            WRAITH_LOG("H0 KTIME-BAD-TIMER pid=%u timer=%llx rsp=%llx gs=%llx ra=%llx\n",
+                (unsigned)fast_get_processor_id(),
+                (unsigned long long)(uint64_t)readonly_timer,
+                (unsigned long long)wraith::rsp_now(),
+                (unsigned long long)wraith::gs_now(),
+                (unsigned long long)(uint64_t)__builtin_return_address(0));
         return readonly_timer->get_time_stamp_in_us();
+    }
 
     // KVM / Bare metal
     return tsc_to_us(rdtsc());

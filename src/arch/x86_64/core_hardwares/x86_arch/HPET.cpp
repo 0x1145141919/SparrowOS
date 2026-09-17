@@ -4,6 +4,7 @@
 #include "memory/AddresSpace.h"
 #include "util/OS_utils.h"
 #include "util/kout.h"
+#include "util/wraith_probe.h"   // WRAITH 取证：取时 regs 自证探针（H1）
 
 HPET_driver* readonly_timer = nullptr;
 
@@ -121,6 +122,17 @@ KURD_t HPET_driver::Init(vm_interval* entry) {
  * ═══════════════════════════════════════════════════════════════════ */
 uint64_t HPET_driver::get_time_stamp_in_us() {
     if (!regs) return 0;
+
+    // WRAITH 取证（廉价、仅异常时写环）：regs 被踩 = 即将访问野地址。
+    // wh02 CPU0：#PF CR2=0x75fbf48 —— regs 被换成了取时值。热路径只加一次比较。
+    if (!wraith::kernel_va_ok(regs))
+        WRAITH_LOG("H1 HPET-BAD-REGS pid=%u this=%llx regs=%llx rsp=%llx gs=%llx ra=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)(uint64_t)this,
+            (unsigned long long)(uint64_t)regs,
+            (unsigned long long)wraith::rsp_now(),
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)(uint64_t)__builtin_return_address(0));
 
     uint64_t count = regs->main_counter_value;
     __uint128_t fs = __uint128_t(count) * hpet_timer_period_fs;

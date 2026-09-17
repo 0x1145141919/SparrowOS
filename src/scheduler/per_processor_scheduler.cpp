@@ -6,6 +6,7 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "util/kout.h"
 #include "panic.h"
+#include "util/wraith_probe.h"   // WRAITH 首爆取证：自证指纹 / 面包屑 / 留证环
 
 extern "C" void secure_hlt();
 static void* secure_hlt_wrapper(void* unused) {
@@ -140,6 +141,29 @@ KURD_t per_processor_scheduler::default_fatal()
 }
 void per_processor_scheduler::sleep_tasks_wake()
 {
+    // ── WRAITH 首爆取证探针（只读自证；不改任何时序）──
+    // 报告 w13：本函数帧底保存槽 [rbp-0x268] 被「取时帧」覆盖 → 野 this=0x2C700。
+    // 这里只增一个局部 oracle（GS 真值），用 this≠get_self_scheduler() 捕捉帧底被踩：
+    //   · GS 真值不受任何栈槽污染影响，是最鲁棒的判定；
+    //   · 刻意不加多余局部，尽量减少对帧布局的扰动（降低 Heisenbug 风险）。
+    per_processor_scheduler* const self_sched = get_self_scheduler();
+    WRAITH_TRACE("W0 sleep_wake pid=%u this=%llx self=%llx gs=%llx rsp=%llx\n",
+        (unsigned)fast_get_processor_id(),
+        (unsigned long long)(uint64_t)this,
+        (unsigned long long)(uint64_t)self_sched,
+        (unsigned long long)wraith::gs_now(),
+        (unsigned long long)wraith::rsp_now());
+    if (this != self_sched) {
+        // 入口 this 即野（帧底保存槽在进入前已坏，或调用方传错）。
+        WRAITH_LOG("W1 WILD-THIS-ENTRY pid=%u this=%llx self=%llx gs=%llx rsp=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)(uint64_t)this,
+            (unsigned long long)(uint64_t)self_sched,
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)wraith::rsp_now());
+        panic_with_kurd(default_fatal());
+    }
+
     while (true) {
         constexpr uint8_t BATCH_MAX = 64;
         task* batch[BATCH_MAX];
@@ -148,6 +172,17 @@ void per_processor_scheduler::sleep_tasks_wake()
         miusecond_time_stamp_t current_stamp = ktime::get_microsecond_stamp();
 
         {
+            if (this != self_sched) {
+                // 帧底 [rbp-0x268] 在同一次调用执行途中被覆盖（w13 崩点=line171）。
+                // 用 GS 真值 self_sched 判定：不依赖任何栈槽。
+                WRAITH_LOG("W2 SLOT-CLOBBER@1 pid=%u this=%llx self=%llx gs=%llx rsp=%llx\n",
+                    (unsigned)fast_get_processor_id(),
+                    (unsigned long long)(uint64_t)this,
+                    (unsigned long long)(uint64_t)self_sched,
+                    (unsigned long long)wraith::gs_now(),
+                    (unsigned long long)wraith::rsp_now());
+                panic_with_kurd(default_fatal());
+            }
             spinlock_interrupt_about_guard g(this->sched_lock);
             while (batch_count < BATCH_MAX) {
                 task** candidate = this->sleep_queue.front();
@@ -168,6 +203,16 @@ void per_processor_scheduler::sleep_tasks_wake()
         }
 
         {
+            if (this != self_sched) {
+                // ← 与 w13 崩溃点（第三条 g(this->sched_lock)）同址。
+                WRAITH_LOG("W3 SLOT-CLOBBER@3 pid=%u this=%llx self=%llx gs=%llx rsp=%llx\n",
+                    (unsigned)fast_get_processor_id(),
+                    (unsigned long long)(uint64_t)this,
+                    (unsigned long long)(uint64_t)self_sched,
+                    (unsigned long long)wraith::gs_now(),
+                    (unsigned long long)wraith::rsp_now());
+                panic_with_kurd(default_fatal());
+            }
             spinlock_interrupt_about_guard g(this->sched_lock);
             for (uint8_t i = 0; i < batch_count; i++) {
                 kurd = this->insert_ready_task(batch[i]);
@@ -180,6 +225,12 @@ void per_processor_scheduler::sleep_tasks_wake()
 }
 void per_processor_scheduler::sched()
 {
+    // ── WRAITH 首爆取证：入口指纹（连锁的「叶」；resched→next_task→sched）──
+    WRAITH_TRACE("S0 sched pid=%u gs=%llx rsp=%llx tsk=%llx\n",
+        (unsigned)fast_get_processor_id(),
+        (unsigned long long)wraith::gs_now(),
+        (unsigned long long)wraith::rsp_now(),
+        (unsigned long long)wraith::now_running_task());
     task* to_run=[&]()->task*{
         {
             spinlock_interrupt_about_guard g(this->sched_lock);
@@ -209,6 +260,15 @@ void per_processor_scheduler::sched()
         }
         return &this->idle;
     }();
+    if (!to_run || (uint64_t)to_run < 0xFFFF800000000000ULL) {
+        // 选出的任务是非内核指针（野 ready_queue 项 / 野 scheduler）—— 首爆即留证。
+        WRAITH_LOG("S1 BAD-TO-RUN pid=%u to_run=%llx gs=%llx rsp=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)(uint64_t)to_run,
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)wraith::rsp_now());
+        panic_with_kurd(default_fatal());
+    }
     {
     spinlock_interrupt_about_guard g1(to_run->task_lock);
     if (!to_run->set_running())
@@ -288,6 +348,18 @@ per_processor_scheduler *get_self_scheduler()
 
 void per_processor_scheduler::next_task_with_routine()
 {
+    // ── WRAITH 首爆取证：this 自证（GS 真值 oracle）──
+    // 调用者恒为「本核调度器」；this≠get_self_scheduler() 即帧/入参被踩。
+    per_processor_scheduler* const self_sched = get_self_scheduler();
+    if (this != self_sched) {
+        WRAITH_LOG("N1 WILD-THIS pid=%u this=%llx self=%llx gs=%llx rsp=%llx\n",
+            (unsigned)fast_get_processor_id(),
+            (unsigned long long)(uint64_t)this,
+            (unsigned long long)(uint64_t)self_sched,
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)wraith::rsp_now());
+        panic_with_kurd(default_fatal());
+    }
     // 睡眠队列超时唤醒
     sleep_tasks_wake();
 

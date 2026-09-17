@@ -14,6 +14,7 @@
 #include "ktime.h"
 #include "util/lock.h"
 #include "exec_env_detect.h"
+#include "util/wraith_probe.h"   // WRAITH 首爆取证：中断→resched 链路留证
 
 #include "arch/x86_64/intel_processor_trace.h"
 bool fred_support_catch_bit;//在vec_demux_init (kernel早期 初始向量解复器 置函数)中bsp测量是否支持fred,若支持则此bit置1,并且ap直接根据这个bit决定是否初始化fred。
@@ -571,8 +572,17 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
             if (local_tok.func) {
                 uint64_t res = local_tok.func(&local_tok);
                 x2apic::x2apic_driver::write_eoi();
-                if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE)
+                if (res & TOKEN_FLAG_MASK_TOKEN_SCHEDULE) {
+                    // WRAITH 首爆取证：设备向量（如 NVMe CQ）中断内强制 resched。
+                    // 报告 w22：此路 = 中断上下文里跑整段 resched→next_task→sched。
+                    WRAITH_TRACE("D0 demux-irq pid=%u vec=%u cs=%llx rip=%llx rsp=%llx gs=%llx\n",
+                        (unsigned)pid, (unsigned)vec,
+                        (unsigned long long)raw_frame->core_ctx.idtctx.iret.cs,
+                        (unsigned long long)raw_frame->core_ctx.idtctx.iret.rip,
+                        (unsigned long long)wraith::rsp_now(),
+                        (unsigned long long)wraith::gs_now());
                     resched(raw_frame);
+                }
             }
             return;
         }

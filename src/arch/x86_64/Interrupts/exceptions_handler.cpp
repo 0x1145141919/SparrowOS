@@ -8,6 +8,7 @@
 #include "arch/x86_64/abi/pt_regs.h"
 #include "util/kptrace.h"
 #include "util/arch/x86-64/cpuid_intel.h"
+#include "util/wraith_probe.h"   // WRAITH 首爆取证：异常帧自证 + 留证环
 static void double_fault_handler(x64_standard_context_v2* frame,uint64_t errcode){
     panic_info_inshort inshort={
         .is_bug=1,
@@ -22,11 +23,17 @@ static void double_fault_handler(x64_standard_context_v2* frame,uint64_t errcode
 }
 
 static void page_fault_handler(x64_standard_context_v2* frame,uint64_t errcode,vaddr_t liner_addr){
-    if((IDT_CS(frame) & 0x3) == 0x3){
+    const uint64_t cs = IDT_CS(frame);
+    const uint8_t  lo = (uint8_t)(cs & 0x3);
+    if(lo == 0x3){
         // 用户态,根据错误码处理(可能是缺页异常)
         // TODO: 实现用户态缺页处理
-    } else if((IDT_CS(frame) & 0x3) == 0x0){
-        // 内核态, panic
+    } else {
+        // 内核态 panic；或 CS 低位【既非 0 也非 3】= 异常帧已被踩坏。
+        // 原实现后者两个分支都不进 → 静默 iretq 回野帧（报告 w22：首爆 #PF 被吞的放大器）。
+        // 现改为：先向中断黑匣子落证，再 panic（把「静默损坏」升级为「首爆即留证」）。
+        wraith::log_exc_frame(lo == 0x0 ? "PF-kern" : "PF-CS-CLOBBERED",
+                              frame, errcode, (uint64_t)liner_addr);
         panic_info_inshort inshort={
             .is_bug=1,
             .is_policy=0,
@@ -36,16 +43,25 @@ static void page_fault_handler(x64_standard_context_v2* frame,uint64_t errcode,v
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #PF(Page Fault)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
+        char* msg = (char*)(lo == 0x0
+            ? "kernel_context cause #PF(Page Fault)"
+            : "kernel_context cause #PF(Page Fault) [FRAME-CLOBBERED: cs&3 not 0/3]");
+        Panic::panic(default_panic_behaviors_flags, msg,
+            &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
 static void general_protection_handler(x64_standard_context_v2* frame,uint64_t errcode){
-    if((IDT_CS(frame) & 0x3) == 0x3){
+    const uint64_t cs = IDT_CS(frame);
+    const uint8_t  lo = (uint8_t)(cs & 0x3);
+    if(lo == 0x3){
         // 用户态,根据错误码处理
         // TODO: 实现用户态 GPF 处理
-    } else if((IDT_CS(frame) & 0x3) == 0x0){
-        // 内核态, panic
+    } else {
+        // 内核态 panic；或 CS 低位非 0/3（帧被踩）。同 #PF：先落证再 panic。
+        // 报告 w22：#GP e=9d50 是「iretq 装野 CS」的次生伤——把次生现场也留证。
+        wraith::log_exc_frame(lo == 0x0 ? "GP-kern" : "GP-CS-CLOBBERED",
+                              frame, errcode, 0);
         panic_info_inshort inshort={
             .is_bug=1,
             .is_policy=0,
@@ -55,16 +71,24 @@ static void general_protection_handler(x64_standard_context_v2* frame,uint64_t e
         };
         panic_context::x64_context panic_context;
         panic_frame(frame,&panic_context);
-        Panic::panic(default_panic_behaviors_flags,"kernel_context cause #GP(General Protection)", &panic_context,&inshort,kurd_get_raw(KURD_t()));
+        char* msg = (char*)(lo == 0x0
+            ? "kernel_context cause #GP(General Protection)"
+            : "kernel_context cause #GP(General Protection) [FRAME-CLOBBERED: cs&3 not 0/3]");
+        Panic::panic(default_panic_behaviors_flags, msg,
+            &panic_context,&inshort,kurd_get_raw(KURD_t()));
     }
 }
 
 static void invalid_tss_handler(x64_standard_context_v2* frame,uint64_t errcode){
-    if((IDT_CS(frame) & 0x3) == 0x3){
+    const uint64_t cs = IDT_CS(frame);
+    const uint8_t  lo = (uint8_t)(cs & 0x3);
+    if(lo == 0x3){
         // 用户态,根据错误码处理
         // TODO: 实现用户态 Invalid TSS 处理
-    } else if((IDT_CS(frame) & 0x3) == 0x0){
-        // 内核态, panic
+    } else {
+        // 内核态 panic；或 CS 低位非 0/3（帧被踩）。先落证再 panic。
+        wraith::log_exc_frame(lo == 0x0 ? "TS-kern" : "TS-CS-CLOBBERED",
+                              frame, errcode, 0);
         bsp_kout<<"[PANIC] Invalid TSS (#TS), errcode: "<<errcode<<kendl;
         panic_info_inshort inshort={
             .is_bug=1,
