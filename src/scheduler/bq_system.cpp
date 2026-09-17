@@ -11,6 +11,7 @@
 #include "Scheduler/kthread_abi.h"
 #include "Scheduler/per_processor_scheduler.h"
 #include "Scheduler/bq_system.h"
+#include "Scheduler/sched_handoff.h"   // [FIX-F4] 跨核 handoff 登记（唤醒前查“是否仍在跑”）
 #include "util/rb_map.h"
 #include "panic.h"
 
@@ -163,8 +164,15 @@ task* block_queue::pop_head()
 
 void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
 {
+    if (!batch) return;
+    // [FIX-F1 / MS-10] 入口复位：clamp 可跨轮复用，旧 batch_count 若不归零，
+    // 会与内层/外层重复 flush 叠加导致重复入队甚至 arr[64] 越界。
+    batch->batch_count = 0;
+    batch->is_timeout_mov_early = false;
     uint64_t now = ktime::get_microsecond_stamp();
     while (!inner_queue.empty()) {
+        // [FIX-F1 / MS-10] 写前判，杜绝 arr[64] 越界写（原来写在自增之后）。
+        if (batch->batch_count >= 64) break;
         task* front_t = *inner_queue.front();
         if (front_t->min_wakeup_stamp == 0 || now <= front_t->min_wakeup_stamp)
             {
@@ -173,19 +181,20 @@ void block_queue::pop_timeouts(blocked_tasks_clamps_t* batch)
             }
         task* popped = inner_queue.pop_front_value();
         batch->arr[batch->batch_count++] = popped;
-        if(batch->batch_count>=64)break;
     }
     batch->is_queue_empty = inner_queue.empty();
 }
 
 void block_queue::pop_all(blocked_tasks_clamps_t* batch)
 {
+    if (!batch) return;
+    // [FIX-F1 / MS-10] 入口复位（同上，避免跨轮累计越界 / 重复）。
+    batch->batch_count = 0;
     while (!inner_queue.empty()) {
+        // [FIX-F1 / MS-10] 写前判，杜绝 arr[64] 越界写。
+        if (batch->batch_count >= 64) break;
         task* t = inner_queue.pop_front_value();
         batch->arr[batch->batch_count++] = t;
-        if(batch->batch_count>=64){
-            break;
-        }
     }
     batch->is_queue_empty = inner_queue.empty();
 }
@@ -204,6 +213,20 @@ void bq_flush_pending(blocked_tasks_clamps_t *clamp, bool is_timeout)
         task* t = clamp->arr[i];
         if (!t) continue;
         spinlock_interrupt_about_guard gt(t->task_lock);
+        const task_state_t st = t->get_state();
+        if (st != task_state_t::blocked) {
+            // 已 ready/running/zombie/init：无需（也不可）唤醒，避免重复入队 [MS-7/MS-8]。
+            clamp->arr[i] = nullptr;
+            continue;
+        }
+        if (sched_owner_cpu(t) >= 0) {
+            // [FIX-F4 / MS-1] 该任务仍登记在某个核 g_cpu_running[] 上（=还没真正切离本栈）：
+            // 绝此刻 set_ready/异核入队；改为 wake_pending，交由其拥有核在 sched() 交接点补投。
+            t->wake_pending = true;
+            t->wake_pending_rax = rax_enc;
+            clamp->arr[i] = nullptr;   // 本项不参与第二轮入队
+            continue;
+        }
         t->priv_ctx.rax = rax_enc;
         t->set_ready();
         t->on_blockers_queue_bit = false;

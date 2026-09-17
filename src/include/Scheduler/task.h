@@ -35,6 +35,13 @@ public:
     };
 
     bool on_blockers_queue_bit = false;
+    // [FIX-F4 / MS-1/4] 延迟唤醒位：唤醒者发现本任务「仍登记在某个核的 g_cpu_running[]」
+    // （= 还没真正切离自己那片内核栈）时置位，绝不 set_ready/异核入队；
+    // 由拥有核在 sched() 交接点补投（见 per_processor_scheduler::sched）。
+    volatile bool wake_pending = false;
+    // 延迟唤醒时随行携带的 priv_ctx.rax 编码（block_if_equal 的返回，bit0=已阻塞唤醒 /
+    // bit1=超时），确保补投时语义与原即时唤醒一致。
+    volatile uint64_t wake_pending_rax = 0;
     uint32_t belonged_processor_id;
     spinlock_cpp_t task_lock;
     miusecond_time_stamp_t min_wakeup_stamp;
@@ -52,6 +59,9 @@ public:
     static task* basic_constructor();
     static void idle_specified_constructor(task* task_ptr);
     void atomic_load();
+    // [FIX-F2 / MS-6] 与 atomic_load() 同 choose 分支，但用【调用方在锁内快照好的】上下文
+    // 落地：避免在 task_lock 之外读 priv_ctx 与并发的 kthread_common_save 整结构体赋值竞态。
+    void atomic_load_from(x64_standard_context_v2* ctx);
     bool set_ready();
     bool set_blocked();
     bool set_dead();

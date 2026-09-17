@@ -30,6 +30,7 @@
 #include "firmware/ACPI_APIC.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"
+#include "Scheduler/sched_handoff.h"   // [FIX-F3/F4/F5] 每核运行任务登记 / 调度门 初始化
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/core_hardwares/DMAR.h"
@@ -241,6 +242,8 @@ extern "C" void kernel_start()
         gs_complex_t* cx = (gs_complex_t*)(conjucnt_GSs.vbase() + i * GS_COMPLEX_STRIDE);
         global_schedulers[i].placed_init(cx->stacks_ptr);
     }
+    // [FIX-F3/F4/F5] 初始化「每核当前运行任务」登记 / 每核调度门（必须在首次调度前）。
+    sched_handoff_init();
     gs_u64_write(PROCESSOR_SCHEDULER_GS_INDEX, (uint64_t)&global_schedulers[fast_get_processor_id()]);
 
     // ── IRQ-safe 断言 / 日志环：AP bring-up 前就绪 ──

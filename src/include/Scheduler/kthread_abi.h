@@ -31,5 +31,7 @@ extern "C" {
     void bq_flush_pending(blocked_tasks_clamps_t* clamp, bool is_timeout);
     void common_idle();
     extern char allkthread_true_enter;
-    [[noreturn]] void resched(x64_standard_context_v2* frame);
+    // [FIX-F3 / MS-2/14] 取消 [[noreturn]]：每核调度门命中时 resched 会直接返回
+    // （让进行中的那次调度在退栈时完成），调用方需处理“返回”分支。
+    void resched(x64_standard_context_v2* frame);
 }

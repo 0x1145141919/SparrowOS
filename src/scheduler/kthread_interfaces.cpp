@@ -31,6 +31,7 @@
 #include "util/rb_map.h"
 #include "memory/FreePagesAllocator.h"
 #include "util/wraith_probe.h"   // WRAITH 首爆取证：帧自证 / 留证环
+#include "Scheduler/sched_handoff.h" // [FIX-F3/F4/F5] 跨核 handoff 登记 / 调度门
 extern rb_map<bq_id_t, block_queue*> container;
 extern spinrwlock_cpp_t container_lock;
 namespace {
@@ -235,8 +236,24 @@ KURD_t task_launch(task *t, uint32_t pid)
     }
     scheduler.next_task_with_routine();
 }
-extern "C" [[noreturn]] void resched(x64_standard_context_v2 *frame)
+extern "C" void resched(x64_standard_context_v2 *frame)
 {
+    const uint32_t sched_cpu = fast_get_processor_id();
+    // [FIX-F3 / MS-2/14] 每核调度不可重入门：本核已在调度中（next_task_with_routine/sched
+    // 尚未提交切换）→ 跳过本次 resched，直接返回让【进行中的】那次调度在 sched() 提交
+    // （iretq 飞走）时完成切换。
+    //   · 不丢调度：进行中的调度会切走到某个任务；本次中断里的设备处理（唤醒/入队）
+    //     已经在其 handler 里完成，被唤醒的任务已在 ready 队列，下一次调度必然取到。
+    //   · 同核重入本被中断门(IF=0)挡住，此门为防御性双保险。
+    if (sched_cpu < MAX_PROCESSORS_COUNT && g_cpu_in_sched[sched_cpu]) {
+        WRAITH_TRACE("R2 resched-skip pid=%u rsp=%llx gs=%llx tsk=%llx\n",
+            (unsigned)sched_cpu,
+            (unsigned long long)wraith::rsp_now(),
+            (unsigned long long)wraith::gs_now(),
+            (unsigned long long)wraith::now_running_task());
+        return;
+    }
+    if (sched_cpu < MAX_PROCESSORS_COUNT) g_cpu_in_sched[sched_cpu] = 1;
     // ── WRAITH 首爆取证：中断内嵌套调度的「首入口」指纹 ──
     // 报告 w22：NVMe CQ 中断 → idt_vec_demux_entry(默认分支) → resched(raw_frame)。
     // 记录被中断上下文的 iret.cs/rip/rsp + 当前 rsp/gs，并断言 iret.cs 合法；
@@ -347,6 +364,14 @@ ckurd wakeup_thread(uint64_t tid, bool front_insert){
         if(task_ptr->on_blockers_queue_bit){
             fail.reason=ev::wakeup_thread_results::FAIL_REASONS::TASK_ON_BLOCK_QUEUE;
             return kurd_get_raw(fail);
+        }
+        // [FIX-F4 / MS-4] 仍在别核执行（未真正切离本栈）→ 延后唤醒，不 set_ready/入队。
+        // 拥有核会在 sched() 交接点补投（见 per_processor_scheduler::sched）。
+        if (sched_owner_cpu(task_ptr) >= 0) {
+            task_ptr->wake_pending = true;
+            task_ptr->wake_pending_rax = task_ptr->priv_ctx.rax;
+            success.reason=ev::wakeup_thread_results::SUCCESS_REASONS::ALREADY_RUNNING_OR_WAKEUP;
+            return kurd_get_raw(success);
         }
         if (!task_ptr->set_ready())
             panic_with_kurd(make_kthreads_set_state_fatal());
@@ -508,6 +533,21 @@ ckurd release_kthread(uint64_t tid)
     }
     if(t->get_state()!=task_state_t::zombie){
         fail.reason = ev::release_kthread_results::FAIL_REASONS::TASK_NOT_ZOMBIE;
+        return kurd_get_raw(fail);
+    }
+    // [FIX-F5 / MS-3] 退出者可能仍在本核/别核的栈上跑完 next_task_with_routine→sched（
+    // kthread_exit 先 set_zombie 发布、之后才切走）。只要它还登记在任一核 g_cpu_running[]，
+    // 就绝不能被回收其内核栈（否则栈 UAF / 物理页被二次分配为另一任务的栈）。
+    // 拥有核的 sched() 交接点必然把它换出登记，且不需要本核做任何事（不会死锁）→ 有界自旋等待。
+    if (sched_owner_cpu(t) >= 0) {
+        for (uint32_t relax = 0; relax < 2000000u; ++relax) {
+            if (sched_owner_cpu(t) < 0) break;
+            asm volatile("pause" ::: "memory");
+        }
+    }
+    if (sched_owner_cpu(t) >= 0) {
+        // 极端情况仍未切离（不应发生）：本轮不释放，返回可重试——绝不在其仍占栈时 vfree。
+        fail.reason = ev::release_kthread_results::FAIL_REASONS::TASK_STILL_ON_CPU;
         return kurd_get_raw(fail);
     }
     k=__wrapped_pgs_vfree((void*)t->priv_stack_base,t->priv_stack_pages);

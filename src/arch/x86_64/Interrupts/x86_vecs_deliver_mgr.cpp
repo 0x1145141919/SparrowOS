@@ -562,6 +562,7 @@ extern "C" void idt_vec_demux_entry(x64_standard_context_v2* raw_frame)
         case ipi_vecs::IPI_RESCHED:{ 
             x2apic::x2apic_driver::write_eoi();
             resched(raw_frame);
+            return;   // [FIX-F3] resched 可能因本核“正在调度”门而返回；不得落入 device token 分支
         }
         default:{
             interrupt_token_t local_tok;
@@ -636,6 +637,7 @@ void fred_vec_demux_hw_dispatch(x64_standard_context_v2* frame, uint8_t vec)
     }
     case ipi_vecs::IPI_RESCHED:{ 
             resched(frame);
+            return;   // [FIX-F3] resched 可能因本核“正在调度”门而返回；不得落入 device token 分支
         }
     default: {
         interrupt_token_t local_tok;

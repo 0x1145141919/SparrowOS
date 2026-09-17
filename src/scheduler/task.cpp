@@ -124,6 +124,25 @@ void task::atomic_load()
     }
 }
 
+// [FIX-F2 / MS-6] 用【调用方在 task_lock 内快照好的】上下文落地。
+// sched() 在释放 to_run->task_lock 之后再调用本函数；期间另一核对同一 to_run 调
+// kthread_common_save（priv_ctx = *frame 的整结构体赋值）也无法撕裂这份被快照的副本。
+void task::atomic_load_from(x64_standard_context_v2* ctx)
+{
+    switch (this->choose) {
+    case ctx_choose::priv:
+        if (fred_support_catch_bit) {
+            fred_pctx_load(ctx);
+        } else {
+            idt_style_load(ctx);
+        }
+    case ctx_choose::u_ctx: {
+    };
+    case ctx_choose::vCPU: {
+    }
+    }
+}
+
 bool task::resurrect()
 {
     if (this->task_state != zombie) return false;

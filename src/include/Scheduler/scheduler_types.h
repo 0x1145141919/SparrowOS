@@ -50,6 +50,9 @@ namespace Scheduler {
         namespace release_kthread_results {
             namespace FAIL_REASONS {
                 constexpr uint16_t TASK_NOT_ZOMBIE = 2;
+                // [FIX-F5 / MS-3] 退出者仍登记在某个核上执行（尚未真正切离本栈）：本轮不释放栈，
+                // 返回可重试（避免在它仍占用内核栈时 vfree → 栈 UAF）。
+                constexpr uint16_t TASK_STILL_ON_CPU = 3;
             }
         }
         constexpr uint8_t EVENT_CODE_WAKEUP_THREAD       = 4;
