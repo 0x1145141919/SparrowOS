@@ -124,6 +124,9 @@ def main():
     try:
         read_obj()                            # greeting
         cmd("qmp_capabilities")
+        # greeting/capabilities 用短超时（连接被"抢槽"时快速失败）；
+        # 之后 dump/poll 阶段放宽到总超时（大 dump 期间 BQL 可能拖住单次响应）。
+        s.settimeout(timeout)
         args = {"paging": paging, "protocol": "file:" + outfile,
                 "format": "elf", "detach": True}
         if begin is not None:

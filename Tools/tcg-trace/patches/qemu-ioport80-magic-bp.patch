@@ -1,0 +1,23 @@
+diff --git a/hw/i386/pc.c b/hw/i386/pc.c
+index 4b53b5be4a..212114cf9b 100644
+--- a/hw/i386/pc.c
++++ b/hw/i386/pc.c
+@@ -32,6 +32,7 @@
+ #include "hw/i386/fw_cfg.h"
+ #include "hw/i386/vmport.h"
+ #include "system/cpus.h"
++#include "system/runstate.h"
+ #include "hw/ide/ide-bus.h"
+ #include "hw/timer/hpet.h"
+ #include "hw/core/loader.h"
+@@ -204,6 +205,10 @@ GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
+ static void ioport80_write(void *opaque, hwaddr addr, uint64_t data,
+                            unsigned size)
+ {
++    if (data == 0xDB) {
++        vm_stop(RUN_STATE_DEBUG);
++        return;
++    }
+ }
+ 
+ static uint64_t ioport80_read(void *opaque, hwaddr addr, unsigned size)

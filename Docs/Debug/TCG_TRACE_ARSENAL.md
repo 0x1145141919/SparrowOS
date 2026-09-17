@@ -5,12 +5,18 @@
 > （如 `Docs/Debug/WRAITH.md`），只引用本文档，不复制武器库。
 > **建立**：2026-09-15。**配套代码**：`Tools/tcg-trace/`。
 
+> ## ⚠️ 权威声明（强一致 · 交接用）
+> 本文档是 TCG+trace 取证工具集的 **唯一权威**。`Tools/tcg-trace/README.md` 只是
+> 同目录的**薄壳速查**（一两行用法 + 回指本文），**不复述细节**。
+> **纪律：改工具 ⇒ 同一回合改本文**；两处若冲突，以本文为准并立刻修正薄壳。
+> **最后对齐**：2026-09-17（对齐 `Tools/tcg-trace/` 7 件工具；**老式 `.ram`/pmemsave 路径已铲除**）。
+
 ---
 
 ## 0. 一句话
 
 让 AI（或任何人）在**不依赖会话记忆、不依赖人肉复现**的前提下，一把拿到一个**真实竞态崩溃样本**
-（fault 前后的指令流 / 异常 / 寄存器 / **最终物理内存镜像**），然后离线符号化定位。
+（fault 前后的指令流 / 异常 / 寄存器 / **最终内存镜像**），然后离线符号化定位。
 
 ---
 
@@ -35,60 +41,161 @@
 
 ---
 
-## 3. 工具
+## 3. 工具矩阵（`Tools/tcg-trace/`）
 
-### 3.1 `Tools/tcg-trace/tcg-trace.sh`
+**共 7 件。角色与状态一览：**
+
+| 工具 | 角色 |
+|---|---|
+| `tcg-trace.sh` | 抓取总控：单次/连跑 · 停止判据 · 转储编排 |
+| `qmp-dump-vmcore.py` | 官方 vmcore（QMP `dump-guest-memory`）→ `.vmcore`(+`.regs`) |
+| `vmcore-mkcore.py` | `.vmcore` → **虚拟视角** `.core`（GDB 可读） |
+| `trace-sym.py` | `.trace` → 符号 + **源码行批注**日志 |
+| `qmp-wait-stop.py` | QMP `STOP` 事件常驻监听（零轮询开销） |
+| `qmp-status.py` | 一次性 `query-status`（供 `--selfcheck`） |
+| `patches/*` | QEMU ioport80 魔法断点补丁 + 部署纪律 |
+
+> 内存转储**只有一条路**：官方 `dump-guest-memory`（§3.2）。旧 `pmemsave`（`qmp-memdump.py`
+> → `.ram`，及 `ram-read.py`/`ram-mkcore.py`）**已于 2026-09-17 整体铲除**——那是带 30s 超时硬伤的
+> 遗留路径，留着只会污染接手者的上下文。
+
+### 3.1 `tcg-trace.sh` —— 抓取总控
+
 复用 VMtest-nosudo 的 mtools 零-sudo ESP staging + QEMU 参数；叠加 `-D/-d trace`；
-poll 串口，命中 `PANIC|kshell>` / 超时 / 超帽即停；`--repeat` 连跑到抓到异常样本。
+轮询串口，命中停止判据 / 超时 / 超帽即停；`--repeat` 连跑到抓到异常样本。
 
 | 参数 | 说明 |
 |---|---|
-| `--outdir DIR` | 输出目录（默认 `/mnt/huge_data/sparrowos_debug/traces`，不存在则回退 `$VM/traces`）|
+| `--outdir DIR` | 输出目录（默认 `$SPARROW_DEBUG_STORE/traces`，store 缺省 `/mnt/huge_data/sparrowos_debug`；父目录不存在则回退 `$BASE/VMresources/traces`）|
 | `--tag NAME` | 样本名（默认 `trace`）|
 | `--timeout SEC` | 单次墙钟上限（默认 90，超时判 `HANG`）|
 | `--cap-gb N` | trace 体积帽（默认 3GB，超帽判 `SIZECAP`）|
-| `--stop-on RE` | 串口命中即停正则（默认 `PANIC\|kshell>`）|
-| `--repeat N` | 连跑 N 次，抓到 PANIC/HANG/SIZECAP 即停 |
+| `--stop-on RE` | 串口命中即停正则（**默认 `PANIC\|kshell>\|#WF#`**）|
+| `--repeat N` | 连跑 N 次（样本名补零 `tag01…`），抓到**任一异常样本**即停 |
 | `--base DIR` | 仓库布局根（默认 `/home/PS/PS_git/OS_pj_uefi`）|
-| `--dump-mem MB` | **异常停止时额外转储 MB 物理内存 → `<tag>.ram`** |
-| `--mem-base A` | 转储起始物理地址（默认 0，可 `0x…`）|
 | `--dump-always` | 连正常样本也转储（基线用）|
+| `--dump-fault-only` | 仅对 guest 首爆冻结（`RESULT=FAULT`）转储（避开 AP 类噪声 panic）|
+| `--skip-noise-re RE` | 串口命中该正则的样本判 `NOISE`：**不转储、不算异常、连跑继续**（用于 12× 等高压下顶出的 AP 启动 IPI 超时等假阳性）|
+| `--dump-vmcore` | 异常停止时抓官方 vmcore → `<tag>.vmcore`(+`.vmcore.regs`) |
+| `--mkcore` | 在 vmcore 基础上合成虚拟视角 core → `<tag>.core`(+`.map-report.txt`)（隐含 `--dump-vmcore`）|
 | `--selfcheck` | 只校验 `QEMU_BIN` 是否带 ioport80 魔法断点补丁（不启动 VM）；`SELFCHECK=PASS/FAIL` |
+| `-h\|--help` | 用法 |
 
-环境变量：`SMP`（默认 6）、**`QEMU_BIN`**（默认 PATH 里的 `qemu-system-x86_64`；
-⚠️ 跑取证请显式指向打过补丁的构建，并用 `--selfcheck` 自检）。退出码 `10` = 抓到异常样本。
-末行结构化输出：`TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= RAM= VMCORE= CORE=`。
+**环境变量**：`SMP`（默认 6）· `BASE`（同 `--base`）· `SPARROW_DEBUG_STORE`（大工件仓根）·
+`QEMU_BIN`（默认 PATH 里的 `qemu-system-x86_64`；⚠️ 跑取证请显式指向打过
+`patches/qemu-ioport80-magic-bp.patch` 的构建，并用 `--selfcheck` 自检）· `VMCORE_TIMEOUT`（默认 900s）。
 
-`RESULT` 分类：`KSHELL`（正常到提示符）/ `PANIC` / **`FAULT`（guest 首爆即冻结，见 §3.3）** /
-`HANG`（无 panic 无 kshell）/ `SIZECAP`（风暴到帽）/ `OTHER`。
+**停止判据（任一命中即停）**：串口命中 `--stop-on` / 串口 `#WF#`（独立于 `--stop-on`）/
+QMP 观测到 `STOP`（guest 冻结，经 `qmp-wait-stop.py`）/ 超时 / trace 超帽。
+对应 `REASON` = `MATCH` / `MAGICBP` / `MAGICBP` / `TIMEOUT` / `SIZECAP`。
 
-### 3.2 `Tools/tcg-trace/qmp-memdump.py` —— 最终内存镜像
-停止瞬间经 **QEMU QMP**：`qmp_capabilities → stop（冻结全部 vCPU，一致快照）→ pmemsave(base,size,file) → quit`。
-`pmemsave` 返回即表示写完。**必须在 QEMU 主循环仍活着的窗口调用**——
-storm/panic 下 TCG 主循环是独立线程，故仍可用；这正是"把内存镜像和 trace 一起留下"的关键。
+**`RESULT` 分类**：`KSHELL`（正常到提示符）· `PANIC` · `FAULT`（guest 首爆即冻结，见 §3.4）·
+`HANG`（无 panic 无 kshell）· `SIZECAP`（风暴到帽）· `NOISE`（命中 `--skip-noise-re`，非目标）· `OTHER`。
 
-输出 `<tag>.ram` = 原始物理内存镜像（little-endian 直出），可用 `dd`/python 按 offset 取任意页。
+**转储门控**（决定哪种结局才转储）：`--dump-always` ⇒ 一律；
+`--dump-fault-only` ⇒ 仅 `FAULT`；否则 ⇒ 除 `KSHELL/OTHER/NOISE` 外都转。
+⚠️ `-qmp` 只在 **`--dump-vmcore`** 时才挂（避免给非转储轮多挂一个 chardev 扰动 TCG 交织）。
 
-### 3.3 首爆冻结：魔法断点 + `qmp-wait-stop.py`（2026-09-17）
+**产出**：`<tag>.trace`（QEMU `-D`）· `<tag>.serial`（串口）· 视选项另有
+`<tag>.vmcore`(+`.regs`) / `<tag>.core`(+`.map-report.txt`)。
+末行结构化输出：`TAG= RESULT= REASON= ELAPSED= TRACE= LINES= SERIAL= VMCORE= CORE=`。
+**退出码**：`0` = 正常（KSHELL/OTHER）；`10` = 抓到异常样本（PANIC/FAULT/HANG/SIZECAP）。
+
+### 3.2 `qmp-dump-vmcore.py` —— 官方 vmcore（唯一内存路径）
+
+```
+qmp-dump-vmcore.py <qmp-sock> <outfile> [--paging] [--begin A --length L]
+                   [--timeout SEC] [--no-quit]
+```
+经 QMP `dump-guest-memory{paging, protocol=file:<out>, format=elf, detach:true}`，
+轮询 `query-dump` 到 `completed`（默认上限 900s，超时删残件）。
+- **产物**：`<outfile>`（标准 ELF：每 RAM 段一个 `PT_LOAD`，**只枚举真实 RAM、洞跳过**；
+  全 CPU `NT_PRSTATUS` → GDB 直接 `info threads/registers`）+ `<outfile>.regs`（HMP
+  `info registers -a`：全 CPU 段基址等）。
+- **语义**：`dump_init` 自带 `vm_stop(SAVE_VM)`、结束 `vm_start` ⇒ **不用先 stop**；
+  `detach=true` 让 dump 在独立线程跑、QMP 立即返回。
+- **默认非 paging**（`p_paddr=物理`，`p_vaddr` 回落物理）。⚠️ `--paging` 会把
+  `phyaddr_window`（10G 别名）一并落盘 → 体积暴涨，慎用。
+- 结束时**校验文件 size**（大镜像不再有假失败）。
+- 退出码：`0` 成功 · `2` dump 失败/超时（已删残件）· `3` 连接/协议失败 · `64` 用法错误。
+
+### 3.3 后处理：把 raw 工件变成"可读"
+
+#### 3.3.1 `vmcore-mkcore.py` —— `.vmcore` → 虚拟视角 `.core`
+```
+vmcore-mkcore.py <vmcore> <serial> [--kernel KERNEL_ELF] [--out CORE]
+                 [--pdpt-phys 0x..] [--skip-alias] [--with-phys]
+                 [--report FILE] [--baseline FILE] [--max-suspicious N]
+```
+为什么：官方 vmcore 是**物理**视角，GDB 按虚拟地址读不到内核栈/堆。本工具以
+**`kspace_up_half`**（高半 128TiB 的**扁平 PDPTE 表**，`index=(v-0xFFFF800000000000)>>30`，
+17 位）为**单一根**走 `PDPTE→PD→PT`，把虚拟→物理写成 `PT_LOAD`
+（`p_vaddr=虚拟 / p_offset=PA_BASE+物理`）；NOTE 段原样搬运。
+- **文件布局**：`[0,PA_BASE)` = ehdr/段表/NOTE；`[PA_BASE,..)` = **物理内存窗口**
+  （稀疏；所有段——内核虚拟视图 + 恒等窗口——共用这一个物理窗口）。
+  `PA_BASE = 对齐4K(note_end) ≥ 0x1000`。
+- **收页判据（两信号取交）**：`P=1 且 phys∈vmcore RAM 段 且 缓存∉{UC,UC-}`（PAT idx 2/3/6）。
+  排设备 MMIO（HPET/IOMMU/ECAM/NVMe BAR 全 UC）；保留 WC 帧缓冲；**切忌"==WB"一刀切**。
+- **恒等窗口默认保留**（很多资产如 `fpa_bitmaps`/`pages_arr` 经 `phyaddr_window` 恒等别名访问）
+  ⇒ `.core` 会胀到≈全 RAM；`--skip-alias` 丢弃巨别名换瘦身（~20MB）。可由 `.vmcore` 随时重清洗。
+- 越界/不可信页表项 → `--report`（**WRAITH 探针**：树↔页表分歧/野帧）；`--baseline` 喂一份
+  健康态 report，则其中的非 RAM 映射视为预期、不再报异常；`--max-suspicious` 默认 40。
+- **输出**默认 `<vmcore>.core` ⇒ `gdb kernel.elf <out>`。
+
+#### 3.3.2 `trace-sym.py` —— `.trace` → 符号 + 源码批注
+```
+trace-sym.py <trace> [--init init.elf] [--kernel kernel.elf]
+             [--start auto|init|kernel|<line>] [--only-domain init|kernel]
+             [--regs none|exc|all] [--short-loc] [--src]
+             [--out FILE] [--summary-only]
+```
+裸 `.trace` 是 `-d in_asm` 裸汇编，且 init.elf / kernel.elf / UEFI 三段地址混排；本工具按
+**链接域**把指令行、事件行解析成 ``<sym+off @ 源文件:行>``（DWARF 由 `addr2line` 提供）：
+- **链接域**：init.elf @`0x101000000`（宽松上界 `0x102000000`）；
+  kernel.elf @`0xffff800000000000`（含低半区 `0x4000–0x9000`）。
+- 每行输出 = `<sym+off @ src:line> | <原始未解析行>`（原始行逐字保留，便于对照）。
+- 立即数（含 large model 的 `movabsq $<十进制巨值>`）与 RIP-相对（`disp(%rip)`）里的地址也解析，
+  尾注 `; addr[...]`；含护栏（无 DWARF 覆盖 / 偏移过大 → 判为非常量，不解析）。
+- `--src`：在指令流里插 **C++ 源码行批注**（`── file:line [func]` + 该行源码；`.asm/.s` 自动跳过）。
+- **输出**默认 `<trace>.sym.log`；`--summary-only` 只打印符号化后的**异常事件时间线**到 stdout。
+- ⚠️ 事件行的 `#N` 是 QEMU **全局事件序号**，**不是 CPU id**。
+- 链接域只有 **init / kernel** 两个（`--only-domain` 亦仅此二者）；其余（固件/loader）地址归 `other`，**不批注**。
+
+### 3.4 首爆冻结：魔法断点 + `qmp-wait-stop.py` / `qmp-status.py`
 
 **问题**：风暴（异常自噬）在 host 侧 0.2s 轮询粒度下已经写了几百 MB；且 panic/风暴
 会把现场毁掉。要"以首爆速度"止损并保住全核快照，必须在 **guest 侧**自己停。
 
 **机制**（两层，默认安全）：
 1. **guest 侧钩子**：`src/arch/x86_64/Interrupts/Sysdef_exception_entries.asm` 的
-   `FAULT_FREEZE` 宏，挂在 `#PF`/`#GP` **入口**（post-fault，零观测效应）。默认关闭，
-   取消文件内 `%define SPDB_FAULT_FREEZE` 注释即启用（或 `nasm -DSPDB_FAULT_FREEZE`）。
+   `FAULT_FREEZE` 宏，挂在 `#PF`(`0x0E`)/`#GP`(`0x0D`) **入口**（post-fault，零观测效应）。
+   默认关闭，取消文件内 `;%define SPDB_FAULT_FREEZE` 注释即启用（或 `nasm -DSPDB_FAULT_FREEZE`）。
    动作：串口打 `#WF#` → `outb(0x80,0xDB)` → `cli;hlt` 兜底。
+   （⚠️ 默认关闭 ⇒ 跑取证**必须显式开启**。）
 2. **QEMU 本地补丁**：`ioport80_write` 见 `0xDB` → `vm_stop(RUN_STATE_DEBUG)`：
-   **暂停整机、进程不退出** → QMP 仍可用 → 可 dump。补丁与部署纪律见
-   **`Tools/tcg-trace/patches/README.md`**（含"别 cp 进 /usr/bin，会被 pacman 覆盖"血泪）。
+   **暂停整机、进程不退出** → QMP 仍可用 → 可 dump。补丁/基线/构建/部署纪律见
+   **`Tools/tcg-trace/patches/README.md`**（含"别 cp 进 `/usr/bin`，会被 pacman 覆盖"血泪）。
 
-**host 侧停止判据**（任一命中即停，命中后按现有 `--dump-mem/--dump-vmcore` 分支转储）：
+**host 侧停止判据**（任一命中即停，命中后按 `want_dump` 门控转储）：
 - 串口 `#WF#`（零轮询开销，首选）；
-- `qmp-wait-stop.py` 常驻监听 QMP `STOP` 事件（串口不可用时的兜底；**不要**每 0.2s 起
-  python 去 `query-status` —— 那是宿主负载，而宿主负载是竞态复现的关键变量）。
+- `qmp-wait-stop.py <sock> <flag> <timeout>` 常驻监听 QMP `STOP`/
+  `RESET`/`SHUTDOWN`/`GUEST_PANICKED`/`POWERDOWN` 事件（或连接时已 `paused`/`debug`），
+  命中即 `touch <flag>` —— **不要**每 0.2s 起 python 去 `query-status`（那是宿主负载，
+  而宿主负载是竞态复现的关键变量）。
+- `qmp-status.py <sock>`：一次性 `query-status` 打印状态字符串（供 `--selfcheck`）。
 
-**验证配方**：`QEMU_BIN=<补丁构建> ./tcg-trace.sh --selfcheck` → 必须 `PASS`。
+**自检配方**：`QEMU_BIN=<补丁构建> ./tcg-trace.sh --selfcheck` → 必须 `PASS`。
+
+### 3.5 产出文件一览
+
+| 文件 | 生产者 | 何时有 | 内容 |
+|---|---|---|---|
+| `<tag>.trace` | QEMU `-D` | 总是 | in_asm 反汇编 + int 事件 + 寄存器 dump |
+| `<tag>.serial` | QEMU `-serial` | 总是 | 串口（结局/panic/KURD/栈回溯）|
+| `<tag>.vmcore` | `qmp-dump-vmcore.py` | `--dump-vmcore`/`--mkcore` 且门控命中 | 官方 ELF（RAM 段 + 全 CPU NT_PRSTATUS）|
+| `<tag>.vmcore.regs` | 同上 | 同上 | HMP `info registers -a`（全 CPU 段基址）|
+| `<tag>.core` | `vmcore-mkcore.py`（`--mkcore`）| 有 `.vmcore` 时 | 虚拟视角 GDB core（稀疏，物理窗口）|
+| `<tag>.map-report.txt` | 同上（`--report`）| 有 `.vmcore` 时 | 可疑页表项清单（WRAITH 探针）|
 
 ---
 
@@ -101,7 +208,7 @@ storm/panic 下 TCG 主循环是独立线程，故仍可用；这正是"把内�
 $SPARROW_DEBUG_STORE/            ← 默认 /mnt/huge_data/sparrowos_debug（独立 1.9T btrfs）
 ├── README.md    布局说明
 ├── INDEX.md     样本台账（tag → 结局 → 结论 → 保留否）—— 机器本地活索引
-├── traces/      <tag>.trace / <tag>.serial / <tag>.ram
+├── traces/      <tag>.trace / <tag>.serial / <tag>.vmcore(+.regs) / <tag>.core(+.map-report.txt)
 ├── system_log/  系统日志
 └── memdump/     独立/离线内存转储
 ```
@@ -112,22 +219,28 @@ $SPARROW_DEBUG_STORE/            ← 默认 /mnt/huge_data/sparrowos_debug（独
 |---|---|---|---|
 | A | 战报 / 武器库 / 结论 | **git 仓库** `Docs/Debug/` | 永久 |
 | B | 样本台账 | store `INDEX.md` | 随样本，定期归档 |
-| C | 原始 `.trace/.ram/.serial` | store `traces/` | **可弃**（可再生）|
+| C | 原始 `.trace/.vmcore/.core/.serial` | store `traces/` | **可弃**（可再生）|
 
-**纪律**：狩猎只留 `PANIC` 的 `trace+ram`，其余即删；`.ram`（8G/个）结论提取后优先删；
-风暴 `.trace`（GB 级）用后即删。**结论留存，镜像可弃**。
+**纪律**：狩猎只留 `PANIC/FAULT` 的 `trace+vmcore`，其余即删；`.vmcore`（8G/个）结论提取后
+优先删；风暴 `.trace`（GB 级）用后即删。**结论留存，镜像可弃**。
 
 ---
 
 ## 5. 离线定位流程
 
+0. **看结局**：`grep '^TAG=' <log>`（**别用 `tail -1`**，见 §8）。
 1. **看 serial**：结局 + `PANIC:` + `[KURD]` + 栈回溯（`#N RIP Symbol`）。
-2. 在 `.trace` **定位首个异常事件**（`^\s*\d+: v=` 行）；其前一条 `IN:` 块即肇事 TB 反汇编。
-3. 用 `kernel/kernel.elf` 反查 RIP 符号：**运行基址 `0xFFFF800000000000` 与 ELF vaddr 一一对应** →
+2. **精读 trace**：`trace-sym.py <tag>.trace --start kernel --only-domain kernel --src --out <tag>.kernel.src.log`
+   —— 得到「符号+偏移 @ 源文件:行 + C++ 源码行」的可读流。
+   原始定位：在 `.trace` 找首个异常事件（`^\s*\d+: v=` 行），其前一条 `IN:` 块即肇事 TB 反汇编。
+3. **反查 RIP**：运行基址 `0xFFFF800000000000` 与 ELF vaddr 一一对应 →
    `addr2line -f -C -e kernel.elf <addr>` 直接命中 `file:line`。
-4. 结合寄存器 dump（`CR2/CR3/GS/GDT/TR/CS`）判损坏类型：野指针 / GS 被清 / 页表 / 控制流劫持。
-5. **计数异常向量**区分形态：`grep -oE 'new 0x.. ' trace | sort | uniq -c` → `#PF`/`#GP`/`#DF` 风暴 vs 单点。
-6. **有 `.ram` 时**：用 trace 里的 `CR3` 走页表做 vaddr→phys，直接把坏地址/栈/页表在镜像里挖出来。
+4. **登记事故现场**：读寄存器 dump（`CR2/CR3/GS/GDT/TR/CS`）判损坏类型：野指针 / GS 被清 /
+   页表 / 控制流劫持。
+5. **落地到内存**：`vmcore-mkcore.py <tag>.vmcore <tag>.serial --kernel kernel.elf --out <tag>.core --report <tag>.map-report.txt`
+   → `gdb kernel.elf <tag>.core`（`info threads` / `bt` / `x` 全活）；`--map-report` 给出树↔页表分歧。
+6. **计数异常向量**区分形态：`grep -oE 'v=[0-9a-fA-F]+ ' <tag>.trace | sort | uniq -c` →
+   `#PF`/`#GP`/`#DF` 风暴 vs 单点。
 
 ⚠️ **`in_asm` 是翻译序不是执行序**：定位以 `int` 事件（时间序 + 寄存器）为准，`in_asm` 佐证。
 
@@ -155,8 +268,11 @@ $SPARROW_DEBUG_STORE/            ← 默认 /mnt/huge_data/sparrowos_debug（独
 
 - 异常样本时，工具末行之后会再打一行 `>>> 抓到样本: <tag>`；**包装脚本解析结果要用 `grep '^TAG='`**，
   别用 `tail -1`（否则会把 RESULT 解析成空 → 误删样本）。
-- `-qmp` 仅在有 `--dump-mem` 时才挂（避免给非转储轮多挂一个 chardev 扰动 TCG 交织）。
+- `-qmp` 只在 **`--dump-vmcore`** 时才挂（避免给非转储轮多挂一个 chardev 扰动 TCG 交织）。
 - QEMU `-no-reboot`：风暴不会重启，会一直写到帽。
+- `qmp-dump-vmcore.py` 结束时校验文件 size ⇒ 大镜像（8G）无假失败；`--timeout`（默认 900s）到点删残件。
+- `trace-sym.py` 只支持 init / kernel 两个链接域；固件/loader 地址归 `other` 不批注（见 §3.3.2）。
+- **本文档是唯一权威**；`Tools/tcg-trace/README.md` 若与本文冲突，以本文为准并即时修正。
 
 ---
 

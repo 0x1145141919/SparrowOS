@@ -95,8 +95,8 @@ cd /home/PS/PS_git/OS_pj_uefi/kernel
 # 单次（TCG -cpu max，SMP=6 由脚本内部 -smp 6；命中 PANIC/kshell/超时/超帽即停）
 Tools/tcg-trace/tcg-trace.sh --tag probe --timeout 40 --cap-gb 1
 
-# 连跑到抓到异常，并转储最终物理内存（8G）→ <tag>.ram
-Tools/tcg-trace/tcg-trace.sh --tag hunt --repeat 40 --dump-mem 8192 --mem-base 0
+# 连跑到抓到异常，并抓官方 vmcore（8G RAM，首选内存路径）→ <tag>.vmcore(+.regs)
+Tools/tcg-trace/tcg-trace.sh --tag hunt --repeat 40 --dump-vmcore
 
 # 只留 PANIC、其余即删（省盘）；产物落 /mnt/huge_data/sparrowos_debug/traces/
 ```
@@ -111,15 +111,16 @@ Tools/tcg-trace/tcg-trace.sh --tag hunt --repeat 40 --dump-mem 8192 --mem-base 0
 ## 6. 武器库（引用，不复制）
 
 > WRAITH 用的武器是**通用资产**，权威文档在 **`Docs/Debug/TCG_TRACE_ARSENAL.md`**
-> （TCG+trace 范式 · `tcg-trace.sh`/`qmp-memdump.py` · 离线符号化 · 输出布局 · 复现技巧 · 已知坑）。
+> （TCG+trace 范式 · `tcg-trace.sh` / `qmp-dump-vmcore.py`（首选内存路径）· `vmcore-mkcore.py` /
+> `trace-sym.py` 离线符号化 · 输出布局 · 复现技巧 · 已知坑）。
 > 本节只留 **WRAITH 专用配方**；武器升级时只改武器库文档，不动战报。
 
 **WRAITH 专用抓取配方**（工具见武器库 §3）：
 
 ```bash
 cd /home/PS/PS_git/OS_pj_uefi/kernel
-# 带内存镜像的连跑（只留 PANIC；建议叠 2~4×yes 负载）：
-Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-mem 8192 --mem-base 0
+# 带官方 vmcore 的连跑（只留 PANIC/FAULT；建议叠 2~4×yes 负载）：
+Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-vmcore
 ```
 
 **WRAITH 特异点**（武器库没写的）：
@@ -134,9 +135,9 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 | 文件 | 改动 | 性质 |
 |---|---|---|
 | `src/arch/x86_64/core_hardwares/NVMe/NVMe_init_thread.cpp` | `poll_report_board` 的 `kthread_sleep(poll_us)` → `ktime::microsecond_polling(poll_us)`（标 `[BISECT]`）| **临时实验**，可 `git checkout` 回滚 |
-| `Tools/tcg-trace/tcg-trace.sh` | 新增 `--dump-mem/--mem-base/--dump-always`；QMP 仅转储时挂；默认 outdir 切到 `/mnt/huge_data/...` | 工具增强 |
-| `Tools/tcg-trace/qmp-memdump.py` | 新增 | 工具增强 |
-| `Tools/tcg-trace/README.md` | 更新 | 文档 |
+| `Tools/tcg-trace/tcg-trace.sh` | 新增 `--dump-always/--dump-vmcore/--mkcore/--dump-fault-only/--selfcheck`；QMP 仅转储时挂；默认 outdir 切到 `/mnt/huge_data/...` | 工具增强 |
+| `Tools/tcg-trace/qmp-memdump.py` · `ram-read.py` · `ram-mkcore.py` | **已删除**（2026-09-17：老式 `.ram`/pmemsave 路径整体废弃，减少接手者上下文污染）| 工具增强 → 废弃 |
+| `Tools/tcg-trace/README.md` | 更新（**今起为薄壳速查**；权威在武器库）| 文档 |
 
 > 注（2026-09-16 晚）：上述改动**均已提交**（HEAD 附近若干笔，含 `4b300a0` 的 `[BISECT]` 忙等）；本文档此前标「未提交」已过时。
 
@@ -182,7 +183,7 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 
 ## 8. 下一步实验清单
 
-1. **降载细调**（首选）：`yes` 从 12→2~4（或 `taskset` 只压部分核），带 `--dump-mem` 连跑，
+1. **降载细调**（首选）：`yes` 从 12→2~4（或 `taskset` 只压部分核），带 `--dump-vmcore` 连跑，
    目标是钓出 §3-D/E 那条 NVMe-worker 竞态，而非 AP-bringup 超时。
 2. **啃现有样本**：`ld18/ld20` 有完整 8G RAM 镜像；用 trace 的 `CR3` 做 vaddr→phys，
    检查 AP 启动为何失败（可能仍是同一套 IPI/GS 机器）。
@@ -192,6 +193,9 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
    堵掉 IPI 重入窗口。
 5. **上限/断言**：`get_other_scheduler` 加边界检查；`kthread_sleep`/`resched` 入口加 `pid`/`task` 合法性自证
    （**绕过 kout 的单字节 UART**，保证风暴前能留证）。
+   - 🟡 **通道已落地（2026-09-17）**：IRQ-safe 内存日志环 `interrupt_log_ring`
+     （`util/debug_tmp_ring_buff.h`；`kernel_start` 在 AP bring-up 前用 FPA 4MiB + 主窗口 `PHYACC_VA` 出生；
+     `print` 内部零加锁，临界区由调用方编排）。**断言本身尚未挂**——待把 §3 候选断言接到该环上，跑 t10_33 类场景回归。
 6. **DMA 审计**：`io_queue_init`/`PRPs.cpp` 的 ring 物理地址与 PRP 打包。
 
 ---
@@ -208,7 +212,7 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 | `pd01..40` | bisect | 40 | 2 | **被脚本解析 bug 误删**（结局未知）|
 | `pk01..40` | bisect + QMP | 40 | 0 | — |
 | `noq01..20` | bisect（无 QMP）| 20 | 0 | — （→ 排除 QMP 观测者效应）|
-| `ld01..20` | bisect + 12×`yes` 负载 | 20 | **2** | `ld18`/`ld20` = AP 启动 IPI 超时（**非**目标竞态），各留 8G `.ram` |
+| `ld01..20` | bisect + 12×`yes` 负载 | 20 | **2** | `ld18`/`ld20` = AP 启动 IPI 超时（**非**目标竞态），各留 8G 内存镜像（当时为 `.ram`；老路径已废弃）|
 
 **首战关键 PANIC 站点**：
 - hp04：`#PF` @ `spinlock_cpp_t::unlock` ← `sleep_tasks_wake`（cpu1）

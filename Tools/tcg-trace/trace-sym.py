@@ -8,17 +8,20 @@
 #   「跳入 init.elf」处截断，只精读 OS 本体执行段。
 #
 # 用法:
-#   trace-sym.py <trace> [--init init.elf] [--kernel kernel.elf] [--loader BOOTX64.efi]
+#   trace-sym.py <trace> [--init init.elf] [--kernel kernel.elf]
 #     --start auto|init|kernel|<line>  起始位置（默认 auto＝首个 init.elf 指令行）
+#     --only-domain init|kernel        只输出该链接域的指令行（事件/寄存器 dump 仍保留）
 #     --regs none|exc|all              事件寄存器 dump 保留策略（默认 exc＝仅异常 v<0x20）
 #     --short-loc                      源码位置只留 basename:line
+#     --src                            附加 C/C++ 源码行批注（跳过 .asm/无源码）
 #     --out FILE                       输出（默认 <trace>.sym.log）
 #     --summary-only                   只打印符号化后的「异常事件时间线」到 stdout
 #
 # 说明:
 #   * 指令行 = `0xADDR: bytes disasm`；事件行 = `   <cpu>: v=.. e=.. i=.. cpl=.. IP=..:pc ..`
 #   * in_asm 是「翻译即记」，同一 TB 只记一次 → 事件行(cpu/向量/寄存器)才是执行序。
-#   * 链接域: init.elf @0x101000000；kernel.elf @0xffff800000000000(+低半 0x4000-0x8000)。
+#   * 链接域: init.elf @0x101000000；kernel.elf @0xffff800000000000（含低半区 0x4000-0x9000）。
+#     其余（固件/loader 等）不解，归 'other'（不批注）。
 # =============================================================================
 import sys, os, re, subprocess, argparse, bisect
 
