@@ -1,7 +1,7 @@
 # WRAITH（幽魂）—— TCG 下的幽灵疑似竞态
 
 > **代号**：`WRAITH`（幽魂）“来无影”（只在宿主调度抖动下现身）·“去无踪”（只留一两字节的栈/指针损坏）·“会附身”（一旦命中异常入口即自噬成风暴）
-> **状态**：`疑似竞态 / 未收口`（root cause 未钉死；已有多枚样本 + 工具链）
+> **状态**：`已定位 + 修复已验（2026-09-17）`——根因 = **双调度/多调度**（阻塞/退出者「已发布、未切离」期间被异核唤醒+偷取 → 同栈并发）。修复 F1–F5 已提交（`67e4a76`），同配方 A/B 通过（pre-fix 8 轮命中 / post-fix **0/40**）。详见 §11。
 > **锚点用途**：人机协作时一句话即可定位——「看下 WRAITH」「WRAITH 有新样本」。本文档是唯一权威上下文。
 > **建立**：2026-09-15（首战：commit `42f6bbe`+`55cef76` 之后）
 
@@ -236,3 +236,48 @@ Tools/tcg-trace/tcg-trace.sh --tag w --repeat 40 --timeout 40 --cap-gb 1 --dump-
 | `src/memory/out_surfaces.cpp:323` | `broadcast_invalidate_tlb`（TLB shootdown 等待循环）|
 | `src/memory/arch/x86_64/AddresSpace.cpp:1125` | PCID 分配（`get_gs_base()->pcid_complex`）|
 | `src/arch/x86_64/boot/kinit.cpp:147` | `create_first_kthread`（AP 启动 IPI，ld18/20 崩点）|
+
+---
+
+## 11. 2026-09-17 收口：双调度/多调度 定位 + 修复 F1–F5 + A/B 验收
+
+> 本节是 WRAITH 的**当前结论**（取代 §3 的「候选假设」）。二手分析原文见本目录
+> `WRAITH_multischedule_review.md` / `WRAITH_static_review.md`；逐样本报告 `w22_01_report.md` / `w13_report.md`。
+> 通用 TCG 取武器库仍在上级 `Docs/Debug/TCG_TRACE_ARSENAL.md`（复用资产，不随本战报搬）。
+
+### 11.1 根因（证据已收敛）
+**不是**「两个核同时 `sched()` 同一 task 并双双 `set_running`」（那会撞 `set_running` 失败 panic，样本不崩那），
+而是**跨核同栈并发写**：阻塞/退出者在**自己的内核栈**上**先发布状态（`blocked`/`zombie`）、但还没真正切离本核**的窗口里，
+另一个核经**唤醒 + `sched()` 跨核偷取**把**同一个 task（同一片物理栈）**恢复执行 ⇒ 一片栈被两核同时压，
+异核（较浅）的 `call` 返回址落进原核（较深）的帧内槽 → 指针槽变野。
+- 字节指纹：被覆写值 = **取时/调度路径的 `call` 返回址**（`w13 0x2C700`），写**不遵循**本帧 `rsp`（写在其上）。
+- 三处结构性缺口叠加：①「先发布、后切走」无 handoff 握手；②唤醒不查「谁在跑」；③`sched()` 跨核偷取无 owner 校验。
+
+### 11.2 修复 F1–F5（提交 `67e4a76`；`3ba5b1f` 回滚 `[BISECT]` 忙等）
+| # | 针对(MS-) | 做法 |
+|---|---|---|
+| F1 | MS-10 | `bq_system` `pop_all`/`pop_timeouts` 入口复位 `batch_count` + **写前**边界判（杜绝 `arr[64]` 越界/重复入队）|
+| F2 | MS-6 | `sched()` 在 `to_run->task_lock` 内**快照** `priv_ctx`，锁外经 `atomic_load_from(&snap)` 落地（消除与 `kthread_common_save` 整结构体赋值的撕裂）|
+| F3 | MS-2 | 每核「正在调度」门 `g_cpu_in_sched[]`；`resched` 去 `[[noreturn]]`、见门即返回不嵌套 |
+| F4 | MS-1/4/5 **主嫌** | `sched_handoff.h`：每核 `g_cpu_running[]` 登记 + 每任务 `wake_pending`；唤醒「仍在别核跑」的任务时只置 pending、不异核入队；`sched()` 交接点换登记+补投；`try_take` 拒认领「仍在别核」的任务 |
+| F5 | MS-3 | `release_kthread` 释放内核栈前确认任务不在任何核登记中（否则有界自旋/延迟），杜绝退出栈 UAF |
+
+### 11.3 A/B 验收（同配方：非忙等 · SMP6 TCG · 12× `yes` · 40 组 · `--dump-vmcore --mkcore`）
+- **pre-fix**：`pre01–07` KSHELL，**`pre08` = FAULT**（首爆 `sleep_tasks_wake`，`CR2=0x7ffff`；w13 同族）。
+- **post-fix**：**0 异常 / 40**（37 KSHELL + 3 AP 启动 NOISE；37/37 到 kshell；NVMe 窗口照走）。
+- 判据：pre ~1/8 命中 vs post 0/40 ⇒ 修复**消除**了该竞态（同配方同负载对照，排除纯观测漂移）。
+
+### 11.4 残留 / 未验
+- F4 交接「清登记→`iretq`」仍有数条指令残留窗口（`IF=0`，已压最小）；FRED 路径未验（TCG 未启用）；F5 自旋耗尽会泄漏（比 UAF 安全）。
+- 统计加固：post-fix 可再加跑 40–80 组；归因可**只回退 F4** 再跑一轮判主责。
+
+---
+
+## 12. 本目录（`Docs/Debug/WRAITH/`）内容
+- `WRAITH.md` —— 本文（唯一权威上下文 / 战报）。
+- `WRAITH_multischedule_review.md` —— 双调度/多调度**穷尽排查**（11 条路径 + 最小交错时序 + 锁/状态机根缺陷 + 通电验证清单）。
+- `WRAITH_static_review.md` —— 「取时路径指针栈槽被踩」的**静态审查**（候选机制 A–F 排序）。
+- `w22_01_report.md` / `w13_report.md` —— 早期**逐样本根因分析**（字节级证据）。
+
+> 目录约定：**本目录 = WRAITH 专属**（战报 + 该 bug 的一二手分析原文）。**通用** TCG 武器库
+> （`TCG_TRACE_ARSENAL.md`）留在上级 `Docs/Debug/`，供后续 TCG 测试复用。

@@ -2,7 +2,7 @@
 /**
  * sched_handoff.h —— 跨核 handoff 安全登记 + 调度不可重入门
  *
- * 背景（见 analysis/WRAITH_multischedule_review.md 与 WRAITH_static_review.md）：
+ * 背景（见 Docs/Debug/WRAITH/WRAITH_multischedule_review.md 与 Docs/Debug/WRAITH/WRAITH_static_review.md）：
  *   样本 w13 `0x2C700` / wh02 双核同爆 / wl02 `this=0` 能够被同一机制一次解释：
  *   「阻塞/退出者已经把自己的状态发布出去（blocked/zombie），但它还没真正切离本核的
  *     内核栈时，另一个核通过唤醒 + sched() 跨核偷取，把同一个 task（=同一片物理栈）
@@ -19,7 +19,7 @@
  *   · 这些登记由 sched()/交接点更新，此处只做读取与初始化；
  *   · 观测/判定函数只读，不改任何调度状态。
  *
- * 依据：analysis/WRAITH_multischedule_review.md §0/§4.1/§4.3/§6；WRAITH_static_review.md §2.A/§2.B。
+ * 依据：Docs/Debug/WRAITH/WRAITH_multischedule_review.md §0/§4.1/§4.3/§6；WRAITH_static_review.md §2.A/§2.B。
  */
 #include <stdint.h>
 #include "arch/x86_64/abi/base.h"   // MAX_PROCESSORS_COUNT

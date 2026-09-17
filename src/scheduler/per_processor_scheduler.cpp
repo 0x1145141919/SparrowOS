@@ -391,7 +391,7 @@ per_processor_scheduler* global_schedulers = nullptr;
 // ═══════════════════════════════════════════════════════════════════════════
 // [FIX-F3/F4/F5] 跨核 handoff 安全登记 + 每核调度门
 //   依据样本：w13 `0x2C700` / wh02 双核同爆 / wl02 `this=0`
-//   报告：analysis/WRAITH_multischedule_review.md §0/§4.1/§4.3；WRAITH_static_review.md §2.A
+//   报告：Docs/Debug/WRAITH/WRAITH_multischedule_review.md §0/§4.1/§4.3；WRAITH_static_review.md §2.A
 // ═══════════════════════════════════════════════════════════════════════════
 task* volatile g_cpu_running[MAX_PROCESSORS_COUNT];
 volatile uint8_t g_cpu_in_sched[MAX_PROCESSORS_COUNT];

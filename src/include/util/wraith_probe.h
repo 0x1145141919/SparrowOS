@@ -2,7 +2,7 @@
 /**
  * wraith_probe.h —— WRAITH 首爆取证探针（检测 + 留证；不改任何时序/不修竞态）。
  *
- * 定位（与 Docs/Debug/WRAITH.md §8-5 对齐）：
+ * 定位（与 Docs/Debug/WRAITH/WRAITH.md §8-5 对齐）：
  *   把「静默栈损坏 / 首爆被吞」升级为「首爆即留证」。
  *   本头只提供【便宜、irq-safe、无堆分配、可回滚】的留证原语：
  *     · WRAITH_LOG(...)   —— 一段自持临界区的裸文本留证（走 interrupt_log_ring）；
