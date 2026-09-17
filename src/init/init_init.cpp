@@ -332,7 +332,6 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
         }
         init_printk("Phase 4.5: prepare %u GS complexes", (unsigned)pcount);
     }
-    //outb(0xDB, 0x80);
     // 4.5-3: 加载 BSP 的 GDT + TSS（上一步已完全构建，此步仅 LGDT+LTR）
     {
         gs_complex_t* bsp_cx = (gs_complex_t*)(uint64_t)(iv->arch_info.conjunc_GSs.vbase());

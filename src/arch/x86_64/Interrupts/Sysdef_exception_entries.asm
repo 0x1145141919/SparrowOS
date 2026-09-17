@@ -4,6 +4,51 @@
 ; FRED 入口 — fred_user_enter / fred_supervisor_entry
 ; ===================================================================
 
+; ── 异常取证冻结钩子（默认关闭；WRAITH 取证档打开）───────────────────
+;   在 #PF/#GP「入口」执行 —— 故障已发生、损坏已落定，故本钩子不影响
+;   故障前的竞态时间线（零观测效应）。
+;   作用：① 串口打记号 #WF#（host 侧立即停；零轮询开销）；
+;         ② outb(0x80,0xDB) → 打过补丁的 QEMU vm_stop(DEBUG) 暂停整机，
+;            QEMU 仍活着 → QMP 可 dump 全 RAM + 全 CPU 寄存器；
+;         ③ cli;hlt 兜底（断点缺失时也停在原地，IF=0 不被拉走）。
+;   启用：取消下一行注释；或 nasm 命令行加 -DSPDB_FAULT_FREEZE。
+%define SPDB_FAULT_FREEZE
+%macro FAULT_FREEZE 1
+%ifdef SPDB_FAULT_FREEZE
+    push rax
+    push rdx
+    mov ecx, 200000                 ; 有界 THRE 轮询（UART 未就绪时不至于卡死）
+    mov dx, 0x3FD
+%%thre:
+    in al, dx
+    test al, 0x20
+    jnz %%ser
+    dec ecx
+    jnz %%thre
+    jmp %%bp
+%%ser:
+    mov dx, 0x3F8
+    mov al, '#'
+    out dx, al
+    mov al, 'W'
+    out dx, al
+    mov al, 'F'
+    out dx, al
+    mov al, '#'
+    out dx, al
+%%bp:
+    mov dx, 0x80
+    mov al, 0xDB
+    out dx, al                      ; 魔法断点：QEMU(vm_stop) 暂停；无补丁时为空操作
+    pop rdx
+    pop rax
+    cli
+%%halt:
+    hlt
+    jmp %%halt
+%endif
+%endmacro
+
 ; --- 异常入口宏（无错误码） ---
 %macro EXCEPTION_ENTRY 2
     sub rsp, 8
@@ -150,6 +195,7 @@ invalid_opcode_bare_enter:
 global general_protection_bare_enter
 extern general_protection_cpp_enter
 general_protection_bare_enter:
+    FAULT_FREEZE 0x0D
     EXCEPTION_ENTRY_WITH_ERRCODE 0x0D, general_protection_cpp_enter
 
 global double_fault_bare_enter
@@ -160,6 +206,7 @@ double_fault_bare_enter:
 global page_fault_bare_enter
 extern page_fault_cpp_enter
 page_fault_bare_enter:
+    FAULT_FREEZE 0x0E
     EXCEPTION_ENTRY_WITH_ERRCODE 0x0E, page_fault_cpp_enter
 
 global machine_check_bare_enter
