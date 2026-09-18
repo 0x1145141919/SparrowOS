@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════════════════════
 // init_printk.cpp — kernel.elf 启动期日志面层（入口 → create_first_kthread）
 //
-// 与 init.elf 的 init_printk 同签名；三后端广播：环 / UART / GOP；无 "[INIT] " 前缀。
+// 与 init.elf 的 init_printk 同签名；环恒落，文本后端 UART / GOP 由启动期
+// boot_cfg（g_boot_cfg.log_uart / .log_gop）独立放行；无 "[INIT] " 前缀。
 //
 // 环 = 继承自 init.elf 的同一条 v2 环（DmesgRingBuffer_v2，转生凭证见 abi/kring_soul.h）：
 //   bringup 时经主窗口把物理凭证重链成内核 VA，重绑后 odometer / record_count 连续，
@@ -21,6 +22,7 @@
 #include "memory/main_phyaddr_access_window.h"  // PHYACC_VA
 #include "arch/x86_64/core_hardwares/PortDriver.h"  // polling_puts
 #include "util/textConsole.h"            // textconsole_GoP
+#include "boot/boot_cfg.h"               // g_boot_cfg（文本后端开关）
 #include "ktime.h"                       // ktime::get_microsecond_stamp
 
 // —— 时基符号（extern "C"，kcirclebufflogMgr / printk 均声明此符号）——
@@ -101,13 +103,18 @@ void init_printk(const char* fmt, ...)
     char     pfx[64];
     uint32_t pl = build_text_prefix(pfx, sizeof(pfx), ts, seq);
 
+    // 文本后端按启动期开关放行（环已在上方无条件落账）
     // UART(COM1)
-    polling_puts(pfx, (uint64_t)pl);
-    polling_puts(buf, (uint64_t)n);
-    polling_puts("\r\n", 2);
+    if (g_boot_cfg.log_uart) {
+        polling_puts(pfx, (uint64_t)pl);
+        polling_puts(buf, (uint64_t)n);
+        polling_puts("\r\n", 2);
+    }
 
-    // GOP 文本控制台
-    textconsole_GoP::PutString(pfx, (uint64_t)pl);
-    textconsole_GoP::PutString(buf, (uint64_t)n);
-    textconsole_GoP::PutChar('\n');
+    // GOP 文本控制台（滚屏慢，默认关）
+    if (g_boot_cfg.log_gop) {
+        textconsole_GoP::PutString(pfx, (uint64_t)pl);
+        textconsole_GoP::PutString(buf, (uint64_t)n);
+        textconsole_GoP::PutChar('\n');
+    }
 }

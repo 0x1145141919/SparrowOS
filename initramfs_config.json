@@ -19,6 +19,11 @@
       "src_relative_path": "HZK24"
     }
   ],
+  "boot_cfg": {
+    "log.uart": 1,
+    "log.gop": 0,
+    "ymir.mode": 0
+  },
   "out_put_path": {
     "src_base": "${PROJECT_ROOT}",
     "src_relative_path": "initramfs.img"

@@ -170,6 +170,8 @@ add_executable(kernel.elf
     src/utils/kcirclebufflogMgr.cpp
     src/utils/kcirclebufflogMgr_v2.cpp
     src/utils/init_printk.cpp
+    src/utils/boot_cfg.cpp
+    src/init/initramfs_lookup.cpp
     src/utils/vprintkv2.cpp
     src/utils/debug_tmp_ring_buff.cpp
     src/arch/x86_64/boot/kernel_entry.asm

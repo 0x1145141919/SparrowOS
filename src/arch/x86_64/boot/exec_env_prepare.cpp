@@ -17,6 +17,7 @@
 #include "util/OS_utils.h"
 #include "util/kptrace.h"
 #include "util/init_printk.h"          // kernel 启动期日志面层（bsp_kout 接替者）
+#include "boot/boot_cfg.h"           // 启动期 override 字典
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "KImage_Introspection.h"
 
@@ -63,6 +64,12 @@ extern "C" void exec_env_prepare(init_to_kernel_header_v2* pkg)
     // 早期 panic 支撑：phyaddr_window / ksymmanager / HPET（先于输出子系统就绪，
     // 保证第一条可能崩溃即可调符号表 + 时间戳）
     init_panic_early_support();
+
+    // 启动期 override 字典：解析 initramfs 内 /boot.cfg（fail-safe：缺失/损坏 → 编译期默认）。
+    // 时序：必须晚于 init_panic_early_support()（PhyAddrAccessor 主窗口就绪，
+    //       movable 资产方可重链成 VA）；早于 init_output_subsystem()（init_printk
+    //       文本后端按其取值）。解析本身静默（此时三后端尚未上线）。
+    boot_cfg_load();
 
     // 输出子系统初始化（资产 read/deal + 输出链路），统一收敛到独立函数
     init_output_subsystem();

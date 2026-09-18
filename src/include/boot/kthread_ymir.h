@@ -25,9 +25,9 @@ void* i8042_char_listener_thread(void* arg);
 void* bq_timeout_sweeper(void*);      // 定义于 src/scheduler/bq_system.cpp
 
 // ── 运行模式开关 ─────────────────────────────────────────────
-// 定义在 kthread_ymir.cpp；if_real_init 恒 true（业务初始化），保留该开关
-// 作为后续测试场景（硬编码）的落点。
-extern bool if_real_init;
+// 世界选择由启动期 boot_cfg.ymir 决定（见 boot/boot_cfg.h）：
+//   NORMAL  → 业务初始化
+//   TEST_*  → 预留测试分支（当前仅跳过业务初始化，代码由 git 历史兜底）
 
-// 是否派生 BQ 超时扫描线程（“兜底计时器”）。
+// 是否派生 BQ 超时扫描线程（“兜底计时器”）；定义在 kthread_ymir.cpp。
 extern bool if_bq_sweeper;

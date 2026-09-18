@@ -5,7 +5,8 @@
  *
  * 与 init.elf 的 init_printk【函数签名完全一致】；差别只在：
  *   · 无 "[INIT] " 前缀（这是 kernel 世界，不是 init 阶段）；
- *   · 三后端同时广播：内存环（转生继承自 init 的 ring_log）/ UART / GOP；
+ *   · 环（转生自 init 的 ring_log）恒落；文本后端 UART / GOP 由启动期 boot_cfg
+ *     的 g_boot_cfg.log_uart / .log_gop 独立放行；
  *   · level 固定 INFO、无锁 —— 调用窗口限定在 create_first_kthread 之前（单 BSP）。
  *
  * 环（关键）：kernel 不新造环，而是认领 init.elf 转生的 ring_log blob

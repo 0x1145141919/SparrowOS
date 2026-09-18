@@ -10,6 +10,19 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
+// ── boot_cfg 键名 → id：直接用头文件里的注册表（boot/boot_cfg.h，唯一来源）──
+// 未知键名在构建期直接报错（防笔误进运行时）。
+namespace {
+
+uint16_t boot_cfg_key_id(const std::string& name) {
+    for (const auto& k : BOOT_CFG_KEY_TABLE)
+        if (name == k.name) return k.id;
+    std::string valid;
+    for (const auto& k : BOOT_CFG_KEY_TABLE) { valid += " "; valid += k.name; }
+    throw std::runtime_error("boot_cfg: unknown key '" + name + "' (valid:" + valid + ")");
+}
+}  // namespace
+
 Config parse_config(const std::string& config_path) {
     std::ifstream ifs(config_path);
     if (!ifs.is_open())
@@ -40,6 +53,20 @@ Config parse_config(const std::string& config_path) {
         fsrc.src_base     = entry.contains("src_base")
             ? resolve_vars(entry["src_base"].get<std::string>(), vars) : "";
         cfg.files.push_back(std::move(fsrc));
+    }
+
+    // --- boot_cfg（可选）：键名 → id + 值（bool/int）---
+    if (root.contains("boot_cfg")) {
+        if (!root["boot_cfg"].is_object())
+            throw std::runtime_error("'boot_cfg' must be an object");
+        for (auto& [k, v] : root["boot_cfg"].items()) {
+            uint64_t val;
+            if (v.is_boolean())              val = v.get<bool>() ? 1u : 0u;
+            else if (v.is_number_unsigned()) val = v.get<uint64_t>();
+            else if (v.is_number_integer())  val = (uint64_t)v.get<int64_t>();
+            else throw std::runtime_error("boot_cfg['" + k + "'] must be bool/integer");
+            cfg.boot_cfg.push_back({ boot_cfg_key_id(k), val });
+        }
     }
 
     // --- Output path ---
@@ -103,6 +130,25 @@ std::string build_initramfs(const Config& cfg) {
         std::string src = resolve_path(f.src_base, f.src_relative);
         std::cout << "  [read] " << src << "  ->  " << f.dest_path << std::endl;
         files.push_back({f.dest_path, read_file(src)});
+    }
+
+    // --- boot_cfg → /boot.cfg blob（可选；非源文件，构建期合成）---
+    if (!cfg.boot_cfg.empty()) {
+        const size_t hdr_sz = sizeof(boot_cfg_blob_header);
+        const size_t rec_sz = sizeof(boot_cfg_blob_record);
+        std::vector<uint8_t> blob(hdr_sz + cfg.boot_cfg.size() * rec_sz, 0);
+        auto* bh  = reinterpret_cast<boot_cfg_blob_header*>(blob.data());
+        bh->magic = BOOT_CFG_BLOB_MAGIC;
+        bh->count = (uint32_t)cfg.boot_cfg.size();
+        auto* rec = reinterpret_cast<boot_cfg_blob_record*>(blob.data() + hdr_sz);
+        for (size_t i = 0; i < cfg.boot_cfg.size(); ++i) {
+            rec[i].key      = cfg.boot_cfg[i].key;
+            rec[i].reserved = 0;
+            rec[i].value    = cfg.boot_cfg[i].value;
+        }
+        std::cout << "  [gen ] /boot.cfg (" << cfg.boot_cfg.size() << " keys, "
+                  << blob.size() << " bytes)" << std::endl;
+        files.push_back({ "/boot.cfg", std::move(blob) });
     }
 
     // --- Phase 2: calculate offsets ---
