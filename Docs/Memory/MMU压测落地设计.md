@@ -226,18 +226,19 @@ slot/canary 调度测试语义——整段换成 MMU 场景。**旧场景由 git
 
 ## 11.6 KVM 档（2026-09-18）
 
-- **可跑**。QEMU 侧需 `-accel kvm -cpu host,+invtsc`（已入 `tcg-trace.sh` 的 kvm 默认）：
-  - 内核 TSC 门（`tsc.cpp::tsc_regist`）要求 CPUID.80000007H EDX[8]（invariant TSC）——`-cpu max` 是 TCG 专用、
-    `host` 默认不带 ⇒ 需显式 **`+invtsc`**（否则 `PANIC: TSC registration failed`）；
-    CPUID.1 ECX[24]（TSC-deadline）由 host 满足。
-  - KVM 不支持 `-d in_asm`（TCG 专有）⇒ 脚本对 kvm 只留 `-D`，不带 `-d`。
+- **可跑**。**KVM 单开工具** `Tools/kvm-run/kvm-run.sh`（不并进 `tcg-trace.sh`）：
+  - 硬编码 `-accel kvm -cpu host,+invtsc`——内核 TSC 门（`tsc.cpp::tsc_regist`）要求
+    CPUID.80000007H EDX[8]（invariant TSC）；`-cpu max` 是 TCG 专用、`host` 默认不带 ⇒ 需显式 **`+invtsc`**
+    （否则 `PANIC: TSC registration failed`）；CPUID.1 ECX[24]（TSC-deadline）由 host 满足。
+  - KVM **不能 trace**（`-d in_asm` 是 TCG 专有）⇒ 不做 `-D/-d`，靠【内存转储】+ 环打捞；
+    `--ring` 一键：转储 → mkcore → `ring-dump` 打捞 `wraith_test_ring`。
 - **结果**：kvm `fonly`/`full` 均绿（环打捞：`total=30 pass=30 fail=0`，`huge_hits=1` 真走 1GB，
   `TB reason=planned`）；kvm `pf` 命中 `#WF#`（期望）。
 - **停机判据改为 QMP STOP**：运行时串口（`bsp_kout`）是 UDP 式、会被多核日志交错撕裂
   （实测 `#TB#planned` 被撕成 `#eTB#pnladnn:ed`）⇒ 不可靠。故：
   - 测试打点全部只写 **`wraith_test_ring`**（关中断临界区 + 拿锁写内存），结束落 core 再 `ring-dump` 打捞；
   - 整机停机的**权威判据** = `outb(0x80,0xDB)` 魔法断点 → QEMU STOP（QMP 事件）；
-    `tcg-trace.sh` 在 kvm（或转储）时挂 QMP，以 STOP 事件定 `RESULT=FAULT/MAGICBP`。
+    `kvm-run.sh` 常挂 QMP，以 STOP 事件定 `RESULT=FAULT/MAGICBP`。
 
 ## 12. 已定 / 待办
 
