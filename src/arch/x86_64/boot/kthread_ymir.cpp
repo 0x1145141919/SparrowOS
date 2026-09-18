@@ -185,6 +185,43 @@ volatile uint64_t g_mmu_shootdown_count = 0;   // 触发 shootdown 次数（S �
 volatile uint64_t g_mmu_last_1g_va = 0;        // I-4c 最近一次 1GB 映射 VA
 volatile uint64_t g_mmu_last_1g_pa = 0;        // I-4c 最近一次 1GB 物理基
 
+// ── S 段（多核 invalidate_tlb 核武器）探针 ──────────────────────
+volatile uint64_t g_s_stop      = 0;
+volatile uint64_t g_s_flip_fn   = 0;   // flipper 完成的重映射次数 (=shootdown 次数)
+volatile uint64_t g_s_mismatch  = 0;   // 陈旧 TLB/错值命中
+volatile uint64_t g_s_err       = 0;   // map/unmap 报错计数
+volatile uint64_t g_s_reads     = 0;   // 读者读次数
+volatile uint64_t g_s_churn_ops = 0;   // churn 轮数
+volatile uint64_t g_s_nochurn   = 0;   // 置 1：禁用 churn（隔离实验：去掉第二个 broadcaster）
+
+namespace {
+
+static constexpr int S_READERS = 3;    // 读者线程数
+static constexpr int S_MAX     = 6;    // flipper1 + reader3 + churn1 + burn1
+enum : uint64_t { SROLE_FLIP = 1, SROLE_READ = 2, SROLE_CHURN = 3, SROLE_BURN = 4 };
+struct s_shared_t {
+    vaddr_t  va;
+    phyaddr_t pa[2];
+    uint64_t seed[2];
+    volatile uint64_t seq;        // flipper 每次重映射后 +1（release）
+    volatile uint64_t phase;      // 0/1 ⇒ 读者期望 seed[phase] 的内容
+    volatile uint64_t ack[S_READERS];
+};
+static s_shared_t g_s = {};
+struct s_slot_t {
+    volatile uint64_t in_use;
+    uint64_t role;
+    uint32_t cpu;                 // 启动时指定的目标核（launch_pid）
+    uint32_t rid;                 // READ 用：读者编号
+    vaddr_t  va;
+    phyaddr_t pa;
+    uint64_t seed;
+    volatile uint64_t done;
+};
+static s_slot_t g_s_slots[S_MAX] = {};
+
+}  // namespace
+
 namespace {
 
 // ── 裸端口 I/O（仅 wraith_freeze 的 #TB# 兜底记号用；权威停机靠魔法断点/QMP）──
@@ -260,6 +297,8 @@ static void fwcfg_select_mode() {
     fwcfg_read_first(sel, buf, cap);
     if (str_contains(buf, "mode=pf"))            g_mmu_mode = 2;
     else if (str_contains(buf, "mode=repro"))    g_mmu_mode = 4;
+    else if (str_contains(buf, "mode=s"))      { g_mmu_mode = 3;
+        if (str_contains(buf, "nochurn")) g_s_nochurn = 1; }
     else if (str_contains(buf, "fonly"))         g_mmu_mode = 1;
     else                                         g_mmu_mode = 0;
 }
@@ -386,6 +425,8 @@ enum : uint64_t {
     C_I5_BADIV    = 0x501, C_I5_NONK    = 0x502, C_I5_DBL   = 0x503,
     C_I6_LEAK     = 0x601,
     C_IPF_HIT     = 0x701,
+    C_S_INIT      = 0x901, C_S_STALL = 0x902, C_S_STALE = 0x903,
+    C_S_ERR       = 0x904, C_S_LEAK  = 0x905,
 };
 
 // ── I-1：三接口基本往返 ────────────────────────────────────
@@ -656,6 +697,146 @@ static void mmu_case_ipf() {
     MMU_ASSERT(false, C_IPF_HIT);     // 若返回：页表没撤干净（真异常）
 }
 
+// ── S 段：多核 invalidate_tlb 压测（I-7..I-11）────────────────
+// 同 VA 在一个核上反复改投不同物理页（每次 unmap 触发一次跨核 shootdown）；
+// 其它核作读者：等 flipper 宣告新 phase 后读该 VA，必须看到新物理页的内容；
+// 陈旧 TLB / shootdown 漏核 → 读到旧页 → mismatch。外加 churn（独立 VA band）+ burner（压机）。
+static void* s_worker_entry(void* arg) {
+    int idx = (int)(uint64_t)arg;
+    s_slot_t* sl = &g_s_slots[idx];
+    uint64_t role = sl->role;
+    if (role == SROLE_FLIP) {
+        constexpr uint64_t ITERS = 4000;
+        vaddr_t va = g_s.va;
+        phyaddr_t pa0 = g_s.pa[0], pa1 = g_s.pa[1];
+        uint64_t cur = 0;
+        for (uint64_t i = 0; i < ITERS && !g_s_stop; ++i) {
+            phyaddr_t from = cur ? pa1 : pa0;
+            phyaddr_t to   = cur ? pa0 : pa1;
+            KURD_t u = mmu_unmap(va, from, 1);
+            if (error_kurd(u)) g_s_err++;
+            KURD_t m = mmu_map_at(va, to, 1);
+            if (error_kurd(m)) g_s_err++;
+            cur ^= 1;
+            __atomic_store_n(&g_s.phase, cur, __ATOMIC_RELEASE);
+            __atomic_fetch_add(&g_s.seq, 1, __ATOMIC_RELEASE);
+            g_s_flip_fn++;
+            g_mmu_shootdown_count++;
+            for (int r = 0; r < S_READERS; ++r) {
+                uint64_t want = i + 1;
+                while (__atomic_load_n(&g_s.ack[r], __ATOMIC_ACQUIRE) < want) {
+                    if (g_s_stop) break;
+                    asm volatile("pause");
+                }
+            }
+        }
+        g_s_stop = 1;
+    } else if (role == SROLE_READ) {
+        uint64_t last = 0;
+        while (!g_s_stop) {
+            uint64_t s = __atomic_load_n(&g_s.seq, __ATOMIC_ACQUIRE);
+            if (s == last) { asm volatile("pause"); continue; }
+            last = s;
+            uint64_t ph = __atomic_load_n(&g_s.phase, __ATOMIC_ACQUIRE);
+            uint64_t v = *(volatile uint64_t*)g_s.va;      // 此刻 VA 必已映射
+            uint64_t expect = mmu_pat(g_s.seed[ph], 0);
+            if (v != expect) { g_s_mismatch++; g_mmu_mismatch++; }
+            g_s_reads++;
+            __atomic_fetch_add(&g_s.ack[sl->rid], 1, __ATOMIC_RELEASE);
+        }
+    } else if (role == SROLE_CHURN) {
+        while (!g_s_stop) {
+            KURD_t m = mmu_map_at(sl->va, sl->pa, 1);
+            if (error_kurd(m)) { g_s_err++; }
+            else {
+                if (!mmu_verify_va(sl->va, 1, sl->seed)) { g_s_mismatch++; g_mmu_mismatch++; }
+                KURD_t u = mmu_unmap(sl->va, sl->pa, 1);
+                if (error_kurd(u)) g_s_err++;
+            }
+            g_s_churn_ops++;
+        }
+    } else { // SROLE_BURN
+        while (!g_s_stop) { for (volatile uint64_t k = 0; k < 200000; ++k) {} }
+    }
+    __atomic_fetch_add(&sl->done, 1, __ATOMIC_RELEASE);
+    for (;;) kthread_sleep(1000000);   // 停车（不 release，留证）
+    return nullptr;
+}
+
+static void mmu_case_s() {
+    WT_LOG("|S| start\n");
+    // 共享页面 A/B
+    phyaddr_t pa0 = mmu_fpa_alloc(4096, 12);
+    phyaddr_t pa1 = mmu_fpa_alloc(4096, 12);
+    mmu_fill_phys(pa0, 1, 0xA7);
+    mmu_fill_phys(pa1, 1, 0xB7);
+    vaddr_t va_s = mmu_scratch_va(4096);
+    KURD_t k = mmu_map_at(va_s, pa0, 1);
+    MMU_ASSERT(va_s != 0 && !error_kurd(k), C_S_INIT);
+    g_s.va = va_s; g_s.pa[0] = pa0; g_s.pa[1] = pa1;
+    g_s.seed[0] = 0xA7; g_s.seed[1] = 0xB7;
+    g_s.seq = 0; g_s.phase = 0;
+    for (int r = 0; r < S_READERS; ++r) g_s.ack[r] = 0;
+    // churn 页面
+    phyaddr_t cpa = mmu_fpa_alloc(4096, 12);
+    mmu_fill_phys(cpa, 1, 0xC7);
+    vaddr_t cva = mmu_scratch_va(4096);
+    // 槽位
+    uint32_t ncpu = logical_processor_count ? logical_processor_count : 1;
+    struct SInit { uint64_t role; uint32_t cpu; vaddr_t va; phyaddr_t pa; uint64_t seed; };
+    const SInit inits[S_MAX] = {
+        { SROLE_FLIP,  (uint32_t)(0 % ncpu), 0,   0,   0 },
+        { SROLE_READ,  (uint32_t)(1 % ncpu), 0,   0,   0 },
+        { SROLE_READ,  (uint32_t)(2 % ncpu), 0,   0,   0 },
+        { SROLE_READ,  (uint32_t)(3 % ncpu), 0,   0,   0 },
+        { g_s_nochurn ? SROLE_BURN : SROLE_CHURN, (uint32_t)(4 % ncpu), cva, cpa, 0xC7 },
+        { SROLE_BURN,  (uint32_t)(5 % ncpu), 0,   0,   0 },
+    };
+    int rid = 0;
+    for (int i = 0; i < S_MAX; ++i) {
+        g_s_slots[i].in_use = 1;
+        g_s_slots[i].role   = inits[i].role;
+        g_s_slots[i].cpu    = inits[i].cpu;
+        g_s_slots[i].va     = inits[i].va;
+        g_s_slots[i].pa     = inits[i].pa;
+        g_s_slots[i].seed   = inits[i].seed;
+        g_s_slots[i].done   = 0;
+        g_s_slots[i].rid    = (inits[i].role == SROLE_READ) ? (uint32_t)(rid++) : 0;
+        kthread_creating_package pkg = {};
+        pkg.func_raw   = (uint64_t)s_worker_entry;
+        pkg.args[0]    = (uint64_t)i;
+        pkg.launch_pid = inits[i].cpu;
+        KURD_t kk = KURD_t();
+        uint64_t tid = creat_kthread(&pkg, &kk);
+        if (error_kurd(kk)) { WT_LOG("S slot %d spawn FAIL tid=%llu\n", i, (unsigned long long)tid); g_s_err++; }
+    }
+    // 等 flipper 完成（有界）
+    for (uint64_t spin = 0; g_s_flip_fn < 4000 && spin < 40000; ++spin) {
+        kthread_sleep(1000);
+    }
+    bool stalled = (g_s_flip_fn < 4000);
+    g_s_stop = 1;
+    // 等所有 worker 收尾
+    for (uint64_t spin = 0; spin < 20000; ++spin) {
+        uint64_t d = 0;
+        for (int i = 0; i < S_MAX; ++i) d += __atomic_load_n(&g_s_slots[i].done, __ATOMIC_ACQUIRE);
+        if (d >= (uint64_t)S_MAX) break;
+        kthread_sleep(1000);
+    }
+    // 收尾：撤共享映射 + free
+    (void)mmu_unmap(va_s, g_s.pa[g_s.phase ? 1 : 0], 1);
+    (void)mmu_unmap(cva, cpa, 1);   // churn 最后一个状态可能是已映射
+    mmu_fpa_free(pa0, 4096); mmu_fpa_free(pa1, 4096); mmu_fpa_free(cpa, 4096);
+    MMU_ASSERT(!stalled, C_S_STALL);
+    MMU_ASSERT(g_s_mismatch == 0, C_S_STALE);
+    MMU_ASSERT(g_s_err == 0, C_S_ERR);
+    MMU_ASSERT(g_mmu_fpa_alloc == g_mmu_fpa_free, C_S_LEAK);
+    WT_LOG("S done flips=%llu reads=%llu churnops=%llu mismatch=%llu err=%llu\n",
+           (unsigned long long)g_s_flip_fn, (unsigned long long)g_s_reads,
+           (unsigned long long)g_s_churn_ops, (unsigned long long)g_s_mismatch,
+           (unsigned long long)g_s_err);
+}
+
 }  // namespace
 
 // ── 测试入口 ──────────────────────────────────────────────────
@@ -679,13 +860,16 @@ void mmu_test_main() {
         mmu_case_ipf();
     } else if (g_mmu_mode == 4) {   // repro：1GB→4KB 交互 / 陈旧 TLB
         mmu_case_repro1gb();
-    } else {                        // full：功能轮 + 1GB（+ S 段后续接入）
+    } else if (g_mmu_mode == 3) {   // s：只跑核武器段（快迭代）
+        mmu_case_s();
+    } else {                        // full：功能轮 + 1GB + S 段
         mmu_case_i1(); mmu_case_i2(); mmu_case_i3();
         mmu_case_i4("I-4a/4KB", 1, 12, 0x44);
         mmu_case_i4("I-4b/2MB", 512, 21, 0x45);
         mmu_case_i4c_1gb();     // I-4c/1GB（先当有；拿不到记 fallback 继续）
         mmu_case_i5();          // 原失败序：1GB 紧接 4KB
         mmu_case_i6();
+        mmu_case_s();           // S 段（多核 invalidate_tlb）
     }
 
     WT_LOG("MMU done: total=%llu pass=%llu fail=%llu fail_code=%llx\n",

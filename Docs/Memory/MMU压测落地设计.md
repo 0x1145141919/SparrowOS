@@ -240,11 +240,89 @@ slot/canary 调度测试语义——整段换成 MMU 场景。**旧场景由 git
   - 整机停机的**权威判据** = `outb(0x80,0xDB)` 魔法断点 → QEMU STOP（QMP 事件）；
     `kvm-run.sh` 常挂 QMP，以 STOP 事件定 `RESULT=FAULT/MAGICBP`。
 
+## 11.7 S 段实测 · 并行 shootdown（2026-09-18，KVM SMP6）
+
+- **场景**：S 段设计上就是**双 broadcaster**——FLIP 核反复 `unmap`+`map`（每次 unmap 触发一次
+  `broadcast_invalidate_tlb`），CHURN 核在独立 VA band 同做 map/unmap，另有 3 读者 + 1 burner。
+- **v3 编排的致命缺陷**（分析，见 `TLB-shootdown-v4-IPI-RPC规范.md` §1）：RPC 等待段用 `interrupt_guard`
+  关中断 + `broadcast_invalidate_tlb` 顶层 IF=0 ⇒ 两核互等各自回写的 IPI（IF=0 时 fixed 中断只在 IRR
+  pending，不执行 handler）⇒ 必 `Panic(TLB_SHOOTDOWN_TIMEOUT)`。
+- **修复（v4）**：新增 `enable_interrupt_guard`（`interrupt_guard` 对偶）并落地到
+  `returnable_ipi_send` / `fly_ipi_send` / `broadcast_invalidate_tlb`——等待段强制 IF=1。
+- **实测结果（KVM SMP6，本轮 build）**：
+  - `mode=s`：`S done flips=4000 reads=9724 churnops=5322 mismatch=0 err=0`；
+    `MMU done total=5 pass=5 fail=0`；`TB reason=planned`（ELAPSED≈1s）。
+  - **稳定复现 4/4**（`mode=s`，不带 ring ⇒ 不产转储）：均 `#TB#planned`，无 `PANIC`/`HANG`。
+  - `mode=full`：`total=35 pass=35 fail=0 fail_code=0`；`I-4c huge_hits=1`（真走 1GB）；
+    `I6 alloc=8 free=8 outstanding=0`；S 段 `mismatch=0 err=0`。
+- **口径提示**：计划内截停走 `outb(0x80,0xDB)` 魔法断点 ⇒ runner 一律 `RESULT=FAULT REASON=MAGICBP`，
+  与真异常同形；判绿要看 ring 的 `TB reason=planned`（带 `--ring`）或串口的 `#TB#planned`。
+  故 `kvm-run.sh --repeat` 对 planned 停无效（首次即判"抓到样本"退出），批量重复需自带循环。
+
+### 本轮增强（v4 规范 §5 + #3，2026-09-18）
+
+- **#3 清理**：删掉 `Kspace_phyaddr_direct_unmap` / `__wrapped_pgs_vfree` 顶层的 `interrupt_guard g;`
+  （v4 后冗余；broadcast 内部已强制 IF=1）。
+- **DEADLINE 重标**：`broadcast_invalidate_tlb` 的 50ms → `500ms + nproc*1ms`（必须 > 单次 RPC 超时 100ms）。
+- **R6 迟到消费重检**：`returnable_ipi_send` 超时路径改为「先看重检（lo64==1 → 按成功）/ 确认仍是本请求再原子释放」，
+  消除 slot 卡死；每轮重试自带重臂 + 重 kick。
+- **R5 分块**：`broadcast_invalidate_tlb` 按 `TLB_BROADCAST_CHUNK_PAGES=4096` 把大 entry 拆成单 entry 子包逐包广播。
+- **R1/R3 硬断言**：导出 `local_irq_enabled()`；`returnable_ipi_send`/`fly_ipi_send` 入口断言 IF==1
+  （线程态 + 不持 IF=0 临界区 ⇔ IF==1；中断门/#PF/`*_interrupt_about_guard` 均置 IF=0）。
+  *取舍*：未用每核 `in_irq_depth`/`spin_depth` 计数——那会给热路径每把锁加 RMW，且有早期 boot 未就绪 GS 的风险；
+  IF 判据零热路径开销且等价覆盖 IDT。若将来 FRED 保持 IF=1，再补显式 irq 深度。
+- **回归**：`mode=s`（`pass=5 fail=0 mismatch=0`）与 `mode=full`（`total=35 pass=35 fail=0`）在新构建下全绿；
+  入口断言未误报，证实三处 RPC 调用点均 IF=1。
+
 ## 12. 已定 / 待办
 
 **已定**：① 1GB 先当有、实跑定论；② 水位线 = 总 FPA 预算 × 75%；③ 分支归 MMU，调度器将来按文档重建。
 
 **待办（实现前置）**：
-1. **总 FPA 预算 getter**（`g_all_avaliable_mem_accumulate` 现为文件 static，需暴露）——水位线用的前提。
+1. **总 FPA 预算 getter**（`g_all_avaliable_mem_accumulate` 现为文件 static，需暴露）——水位线用的前提。**[已落地]**
 2. **I-PF 归档口径**：`mode=pf` 的 `#WF#` 由执行器判为 expected-fault（不触发"全停"）、仍 dump 留档。
-3. **负对照**：故意破坏 invalidate 的临时 patch，确保 I-3/I-7/I-PF 能变红。
+3. **负对照（敏感度）**：故意破坏 invalidate 的临时 patch，确保 I-3/I-7/I-PF 能变红（**I-7/S 段尚未做**）。
+4. **S 段增强（v4 规范 §5）**：~~R6 重臂+重 kick~~[已落地]、~~DEADLINE 重标~~[已落地]、~~大 packet 分块~~[已落地]、~~R1/R3 硬断言~~[已落地]。
+   唯一未做：**R6 字面 seq**——同 func/arg 重臂的 `cmpxchg16b` 误判已被"超时重检"消解（语义无害），暂不加 seq 字段。
+5. **清理**：~~两个 unmap 调用点顶层 `interrupt_guard g;`~~[已清理]。
+
+**已验（2026-09-18）**：S 段（`mode=s`/`mode=full`）在 v4 修复后全绿，稳定 4/4（见 §11.7）。
+
+---
+
+## 13. 覆盖缺口（`mode=full` 当前未触及）
+
+凡下节未列者已跑绿（§11.5/11.6/11.7）。以下按风险降序：
+
+**A. 判据敏感度（最高优先）**
+- **负对照未做**：故意破坏 invalidate（跳过 `broadcast` / 去掉 `remote_invalidate_seg` 里的 invlpg）后，
+  I-3 / I-7 / I-PF 是否变红未验证。没有它，「mismatch==0」无法证明判据本身有效。
+
+**B. S 段（I-7..I-11）细化**
+- I-11 **统计/归属未断言**：`kspace_pagetable_statistics[pid].invalidate_tlb_count` 增长未核对；
+  I-6 只对 FPA 记账，**vm_table 残留 desc 未断言**（§5 要求 `search(va)==null`）。
+- **BUSY 重试路径**（两核抢同一 target slot）无専门计数/断言。
+- **分块路径**（本轮新加，>4096 页/entry）**未覆盖**：用例最大 512 页/条目 ⇒ 分块不触发。
+  需补一个大范围 4KB 映射（如 1GB）的 unmap。
+- **`nproc<=1` 早退分支**未测（仅 SMP6）。
+- 压力档矩阵（§11 成本分级 kvm+tcg × {0,5,10,16,22} × rep20）**未跑**；仅 SMP6 单档。
+
+**C. 映射/区间形态**
+- **非对齐区间 / 同余拆分降级**（`vm_interval_to_pages_info` 的 congruence 判级）：
+  用例都是页对齐（1 页 / 512 页）。未测 3 页、跨 PT/PD/PDPT 边界、VA 与 PA 不同余等。
+- **跨表边界的多页 map/unmap 撕裂**（I-9 想要的效果）：churn 只单页，未跨 2MB/1GB 边界并发。
+
+**D. 未被测试覆盖的接口/路径**
+- `__wrapped_pgs_vfree` / `__wrapped_pgs_valloc` / `stack_alloc`：MMU 测试未直接打
+  （vfree 的 broadcast 路径 = 未被断言；`stack_alloc` 仅由调度器/kshell 间接用）。
+- **用户空间 TLB 路径全部未测**：`AddressSpace::invalidate_tlb_of_VM_desc`（**无调用者**）、
+  `utlb_invalidate` / `utlb_invalidate_ipis`（PCID 用户空间 shootdown，无调用者）。
+  - ⚠️ **顺带发现真 bug**：`invalidate_tlb_of_VM_desc` 的 `switch` **case 无 `break`** ⇒ 有效页尺寸
+    （4KB/2MB/1GB）也会 fallthrough 到 `default:` 返回 FATAL；空条目（page_size=0）同样落 default。
+    **任何调用都返 FATAL**（未爆只因无调用者）。
+- `KspacePageTable::invalidate_seg()`（`shared_inval` 全局路径）：无调用者，未测（遗留）。
+- `v_to_phyaddrtraslation` 对已清 PTE 仍返回 SUCCESS 的语义问题：测试已绕开，**函数本身未修**。
+
+**E. 硬件/环境维度**
+- 只有 KVM；TCG 档只跑了 §11.5 的 F 冒烟，**S 段未在 TCG 跑**。
+- 仅 QEMU SMP6；无更高核数 / 物理机。
