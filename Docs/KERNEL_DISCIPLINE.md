@@ -175,7 +175,8 @@ module_code → in_module_location → event_code → result → reason
 spinlock_cpp_t                    ← 简单自旋锁
 reentrant_spinlock_cpp_t          ← 可重入自旋锁（pid + 深度编码）
 spinrwlock_cpp_t                  ← 读写自旋锁
-interrupt_guard                   ← 中断开关 guard
+interrupt_guard                   ← 中断开关 guard（进入关中断，退出还原）
+enable_interrupt_guard            ← 中断开关 guard 的对偶（进入开中断，退出还原；RPC 等待段用）
 spinlock_interrupt_about_guard    ← 关中断的自旋锁 guard
 spinrwlock_interrupt_about_*_guard ← 关中断的 RW 锁 guard
 ```

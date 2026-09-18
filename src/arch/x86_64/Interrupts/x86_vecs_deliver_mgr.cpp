@@ -749,6 +749,28 @@ static bool ipi_wait_lo(volatile __uint128_t* slot, uint64_t deadline_us)
 }
 
 /* ===================================================================
+ * ipi_rpc_context_assert — v4 规范 R1/R3 硬断言
+ * ===================================================================
+ * 核间 RPC（returnable/fly）只允许「内核线程态 + 不持 IF=0 临界区」调用。
+ * 两者等价于入口 IF==1：中断门（IPI/#PF 等）与 *_interrupt_about_guard
+ * 临界区都会把 IF 置 0。违规即 panic——而不是退化成关中断互等死锁。
+ */
+static inline void ipi_rpc_context_assert(const char* who)
+{
+    if (local_irq_enabled())
+        return;
+    panic_info_inshort inshort{
+        .is_bug = true, .is_policy = true,
+        .is_hw_fault = false, .is_mem_corruption = false,
+        .is_escalated = false
+    };
+    KURD_t fatal = demux_default_fatal();
+    Panic::panic(default_panic_behaviors_flags, (char*)who, nullptr, &inshort,
+                 kurd_get_raw(fatal));
+    __builtin_unreachable();
+}
+
+/* ===================================================================
  * returnable_ipi_send — 返回型 IPI
  * ===================================================================
  * 抢占目标 slot → 发送 IPI_RETURNABLE → 轮询结果（10ms 超时）
@@ -761,7 +783,10 @@ __uint128_t returnable_ipi_send(ipi_package_t *package)
     if (!complex)
         return (__uint128_t)0 << 64 | 4;   // 不存在
 
-    interrupt_guard irq;
+    ipi_rpc_context_assert("returnable_ipi_send: RPC called with IF=0 (must be thread ctx, no IF=0 critical section)");
+    // 等待对端回写 slot 期间必须保持 IF=1：否则对端（同样可能在等我们）的 IPI 无法投递，
+    // 两个 shootdown 互等即成死锁。slot 抢占本身是 try-lock，不依赖关中断。
+    enable_interrupt_guard irq;
 
     /* 抢占 slot */
     __uint128_t expected = 0;
@@ -779,9 +804,26 @@ __uint128_t returnable_ipi_send(ipi_package_t *package)
     /* 轮询结果：lo64 != func → target 已消费并写回 */
     uint64_t deadline = ktime::get_microsecond_stamp() + 100000;  // 100ms (真机 10ms 太紧)
     if (!ipi_wait_lo(&complex->local_ipi_complex, deadline)) {
-        __uint128_t release=0;
-        cmpxchg16b(&complex->local_ipi_complex, &desired, &release);
-        return (__uint128_t)0 << 64 | 3;   // 超时
+        // R6 迟到消费重检：
+        //  (a) 若对端在 deadline 后瞬间回写(lo64==1)，按成功处理（不丢这次失效）；
+        //  (b) 否则确认 slot 仍是本次 armed 的 request 再原子释放；
+        //      若既非回写也非本请求，则不强写（避免与 target 回写竞争）——直接放弃。
+        for (;;) {
+            __uint128_t cur = complex->local_ipi_complex;
+            if ((uint64_t)cur == 1) {                       // (a) 已回写结果
+                uint64_t res = (uint64_t)(cur >> 64);
+                __uint128_t z = 0;
+                cmpxchg16b(&complex->local_ipi_complex, &cur, &z);
+                return (__uint128_t)res << 64 | 1;
+            }
+            if (cur == desired) {                           // (b) 仍是我们的请求 → 释放
+                __uint128_t z = 0;
+                if (cmpxchg16b(&complex->local_ipi_complex, &cur, &z))
+                    return (__uint128_t)0 << 64 | 3;        // 超时
+                continue;                                   // 竞争：重读
+            }
+            return (__uint128_t)0 << 64 | 3;                // 非预期态（try-lock 下不应发生）
+        }
     }
     __uint128_t val = complex->local_ipi_complex;
     uint64_t result = (uint64_t)(val >> 64);
@@ -804,7 +846,9 @@ uint64_t fly_ipi_send(ipi_package_t *package)
                  << ") = nullptr" << kendl;
         return 4;
     }
-    interrupt_guard irq;
+    ipi_rpc_context_assert("fly_ipi_send: RPC called with IF=0 (must be thread ctx, no IF=0 critical section)");
+    // 同 returnable_ipi_send：确认消费/回写期间保持 IF=1，不得关中断。
+    enable_interrupt_guard irq;
 
     __uint128_t expected = 0;
     __uint128_t desired  = package->func

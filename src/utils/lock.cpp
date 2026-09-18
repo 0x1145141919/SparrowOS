@@ -186,6 +186,23 @@ interrupt_guard::~interrupt_guard()
         disable_interrupts();
     }
 }
+enable_interrupt_guard::enable_interrupt_guard()
+{
+    this->if_enable_accept_interrupt=get_if_enable_accept_interrupt();
+    enable_interrupts();
+}
+enable_interrupt_guard::~enable_interrupt_guard()
+{
+    if(if_enable_accept_interrupt){
+        enable_interrupts();
+    }else{
+        disable_interrupts();
+    }
+}
+bool local_irq_enabled()
+{
+    return get_if_enable_accept_interrupt();
+}
 spintrylock_spin_guard::spintrylock_spin_guard(spintrylock_cpp_t &lock)
     : lock_ref(lock)
 {

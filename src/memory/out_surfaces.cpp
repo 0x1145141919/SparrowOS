@@ -265,7 +265,6 @@ extern "C" vaddr_t Kspace_pinterval_alloc_and_map(vm_interval interval, KURD_t* 
 extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
 {
     using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
-    interrupt_guard g;
     KURD_t success = out_surfaces_default_success();
     KURD_t fail    = out_surfaces_default_failure();
     success.event_code = EVENT_CODE_DIRECT_UNMAP_PADDR;
@@ -295,6 +294,45 @@ extern "C" KURD_t Kspace_phyaddr_direct_unmap(vm_interval interval)
         return tlb_status;
     return success;
 }
+// ── TLB 广播分块（v4 规范 R5）──────────────────────────────────
+// 单个 entry 页数上限：超出则拆成多个子包逐包广播，
+// 以界住 IPI handler（目标核 IF=0）内的单次执行时延。
+static constexpr uint64_t TLB_BROADCAST_CHUNK_PAGES = 4096;
+
+static uint64_t tlb_broadcast_chunk_count(const seg_to_pages_info_pakage_t* pak)
+{
+    uint64_t total = 0;
+    for (int i = 0; i < 5; ++i) {
+        const auto& e = pak->entryies[i];
+        if (e.page_size_in_byte == 0 || e.num_of_pages == 0) continue;
+        total += (e.num_of_pages + TLB_BROADCAST_CHUNK_PAGES - 1) / TLB_BROADCAST_CHUNK_PAGES;
+    }
+    return total;
+}
+
+// 取第 idx 个分块（entry-major 顺序），输出为「单 entry」子包
+static bool tlb_broadcast_chunk_at(const seg_to_pages_info_pakage_t* pak, uint64_t idx,
+                                   seg_to_pages_info_pakage_t* out)
+{
+    out->clear();
+    out->congruence_level = pak->congruence_level;
+    for (int i = 0; i < 5; ++i) {
+        const auto& e = pak->entryies[i];
+        if (e.page_size_in_byte == 0 || e.num_of_pages == 0) continue;
+        uint64_t chunks = (e.num_of_pages + TLB_BROADCAST_CHUNK_PAGES - 1) / TLB_BROADCAST_CHUNK_PAGES;
+        if (idx >= chunks) { idx -= chunks; continue; }
+        uint64_t off = idx * TLB_BROADCAST_CHUNK_PAGES;
+        uint64_t n   = e.num_of_pages - off;
+        if (n > TLB_BROADCAST_CHUNK_PAGES) n = TLB_BROADCAST_CHUNK_PAGES;
+        out->entryies[0].vbase             = e.vbase + off * e.page_size_in_byte;
+        out->entryies[0].phybase           = e.phybase ? (e.phybase + off * e.page_size_in_byte) : 0;
+        out->entryies[0].page_size_in_byte = e.page_size_in_byte;
+        out->entryies[0].num_of_pages      = n;
+        return true;
+    }
+    return false;
+}
+
 KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
 {
     using namespace MEMMODULE_LOCATIONS::OUT_SURFACES_EVENTS;
@@ -306,64 +344,76 @@ KURD_t broadcast_invalidate_tlb(seg_to_pages_info_pakage_t *pak)
     if (!pak)
         return success;
 
-    uint32_t self = fast_get_processor_id();
+    // 等待各核回写期间全程 IF=1：并行 shootdown 互不阻塞的前提（v4 规范 R2）。
+    // 调用方可能仍处 IF=0，此处强制开出可中断等待窗口；出作用域按原 IF 还原。
+    enable_interrupt_guard eg;
+
+    uint32_t self  = fast_get_processor_id();
     uint32_t nproc = logical_processor_count;
 
-    remote_invalidate_seg(pak);
+    // DEADLINE 重标：轮内每次 returnable_ipi_send 最多阻塞 ~100ms（单次 RPC 超时），
+    // 故总 deadline 必须显著 > 100ms，并随 nproc 伸缩（v4 规范 §5.3）。
+    uint64_t deadline = ktime::get_microsecond_stamp()
+                      + 500000ULL + (uint64_t)nproc * 1000ULL;
 
-    if (nproc <= 1)
-        return success;
+    // 大 packet 分块：界住单次 handler 在目标核（IF=0）上的执行时延（v4 规范 R5）。
+    uint64_t nchunks = tlb_broadcast_chunk_count(pak);
+    for (uint64_t c = 0; c < nchunks; ++c) {
+        seg_to_pages_info_pakage_t sub;
+        if (!tlb_broadcast_chunk_at(pak, c, &sub)) break;
 
-    uint8_t done_bitmap[512];
-    ksetmem_8(done_bitmap, 0, sizeof(done_bitmap));
+        remote_invalidate_seg(&sub);            // 本核直调
+        if (nproc <= 1) continue;
 
-    done_bitmap[self / 8] |= (1 << (self % 8));
-    uint32_t confirmed = 1;
+        uint8_t done_bitmap[512];
+        ksetmem_8(done_bitmap, 0, sizeof(done_bitmap));
+        done_bitmap[self / 8] |= (1 << (self % 8));
+        uint32_t confirmed = 1;
 
-    uint64_t deadline = ktime::get_microsecond_stamp() + 50000;
-
-    while (confirmed < nproc) {
-        if (ktime::get_microsecond_stamp() >= deadline) {
-            fatal.reason = COMMON_FATAL_REASONS::TLB_SHOOTDOWN_TIMEOUT;
-            panic_info_inshort inshort{
-                .is_bug = true, .is_policy = true,
-                .is_hw_fault = false, .is_mem_corruption = false,
-                .is_escalated = false
-            };
-            Panic::panic(default_panic_behaviors_flags,
-                (char*)"broadcast_invalidate_tlb: deadline exceeded",
-                nullptr, &inshort, kurd_get_raw(fatal));
-            __builtin_unreachable();
-        }
-
-        bool made_progress = false;
-
-        for (uint32_t pid = 0; pid < nproc; pid++) {
-            uint32_t byte_idx = pid / 8;
-            uint8_t  bit_mask = 1 << (pid % 8);
-            if (done_bitmap[byte_idx] & bit_mask)
-                continue;
-
-            ipi_package_t ipi;
-            ipi.arg         = pak;
-            ipi.func        = (uint64_t)remote_invalidate_seg;
-            ipi.id          = pid;
-            ipi.is_apicid   = false;
-            ipi.is_returnable = true;
-
-            __uint128_t result = returnable_ipi_send(&ipi);
-            uint64_t ipi_status = (uint64_t)result;
-
-            if (ipi_status == 1) {
-                done_bitmap[byte_idx] |= bit_mask;
-                confirmed++;
-                made_progress = true;
+        while (confirmed < nproc) {
+            if (ktime::get_microsecond_stamp() >= deadline) {
+                fatal.reason = COMMON_FATAL_REASONS::TLB_SHOOTDOWN_TIMEOUT;
+                panic_info_inshort inshort{
+                    .is_bug = true, .is_policy = true,
+                    .is_hw_fault = false, .is_mem_corruption = false,
+                    .is_escalated = false
+                };
+                Panic::panic(default_panic_behaviors_flags,
+                    (char*)"broadcast_invalidate_tlb: deadline exceeded",
+                    nullptr, &inshort, kurd_get_raw(fatal));
+                __builtin_unreachable();
             }
-        }
 
-        if (!made_progress) {
-            for (int i = 0; i < 8; i++)
-                asm volatile("pause");
+            bool made_progress = false;
+
+            for (uint32_t pid = 0; pid < nproc; pid++) {
+                uint32_t byte_idx = pid / 8;
+                uint8_t  bit_mask = 1 << (pid % 8);
+                if (done_bitmap[byte_idx] & bit_mask)
+                    continue;
+
+                ipi_package_t ipi;
+                ipi.arg         = &sub;         // 本分块的在栈地址；RPC 返回即已确认消费
+                ipi.func        = (uint64_t)remote_invalidate_seg;
+                ipi.id          = pid;
+                ipi.is_apicid   = false;
+                ipi.is_returnable = true;
+
+                __uint128_t result = returnable_ipi_send(&ipi);
+                uint64_t ipi_status = (uint64_t)result;
+
+                if (ipi_status == 1) {
+                    done_bitmap[byte_idx] |= bit_mask;
+                    confirmed++;
+                    made_progress = true;
+                }
+                // lo64==2(BUSY)/3(超时)：本轮跳过，下一轮重臂 + 重 kick（v4 规范 R6）
+            }
+
+            if (!made_progress) {
+                for (int i = 0; i < 8; i++)
+                    asm volatile("pause");
+            }
         }
     }
 
@@ -682,7 +732,6 @@ KURD_t __wrapped_pgs_vfree(void* vbase, uint64_t _4kbpgscount)
     KURD_t fail = out_surfaces_default_failure();
     fail.event_code = EVENT_CODE_PAGES_VFREE;
 
-    interrupt_guard g;
     phyaddr_t pbase = 0;
     KURD_t status = KspacePageTable::v_to_phyaddrtraslation((vaddr_t)vbase, pbase);
     if (status.result != result_code::SUCCESS)
