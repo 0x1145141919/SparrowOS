@@ -179,18 +179,19 @@ enum wraith_role : uint64_t {
 
 int slot_claim(uint64_t tid, uint64_t role, uint64_t canary_addr, uint64_t canary_expected) {
     for (uint32_t i = 0; i < WRAITH_TEST_MAX; ++i) {
-        if (!g_wraith_slots[i].in_use) {
-            g_wraith_slots[i].tid             = tid;
-            g_wraith_slots[i].task_ptr        = wraith::now_running_task();
-            g_wraith_slots[i].role            = role;
-            g_wraith_slots[i].seq             = 0;
-            g_wraith_slots[i].last_cpu        = fast_get_processor_id();
-            g_wraith_slots[i].canary_addr     = canary_addr;
-            g_wraith_slots[i].canary_expected = canary_expected;
-            g_wraith_slots[i].in_use          = 1;
-            if (i + 1 > g_wraith_slot_count) g_wraith_slot_count = i + 1;
-            return (int)i;
-        }
+        // 原子占位：多核并发 spawn 时防止两线程抢同一 slot。
+        if (__atomic_exchange_n((uint64_t*)&g_wraith_slots[i].in_use, 1,
+                                __ATOMIC_ACQ_REL) != 0)
+            continue;                        // 已被占
+        g_wraith_slots[i].tid             = tid;
+        g_wraith_slots[i].task_ptr        = wraith::now_running_task();
+        g_wraith_slots[i].role            = role;
+        g_wraith_slots[i].seq             = 0;
+        g_wraith_slots[i].last_cpu        = fast_get_processor_id();
+        g_wraith_slots[i].canary_addr     = canary_addr;
+        g_wraith_slots[i].canary_expected = canary_expected;
+        if (i + 1 > g_wraith_slot_count) g_wraith_slot_count = i + 1;
+        return (int)i;
     }
     return -1;
 }
@@ -301,6 +302,7 @@ void kthread_test_main() {
 // 截停闸门：串口 #TB# → 环留证 → outb(0x80,0xDB) → cli;hlt。无 QEMU 补丁时也停在原地。
 void wraith_freeze(const char* reason) {
     uart_marker("#TB#");
+    uart_marker(reason);          // 串口带 reason：host 可区分 planned vs 断言命中
     WT_LOG("TB reason=%s pid=%u rsp=%llx\n", reason,
                (unsigned)fast_get_processor_id(),
                (unsigned long long)wraith::rsp_now());
