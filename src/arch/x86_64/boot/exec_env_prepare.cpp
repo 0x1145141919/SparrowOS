@@ -1,4 +1,5 @@
 #include "boot/exec_env_prepare.h"
+#include "abi/asset_names.h"
 #include "boot/info_pkg_link.h"
 #include "boot/asset_table.h"
 #include "memory/kpoolmemmgr.h"
@@ -15,6 +16,7 @@
 #include "util/kout.h"
 #include "util/OS_utils.h"
 #include "util/kptrace.h"
+#include "util/init_printk.h"          // kernel 启动期日志面层（bsp_kout 接替者）
 #include "arch/x86_64/core_hardwares/HPET.h"
 #include "KImage_Introspection.h"
 
@@ -81,8 +83,8 @@ extern "C" void exec_env_prepare(init_to_kernel_header_v2* pkg)
                                         an->free_segs_descriptors_table,
                                         an->free_segs_count) != 0)
             boot_halt(SRC_LOC());
-        bsp_kout << "[exec_env_prepare] page_frame_state_mgr adopted: "
-                 << an->free_segs_count << " free_segs descriptors" << kendl;
+        init_printk("[exec_env_prepare] page_frame_state_mgr adopted: %lu free_segs descriptors",
+                    (unsigned long)an->free_segs_count);
     }
     self_introspection_init();
 }
@@ -137,37 +139,23 @@ static void init_panic_early_support(void)
 }
 
 // 输出子系统初始化：
-//   ① read/deal 三个必需资产：log_buffer / gop_framebuffer / gop_info
+//   ① read/deal 三个必需资产：ring_log / gop_framebuffer / gop_info
 //     模式：read 直读 → 调用方自拷 → deal 标记（deal 后 entry 悬垂）
 //   ② 输出链路：GfxPrim 就绪 → textconsole → serial → kout
 // 本函数仍处摸黑阶段，失败一律 boot_halt 裸停机。
 static void init_output_subsystem(void)
 {
-    {
-        const asset_table_entry* e = g_asset_table->read("log_buffer movable");
-        if (!e) boot_halt(SRC_LOC());
-        movable_file_entry_t log_file = *(movable_file_entry_t*)e->data;
-        g_asset_table->deal("log_buffer movable");
-        // log_buffer 已改纯物理描述符（phase_3b 不再 KMMU 映射）：经主窗口重链成 vm_interval
-        phyaddr_t log_pbase = log_file.base_ppn << 12;
-        uint64_t  log_bytes = align_up(log_file.size, 4096);
-        vm_interval log_iv = {
-            .vpn    = (Kspace_phyaddr_access_window.vbase() + log_pbase) >> 12,
-            .ppn    = log_file.base_ppn,
-            .npages = log_bytes >> 12,
-            .access = KSPACE_RW_ACCESS,
-        };
-        DmesgRingBuffer::Init(&log_iv);
-    }
+    // 环转生：认领继承自 init.elf 的 ring_log blob，以本窗口 VA 重绑同一条 v2 环。
+    // 真正的认领/重绑在 init_printk_bringup()（三后端就绪后、函数尾调用）。
     {
         const asset_table_entry* e = g_asset_table->read("gop_framebuffer mem");
         if (!e) boot_halt(SRC_LOC());
         vm_interval gop_fb = *(vm_interval*)e->data;
         GlobalBasicGraphicInfoType gop_info = {};
-        e = g_asset_table->read("gop_info gop");
+        e = g_asset_table->read(asset_names::gop_info);   // "gop_info blob 0x20"
         if (!e) boot_halt(SRC_LOC());
         gop_info = *(GlobalBasicGraphicInfoType*)e->data;
-        g_asset_table->deal("gop_info gop");
+        g_asset_table->deal(asset_names::gop_info);
         if (error_kurd(GfxPrim::Init(&gop_info, gop_fb)))
             boot_halt(SRC_LOC());
     }
@@ -182,6 +170,10 @@ static void init_output_subsystem(void)
         bsp_kout.Init();
         bsp_kout.shift_dec();
     }
+
+    // 三后端（环 / UART / GOP）就绪 → kernel.elf::init_printk 上位。
+    // 此后启动期（入口 → create_first_kthread）一律走 init_printk（bsp_kout 下线）。
+    init_printk_bringup();
 }
 
 // 早期失败停机：exec_env_prepare 阶段无 kout，只能裸停机

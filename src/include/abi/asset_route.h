@@ -13,6 +13,11 @@
 // 路由表只决定"解释类型"（kind / desc_size）；具体解释逻辑留在各消费模块
 // 按 kind 自处理——避免 abi 头反向依赖模块实现。
 //
+// ⚠ 单一来源：路由解析【只此通用表】。历史上曾有 arch 专属补充表（arch/x86_64/
+//   abi/asset_route.h）给 arch 类型（如 "gop"）在表里写死 desc_size，属放行捷径；
+//   已删除：arch 专属类型改走通用 "blob <size>"（尺寸随名字显式携带），abi 层不再
+//   反向依赖 arch 类型。
+//
 // inline constexpr 数组：编译期常量，零运行时构造（不违反无全局构造纪律），
 // 跨 TU ODR 安全，落在 .rodata。
 // ════════════════════════════════════════════════════════════════
@@ -46,4 +51,26 @@ inline constexpr asset_route_entry_t asset_route_table[] = {
 
 inline constexpr uint32_t asset_route_table_count() {
     return sizeof(asset_route_table) / sizeof(asset_route_table[0]);
+}
+
+// arg1 与类型名精确匹配（token 级，不带空格；arg1_len = 首个空格前长度）
+inline bool asset_route_token_match(const char* arg1, uint64_t arg1_len, const char* type_name) {
+    uint64_t tl = 0;
+    while (type_name[tl]) ++tl;
+    if (tl != arg1_len) return false;
+    for (uint64_t k = 0; k < arg1_len; ++k)
+        if (arg1[k] != type_name[k]) return false;
+    return true;
+}
+
+// arg1（多arg name 首个空格后的 token）→ 路由条目；未命中返回 nullptr
+inline const asset_route_entry_t* resolve_asset_route(const char* arg1) {
+    if (!arg1) return nullptr;
+    uint64_t l = 0;
+    while (arg1[l] && arg1[l] != ' ') ++l;
+
+    for (uint32_t i = 0; i < asset_route_table_count(); ++i)
+        if (asset_route_token_match(arg1, l, asset_route_table[i].type_name))
+            return &asset_route_table[i];
+    return nullptr;
 }

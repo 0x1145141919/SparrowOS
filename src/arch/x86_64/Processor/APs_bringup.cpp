@@ -9,6 +9,7 @@
 #include "arch/x86_64/core_hardwares/primitive_gop.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "arch/x86_64/abi/GS_Slots_index_definitions.h"
+#include "util/init_printk.h"
 
 /* ── 全局：x2APIC ID → gs_complex_t 映射表 ──────────────────────
  * 由 ap_init_one_by_one 的第一遍扫描分配，第二遍填值。
@@ -60,12 +61,12 @@ extern "C" KURD_t ap_init_one_by_one()
 
     /* ── 前置检查 ─────────────────────────────────────────────────── */
     if ((uint64_t)&AP_realmode_start % 4096) {
-        bsp_kout << now << "APs_bringup: AP_realmode_start not 4K aligned" << kendl;
+        init_printk("APs_bringup: AP_realmode_start not 4K aligned");
         fatal.result = result_code::FATAL;
         return fatal;
     }
     if (gAnalyzer == nullptr) {
-        bsp_kout << now << "APs_bringup: gAnalyzer is null" << kendl;
+        init_printk("APs_bringup: gAnalyzer is null");
         fail.result = result_code::RETRY;
         fail.reason = INTERRUPT_SUB_MODULES_LOCATIONS::PROCESSORS_EVENT_CODE::APS_INIT_RESULTS_CODE::RETRY_REASON_CODE::RETRY_REASON_CODE_DEPENDIES_NOT_INITIALIZED;
         return fail;
@@ -94,8 +95,8 @@ extern "C" KURD_t ap_init_one_by_one()
     /* ── 分配映射表 ───────────────────────────────────────────────── */
     uint32_t gs_array_size = max_apicid + 1;
     g_gs_by_apicid = new gs_complex_t*[gs_array_size]();
-    bsp_kout << now << "APs_bringup: g_gs_by_apicid[" << (uint32_t)gs_array_size
-             << "], max_apicid=0x" << HEX << max_apicid << DEC << kendl;
+    init_printk("APs_bringup: g_gs_by_apicid[%u], max_apicid=0x%lx",
+                (unsigned)gs_array_size, (unsigned long)max_apicid);
 
     /* ══════════════════════════════════════════════════════════════════
      * 第二遍：分配 processor_id，填 gs_complex_t* + slot 中的处理器 ID
@@ -123,11 +124,11 @@ extern "C" KURD_t ap_init_one_by_one()
         g_gs_by_apicid[(*it).apicid] = cx;
         cx->slots[PROCESSOR_ID_GS_INDEX] = (uint64_t)(*it).apicid << 32 | pid;
 
-        bsp_kout << now << "APs_bringup: APIC 0x" << HEX << (uint32_t)(*it).apicid
-                 << DEC << " -> proc_id=" << pid << kendl;
+        init_printk("APs_bringup: APIC 0x%lx -> proc_id=%u",
+                    (unsigned long)(*it).apicid, (unsigned)pid);
         ap_count++;
     }
-    bsp_kout << now << "APs_bringup: " << ap_count << " APs (ids 1.." << ap_count << ")" << kendl;
+    init_printk("APs_bringup: %u APs (ids 1..%u)", (unsigned)ap_count, (unsigned)ap_count);
 
     /* ── SIPI ICR 模板（逐 AP 覆盖 destination） ──────────────────── */
     x2apic::x2apic_icr_t icr_sipi = {
@@ -161,9 +162,9 @@ extern "C" KURD_t ap_init_one_by_one()
                 .destination          = {.raw = 0}
             }
         };
-        bsp_kout << now << "APs_bringup: INIT IPI all-excluding-self" << kendl;
+        init_printk("APs_bringup: INIT IPI all-excluding-self");
         x2apic::x2apic_driver::raw_send_ipi(icr_init);
-        bsp_kout << now << "APs_bringup: INIT done" << kendl;
+        init_printk("APs_bringup: INIT done");
         ktime::microsecond_polling(20000);
     }
 
@@ -183,9 +184,9 @@ extern "C" KURD_t ap_init_one_by_one()
                 .destination          = {.raw = 0}
             }
         };
-        bsp_kout << now << "APs_bringup: INIT de-assert" << kendl;
+        init_printk("APs_bringup: INIT de-assert");
         x2apic::x2apic_driver::raw_send_ipi(icr_init_de_assert);
-        bsp_kout << now << "APs_bringup: INIT de-assert done" << kendl;
+        init_printk("APs_bringup: INIT de-assert done");
         ktime::microsecond_polling(1000);
     }
 
@@ -241,72 +242,72 @@ extern "C" KURD_t ap_init_one_by_one()
     /* ── 失败诊断 ─────────────────────────────────────────────────── */
 
     auto fail_dealing = []() {
-        bsp_kout << now << "APs_bringup: realmode enter fail" << kendl;
+        init_printk("APs_bringup: realmode enter fail");
         uint8_t vec = realmode_enter_checkpoint.failure_caused_excption_num;
-        bsp_kout << now << "APs_bringup: realmode exception #" << (uint32_t)vec << kendl;
+        init_printk("APs_bringup: realmode exception #%u", (unsigned)vec);
         using namespace AP_Init_error_observing_protocol;
     };
     auto pemode_fail_dealing = []() {
-        bsp_kout << now << "APs_bringup: pemode enter fail, flags=0x"
-                 << (uint32_t)pemode_enter_checkpoint.failure_flags << kendl;
+        init_printk("APs_bringup: pemode enter fail, flags=0x%lx",
+                    (unsigned long)pemode_enter_checkpoint.failure_flags);
         if (!(pemode_enter_checkpoint.failure_flags & 2)) return;
         uint8_t vec = pemode_enter_checkpoint.failure_caused_excption_num;
-        bsp_kout << now << "APs_bringup: pemode exception #" << (uint32_t)vec << kendl;
+        init_printk("APs_bringup: pemode exception #%u", (unsigned)vec);
 
         using namespace AP_Init_error_observing_protocol;
         if ((1ULL << vec) & error_code_bitmap) {
             auto* f = (pemode_final_stack_frame_with_errcode*)(uint64_t)pemode_enter_checkpoint.failure_final_stack_top;
             if (f->magic != PE_FINAL_STACK_WITH_ERRCODE_TOP_MAGIC) return;
-            bsp_kout << now << "[Pemode Exception Frame with Error Code]" << kendl
-                     << "  Magic: 0x"  << f->magic << kendl
-                     << "  EFER: 0x"   << f->IA32_EFER << kendl
-                     << "  CR4: 0x"    << f->cr4  << kendl
-                     << "  CR3: 0x"    << f->cr3  << kendl
-                     << "  CR2: 0x"    << f->cr2  << kendl
-                     << "  CR0: 0x"    << f->cr0  << kendl
-                     << "  GS: 0x"     << f->gs   << kendl
-                     << "  FS: 0x"     << f->fs   << kendl
-                     << "  SS: 0x"     << f->ss   << kendl
-                     << "  DS: 0x"     << f->ds   << kendl
-                     << "  ES: 0x"     << f->es   << kendl
-                     << "  EDI: 0x"    << f->edi  << kendl
-                     << "  ESI: 0x"    << f->esi  << kendl
-                     << "  EBP: 0x"    << f->ebp  << kendl
-                     << "  ESP: 0x"    << f->esp  << kendl
-                     << "  EDX: 0x"    << f->edx  << kendl
-                     << "  ECX: 0x"    << f->ecx  << kendl
-                     << "  EBX: 0x"    << f->ebx  << kendl
-                     << "  EAX: 0x"    << f->eax  << kendl
-                     << "  ErrCode: 0x" << f->errcode << kendl
-                     << "  CS: 0x"     << f->cs   << kendl
-                     << "  EIP: 0x"    << f->eip  << kendl
-                     << "  EFLAGS: 0x" << f->eflags << kendl;
+            init_printk("[Pemode Exception Frame with Error Code]");
+            init_printk("  Magic: 0x%lx", (unsigned long)f->magic);
+            init_printk("  EFER: 0x%lx", (unsigned long)f->IA32_EFER);
+            init_printk("  CR4: 0x%lx", (unsigned long)f->cr4);
+            init_printk("  CR3: 0x%lx", (unsigned long)f->cr3);
+            init_printk("  CR2: 0x%lx", (unsigned long)f->cr2);
+            init_printk("  CR0: 0x%lx", (unsigned long)f->cr0);
+            init_printk("  GS: 0x%lx", (unsigned long)f->gs);
+            init_printk("  FS: 0x%lx", (unsigned long)f->fs);
+            init_printk("  SS: 0x%lx", (unsigned long)f->ss);
+            init_printk("  DS: 0x%lx", (unsigned long)f->ds);
+            init_printk("  ES: 0x%lx", (unsigned long)f->es);
+            init_printk("  EDI: 0x%lx", (unsigned long)f->edi);
+            init_printk("  ESI: 0x%lx", (unsigned long)f->esi);
+            init_printk("  EBP: 0x%lx", (unsigned long)f->ebp);
+            init_printk("  ESP: 0x%lx", (unsigned long)f->esp);
+            init_printk("  EDX: 0x%lx", (unsigned long)f->edx);
+            init_printk("  ECX: 0x%lx", (unsigned long)f->ecx);
+            init_printk("  EBX: 0x%lx", (unsigned long)f->ebx);
+            init_printk("  EAX: 0x%lx", (unsigned long)f->eax);
+            init_printk("  ErrCode: 0x%lx", (unsigned long)f->errcode);
+            init_printk("  CS: 0x%lx", (unsigned long)f->cs);
+            init_printk("  EIP: 0x%lx", (unsigned long)f->eip);
+            init_printk("  EFLAGS: 0x%lx", (unsigned long)f->eflags);
         } else {
             auto* f = (pemode_final_stack_frame*)(uint64_t)pemode_enter_checkpoint.failure_final_stack_top;
             if (f->magic != PE_FINAL_STACK_NO_ERRCODE_TOP_MAGIC) return;
-            bsp_kout << now << "[Pemode Exception Frame without Error Code]" << kendl
-                     << "  Magic: 0x"  << f->magic << kendl
-                     << "  EFER: 0x"   << f->IA32_EFER << kendl
-                     << "  CR4: 0x"    << f->cr4  << kendl
-                     << "  CR3: 0x"    << f->cr3  << kendl
-                     << "  CR2: 0x"    << f->cr2  << kendl
-                     << "  CR0: 0x"    << f->cr0  << kendl
-                     << "  GS: 0x"     << f->gs   << kendl
-                     << "  FS: 0x"     << f->fs   << kendl
-                     << "  SS: 0x"     << f->ss   << kendl
-                     << "  DS: 0x"     << f->ds   << kendl
-                     << "  ES: 0x"     << f->es   << kendl
-                     << "  EDI: 0x"    << f->edi  << kendl
-                     << "  ESI: 0x"    << f->esi  << kendl
-                     << "  EBP: 0x"    << f->ebp  << kendl
-                     << "  ESP: 0x"    << f->esp  << kendl
-                     << "  EDX: 0x"    << f->edx  << kendl
-                     << "  ECX: 0x"    << f->ecx  << kendl
-                     << "  EBX: 0x"    << f->ebx  << kendl
-                     << "  EAX: 0x"    << f->eax  << kendl
-                     << "  CS: 0x"     << f->cs   << kendl
-                     << "  EIP: 0x"    << f->eip  << kendl
-                     << "  EFLAGS: 0x" << f->eflags << kendl;
+            init_printk("[Pemode Exception Frame without Error Code]");
+            init_printk("  Magic: 0x%lx", (unsigned long)f->magic);
+            init_printk("  EFER: 0x%lx", (unsigned long)f->IA32_EFER);
+            init_printk("  CR4: 0x%lx", (unsigned long)f->cr4);
+            init_printk("  CR3: 0x%lx", (unsigned long)f->cr3);
+            init_printk("  CR2: 0x%lx", (unsigned long)f->cr2);
+            init_printk("  CR0: 0x%lx", (unsigned long)f->cr0);
+            init_printk("  GS: 0x%lx", (unsigned long)f->gs);
+            init_printk("  FS: 0x%lx", (unsigned long)f->fs);
+            init_printk("  SS: 0x%lx", (unsigned long)f->ss);
+            init_printk("  DS: 0x%lx", (unsigned long)f->ds);
+            init_printk("  ES: 0x%lx", (unsigned long)f->es);
+            init_printk("  EDI: 0x%lx", (unsigned long)f->edi);
+            init_printk("  ESI: 0x%lx", (unsigned long)f->esi);
+            init_printk("  EBP: 0x%lx", (unsigned long)f->ebp);
+            init_printk("  ESP: 0x%lx", (unsigned long)f->esp);
+            init_printk("  EDX: 0x%lx", (unsigned long)f->edx);
+            init_printk("  ECX: 0x%lx", (unsigned long)f->ecx);
+            init_printk("  EBX: 0x%lx", (unsigned long)f->ebx);
+            init_printk("  EAX: 0x%lx", (unsigned long)f->eax);
+            init_printk("  CS: 0x%lx", (unsigned long)f->cs);
+            init_printk("  EIP: 0x%lx", (unsigned long)f->eip);
+            init_printk("  EFLAGS: 0x%lx", (unsigned long)f->eflags);
         }
     };
 
@@ -329,8 +330,7 @@ extern "C" KURD_t ap_init_one_by_one()
         assigned_processor_id = pid;
         asm volatile("sfence");
 
-        bsp_kout << now << "APs_bringup: SIPI to APIC " << proc.apicid
-                 << " (id=" << pid << ")" << kendl;
+        init_printk("APs_bringup: SIPI to APIC %u (id=%u)", (unsigned)proc.apicid, (unsigned)pid);
         GfxPrim::Flush();
 
         x2apic::x2apic_driver::raw_send_ipi(icr_sipi);
@@ -339,8 +339,7 @@ extern "C" KURD_t ap_init_one_by_one()
         {
             auto st = wait_for_checkpoint(1000, observe_realmode, fail_dealing, pid);
             if (st == CHECKPOINT_TIMEOUT) {
-                bsp_kout << now << "APs_bringup: realmode timeout for APIC "
-                         << proc.apicid << kendl;
+                init_printk("APs_bringup: realmode timeout for APIC %u", (unsigned)proc.apicid);
                 ipi_fail_count++;
                 continue;
             }

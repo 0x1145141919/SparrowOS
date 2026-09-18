@@ -11,6 +11,8 @@
 // init.elf 的日志环实例（.bss；绑定前 soul.buff == nullptr，写操作自动空转）
 extern DmesgRingBuffer_v2 ring_log;
 
-// 把 backing buffer 绑进环：vbase = log_buffer 映射到【本 ELF 窗口】的 VA，size = 字节数。
-// （跨 ELF 转生时另经 soul 的物理描述重绑，见 v2 文档。）
+// 把 backing buffer 绑进环：vbase = 本 ELF 窗口内的缓冲 VA（init 侧 = .ringlog 段），
+// size = 字节数。
+// （跨 ELF 转生：init 侧经 "ring_log blob" 资产交 DmesgRing_handoff 物理凭证（见
+//   abi/kring_soul.h），kernel 侧重链后重绑到本窗口 VA。）
 void init_ring_bind(void* vbase, uint64_t size);

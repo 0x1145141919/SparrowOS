@@ -7,6 +7,7 @@
 #include "util/arch/x86-64/cpuid_intel.h"
 #include "arch/x86_64/abi/msr_offsets_definitions.h"
 #include "util/textConsole.h"
+#include "util/init_printk.h"   // 启动期日志（bsp_kout 接替者）
 #include "boot/kthread_ymir.h"
 #include "arch/x86_64/Interrupt_system/AP_Init_error_observing_protocol.h"
 #include "Scheduler/per_processor_scheduler.h"   // get_self_scheduler / global_schedulers
@@ -120,7 +121,7 @@ extern "C" void kernel_start()
     }
     x2apic_core_init();
     ktime::heart_beat_alarm::processor_regist();
-    bsp_kout<<now<<"BSP online"<<kendl;
+    init_printk("BSP online");
     gAnalyzer = new APIC_table_analyzer((MADT_Table*)gAcpiVaddrSapceMgr.get_acpi_table("APIC"));
 
     // 调度器数组必须在 AP 启动前就绪（AP 在 ap_init 中写 GS slot 5）
@@ -170,18 +171,19 @@ extern "C" void kernel_start()
             (void*)PHYACC_VA(ring_pbase), IRQ_LOG_RING_BYTES, 0, 0
         };
         interrupt_log_ring = new (g_interrupt_log_ring_obj) debug_tmp_ring_buff(&ring_soul);
-        bsp_kout << "interrupt_log_ring online: pbase=0x" << HEX << ring_pbase
-                 << " va=0x" << (uint64_t)interrupt_log_ring->get_soul()->buff << DEC
-                 << " bytes=" << IRQ_LOG_RING_BYTES << kendl;
+        init_printk("interrupt_log_ring online: pbase=0x%lx va=0x%lx bytes=%lu",
+                    (unsigned long)ring_pbase,
+                    (unsigned long)(uint64_t)interrupt_log_ring->get_soul()->buff,
+                    (unsigned long)IRQ_LOG_RING_BYTES);
     }
 
     bsp_init_kurd = ap_init_one_by_one();
     if (error_kurd(bsp_init_kurd)) {
-        bsp_kout << "x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug" << kendl;
+        init_printk("x86_smp_processors_container::AP_Init_one_by_one Failed maybe code bug");
     }
     Status = task_pool::Init();
     if (Status) {
-        bsp_kout << "task_pool::Init Failed" << kendl; return;
+        init_printk("task_pool::Init Failed"); return;
     }
     asm volatile("sti");
     //中断接管工作

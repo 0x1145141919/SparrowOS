@@ -5,6 +5,7 @@
 #include "panic.h"
 #include "util/kout.h"
 #include "util/arch/x86-64/cpuid_intel.h"
+#include "util/init_printk.h"
 #ifdef KERNEL_MODE
 #include "memory/kpoolmemmgr.h"
 #endif
@@ -131,14 +132,14 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     // 放弃 memory_crumbs（空闲碎片设计废弃）：低于 min_bcb_order 的碎片直接丢弃，
     // 不再单独记账。候选集只收 order >= min_bcb_order 的桶。
 
-    bsp_kout << "[FPA::Init] intervals (from page_frame_state_mgr): " << (uint64_t)iv_count << kendl;
+    init_printk("[FPA::Init] intervals (from page_frame_state_mgr): %lu", (unsigned long)iv_count);
     for (uint64_t i = 0; i < iv_count; ++i) {
         const auto& iv = ivs[i];
         const phyaddr_t seg_base = iv.base;
         const uint64_t  seg_size = iv.numof4kbpgs << 12;
-        bsp_kout << "  iv[" << (uint64_t)i << "] base=0x" << HEX << seg_base
-                 << " size=0x" << seg_size
-                 << " end=0x" << (seg_base + seg_size) << DEC << kendl;
+        init_printk("  iv[%lu] base=0x%lx size=0x%lx end=0x%lx",
+                    (unsigned long)i, (unsigned long)seg_base,
+                    (unsigned long)seg_size, (unsigned long)(seg_base + seg_size));
         g_all_avaliable_mem_accumulate += seg_size;
 
         uint64_t order_max = 0;
@@ -187,8 +188,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
     for (auto it = g_bcb_candidate->begin(); it != g_bcb_candidate->end(); ++it) {
         selected_candidates.push_back(*it);
     }
-    bsp_kout << "[FPA::Init] candidates total=" << (uint64_t)candidate_count
-             << " selected=" << (uint64_t)selected_candidates.size() << kendl;
+    init_printk("[FPA::Init] candidates total=%lu selected=%lu",
+                (unsigned long)candidate_count, (unsigned long)selected_candidates.size());
 
     // strategy 变换：得到最终构造计划。
     Ktemplats::list_doubly<BCB_plan_entry> construct_plan;
@@ -205,9 +206,9 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
         if (thread_fit_order < min_bcb_order) {
             thread_fit_order = min_bcb_order;
         }
-        bsp_kout << "[FPA::Init] strategy=MATCH_THREAD cpu=" << (uint64_t)cpu_count
-                 << " per_thread_bytes=0x" << HEX << per_thread_bytes
-                 << " thread_fit_order=" << DEC << (uint64_t)thread_fit_order << kendl;
+        init_printk("[FPA::Init] strategy=MATCH_THREAD cpu=%lu per_thread_bytes=0x%lx thread_fit_order=%lu",
+                    (unsigned long)cpu_count, (unsigned long)per_thread_bytes,
+                    (unsigned long)thread_fit_order);
 
         for (auto it = selected_candidates.begin(); it != selected_candidates.end(); ++it) {
             const BCB_plan_entry plan = *it;
@@ -225,14 +226,14 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
             }
         }
     } else {
-        bsp_kout << "[FPA::Init] strategy=BEST_ALIGN_FIT (no split)" << kendl;
+        init_printk("[FPA::Init] strategy=BEST_ALIGN_FIT (no split)");
         for (auto it = selected_candidates.begin(); it != selected_candidates.end(); ++it) {
             construct_plan.push_back(*it);
         }
     }
 
     const uint64_t plan_count = construct_plan.size();
-    bsp_kout << "[FPA::Init] after strategy: plan_count=" << (uint64_t)plan_count << kendl;
+    init_printk("[FPA::Init] after strategy: plan_count=%lu", (unsigned long)plan_count);
     if (plan_count == 0) {
         return fatal;
     }
@@ -266,8 +267,8 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
 
     const uint64_t bitmap_pool_base = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->vbase() : 0;
     const uint64_t bitmap_pool_size = VM_intervals_bcbs_bitmap ? VM_intervals_bcbs_bitmap->byte_cnt() : 0;
-    bsp_kout << "[FPA::Init] bitmap pool: base=0x" << HEX << bitmap_pool_base
-             << " size=0x" << bitmap_pool_size << DEC << kendl;
+    init_printk("[FPA::Init] bitmap pool: base=0x%lx size=0x%lx",
+                (unsigned long)bitmap_pool_base, (unsigned long)bitmap_pool_size);
     uint64_t bitmap_cursor = bitmap_pool_base;
     uint64_t bitmap_end = bitmap_pool_base + bitmap_pool_size;
 
@@ -291,11 +292,10 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
         }
 
         if (!enough_bitmap) {
-            bsp_kout << "[FPA::Init] skip BCB(base=0x" << HEX << plan.base
-                     << ", order=" << DEC << (uint64_t)plan.order
-                     << ") bitmap bytes need=" << need_bytes
-                     << " remain=" << ((alloc_base <= bitmap_end) ? (bitmap_end - alloc_base) : 0)
-                     << kendl;
+            init_printk("[FPA::Init] skip BCB(base=0x%lx, order=%lu) bitmap bytes need=%lu remain=%lu",
+                        (unsigned long)plan.base, (unsigned long)plan.order,
+                        (unsigned long)need_bytes,
+                        (unsigned long)((alloc_base <= bitmap_end) ? (bitmap_end - alloc_base) : 0));
             continue;
         }
 
@@ -309,30 +309,27 @@ KURD_t FreePagesAllocator::Init(strategy_t strategy,vm_interval* VM_intervals_bc
 
     BCB_count = constructed;
     if (BCB_count == 0) {
-        bsp_kout << "[FPA::Init] no BCB constructed due to bitmap pool shortage" << kendl;
+        init_printk("[FPA::Init] no BCB constructed due to bitmap pool shortage");
         return fatal;
     }
 
     uint64_t bcb_total_span = 0;
-    bsp_kout << "[FPA::Init] BCB count=" << (uint64_t)BCB_count << kendl;
+    init_printk("[FPA::Init] BCB count=%lu", (unsigned long)BCB_count);
     for (uint64_t bcb_i = 0; bcb_i < BCB_count; bcb_i++) {
         BuddyControlBlock& b = BCBS[bcb_i];
         uint8_t  order = b.get_max_order();
         uint64_t span = (order < 52) ? (1ULL << (order + 12)) : 0;
         phyaddr_t end  = (span > 0) ? (b.get_base() + span - 1) : b.get_base();
         bcb_total_span += span;
-        bsp_kout << "  BCB[" << (uint64_t)bcb_i << "] "
-                 << "base=0x" << HEX << (uint64_t)b.get_base()
-                 << " order=" << DEC << (uint64_t)order
-                 << " (" <<(void*)(1ULL << (order + 12))  << "bytes)"
-                 << " end=0x" << HEX << (uint64_t)end
-                 << DEC << kendl;
+        init_printk("  BCB[%lu] base=0x%lx order=%lu (0x%lxbytes) end=0x%lx",
+                    (unsigned long)bcb_i, (unsigned long)b.get_base(),
+                    (unsigned long)order, (unsigned long)(1ULL << (order + 12)),
+                    (unsigned long)end);
     }
-    bsp_kout << "[FPA::Init] summary: BCB total span=0x" << HEX << bcb_total_span
-             << " available=0x" << g_all_avaliable_mem_accumulate
-             << " waste=0x" << (g_all_avaliable_mem_accumulate > bcb_total_span
-                                 ? (g_all_avaliable_mem_accumulate - bcb_total_span) : 0)
-             << DEC << kendl;
+    init_printk("[FPA::Init] summary: BCB total span=0x%lx available=0x%lx waste=0x%lx",
+                (unsigned long)bcb_total_span, (unsigned long)g_all_avaliable_mem_accumulate,
+                (unsigned long)(g_all_avaliable_mem_accumulate > bcb_total_span
+                                    ? (g_all_avaliable_mem_accumulate - bcb_total_span) : 0));
 
     uint64_t processor_count = fpa_get_cpu_count();
     statistics_arr = new fpa_stats[processor_count];

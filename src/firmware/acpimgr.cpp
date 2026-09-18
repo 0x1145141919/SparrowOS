@@ -5,6 +5,7 @@
 #include "abi/os_error_definitions.h"
 #include "panic.h"
 #include "util/kout.h"
+#include "util/init_printk.h"
 
 acpimgr_t gAcpiVaddrSapceMgr;
 
@@ -20,7 +21,7 @@ int acpimgr_t::Init(phyaddr_t xsdt_pa)
         }
     }
     if (!acpi_seg || acpi_seg->type != EFI_ACPI_RECLAIM_MEMORY) {
-        bsp_kout << "[ACPI] XSDT not in ACPI reclaim segment" << kendl;
+        init_printk("[ACPI] XSDT not in ACPI reclaim segment");
         return -1;
     }
 
@@ -37,7 +38,7 @@ int acpimgr_t::Init(phyaddr_t xsdt_pa)
     KURD_t kurd;
     acpi_seg_vbase = Kspace_pinterval_alloc_and_map(acpi_iv, &kurd);
     if (acpi_seg_vbase == 0 || error_kurd(kurd)) {
-        bsp_kout << "[ACPI] Kspace_pinterval_alloc_and_map failed" << kendl;
+        init_printk("[ACPI] Kspace_pinterval_alloc_and_map failed");
         return -1;
     }
 
@@ -55,7 +56,7 @@ int acpimgr_t::Init(phyaddr_t xsdt_pa)
         uint64_t entry_off = entry_pa - acpi_seg_pbase;
         if (entry_off >= acpi_seg_size) {
             // 表不在本段内，跳过（设计上所有 ACPI 表应在同一段）
-            bsp_kout << "[ACPI] table " << i << " outside segment, skip" << kendl;
+            init_printk("[ACPI] table %u outside segment, skip", (unsigned)i);
             continue;
         }
 
@@ -95,9 +96,9 @@ int acpimgr_t::Init(phyaddr_t xsdt_pa)
         }
     }
 
-    bsp_kout << "[ACPI] Init done: seg=0x" << HEX << acpi_seg_pbase
-             << " ->0x" << acpi_seg_vbase
-             << " sz=0x" << acpi_seg_size << kendl;
+    init_printk("[ACPI] Init done: seg=0x%lx ->0x%lx sz=0x%lx",
+                (unsigned long)acpi_seg_pbase, (unsigned long)acpi_seg_vbase,
+                (unsigned long)acpi_seg_size);
     return 0;
 }
 

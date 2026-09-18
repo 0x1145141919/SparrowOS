@@ -1,6 +1,6 @@
 #include "boot/asset_table.h"
 #include "memory/kpoolmemmgr.h"
-#include "arch/x86_64/abi/asset_route.h"
+#include "abi/asset_route.h"   // resolve_asset_route（单一通用路由表）
 #include "util/OS_utils.h"
 
 // ════════════════════════════════════════════════════════════════

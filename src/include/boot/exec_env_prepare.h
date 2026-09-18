@@ -25,8 +25,8 @@
 //                                        + "hpet_mmio mem" → HPET readonly_timer
 //                                        （保证第一条可能崩溃即可调符号表 + 时间戳）
 //   ⑦ 输出子系统链路 (init_output_subsystem)
-//                                        "log_buffer mem" "gop_framebuffer mem"
-//                                        "gop_info gop" → DmesgRingBuffer / GfxPrim
+//                                        "ring_log blob" "gop_framebuffer mem"
+//                                        "gop_info blob" → DmesgRingBuffer / GfxPrim
 //                                        → textconsole_GoP::Init+Clear → serial_init_stage1
 //                                        → bsp_kout.Init+shift_dec（至此 kout 可正常打印）
 //   ⑧ page_frame_state_mgr 收养           adopt("pages_arr mem" 资产 +

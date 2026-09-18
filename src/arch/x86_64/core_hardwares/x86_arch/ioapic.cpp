@@ -3,6 +3,7 @@
 #include "memory/AddresSpace.h"
 #include "panic.h"
 #include "util/kout.h"
+#include "util/init_printk.h"
 #define COMPILER_BARRIER() asm volatile("" ::: "memory")
 #define MEMORY_BARRIER() asm volatile("mfence" ::: "memory")
 #define MMIO_BARRIER() asm volatile("sfence" ::: "memory")  // 写屏障
@@ -46,10 +47,8 @@ ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entr
     uint8_t version = version_info & 0xFF;  // 低8位是版本号
     uint8_t max_redirection_entries = ((version_info >> 16) & 0xFF) + 1;  // 高16-23位是最大条目数（需要+1）
     max_rte_num=max_redirection_entries;
-    bsp_kout << "[IOAPIC] Initialized - ID: " << (uint32_t)ioapic_id 
-             << ", Version: " << (uint32_t)version 
-             << ", Max Redirection Entries: " << (uint32_t)max_redirection_entries 
-             << kendl;
+    init_printk("[IOAPIC] Initialized - ID: %u, Version: %u, Max Redirection Entries: %u",
+                (unsigned)ioapic_id, (unsigned)version, (unsigned)max_redirection_entries);
     
     // 屏蔽所有中断管脚
     for(uint8_t i = 0; i < max_redirection_entries; i++) {
@@ -58,7 +57,7 @@ ioapic_driver::ioapic_driver(APICtb_analyzed_structures::io_apic_structure *entr
         // 高32位保持为0（默认目标 LAPIC ID 为 0，delivery mode 为 Fixed）
     }
     
-    bsp_kout << "[IOAPIC] All " << (uint32_t)max_redirection_entries << " interrupt pins masked" << kendl;
+    init_printk("[IOAPIC] All %u interrupt pins masked", (unsigned)max_redirection_entries);
 }
 
 uint64_t ioapic_driver::get_rte_raw(uint8_t rte)

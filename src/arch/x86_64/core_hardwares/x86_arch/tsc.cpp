@@ -7,6 +7,7 @@
 #include "exec_env_detect.h"
 #include "ktime.h"
 #include "util/kout.h"
+#include "util/init_printk.h"
 #include "util/OS_utils.h"
 #include "abi/boot.h"
 #include "exec_env_detect.h"
@@ -16,15 +17,13 @@ bool is_tsc_reliable;
 
 static void tsc_panic_hlt(void)
 {
-    bsp_kout << "[PANIC] TSC registration failed: system cannot continue\n";
-    bsp_kout.shift_hex();
-    bsp_kout << "  g_env:             " << (uint32_t)g_env << "\n";
-    bsp_kout << "  is_tsc_reliable:   " << is_tsc_reliable << "\n";
-    bsp_kout << "  is_tsc_deadline:   " << is_tsc_ddline_avaliabe << "\n";
+    init_printk("[PANIC] TSC registration failed: system cannot continue");
+    init_printk("  g_env:             %lx", (unsigned long)g_env);
+    init_printk("  is_tsc_reliable:   %lx", (unsigned long)is_tsc_reliable);
+    init_printk("  is_tsc_deadline:   %lx", (unsigned long)is_tsc_ddline_avaliabe);
     {   cpuid_tmp cpuid7(0x07, 0x00);
-        bsp_kout << "  WAITPKG:           " << !!((cpuid7.ecx >> 5) & 1) << "\n";
+        init_printk("  WAITPKG:           %lx", (unsigned long)(!!((cpuid7.ecx >> 5) & 1)));
     }
-    bsp_kout.shift_dec();
     for (;;)
         asm volatile("hlt");
 }
@@ -117,11 +116,11 @@ void tsc_regist()
     gs_u64_write(TIME_COMPLEX_GS_INDEX, (uint64_t)complex);
     complex->lapic_fs_per_cycle = 0;
     cpuid_tmp cpuid0(0x40000000, 0);
-    bsp_kout <<"eax " <<(void*)cpuid0.eax<<kendl;
-    bsp_kout <<"ebx " <<(void*)cpuid0.ebx<<kendl;
-    bsp_kout <<"ecx " <<(void*)cpuid0.ecx<<kendl;
-    bsp_kout <<"edx " <<(void*)cpuid0.edx<<kendl;
-    bsp_kout << "  g_env:              " << (uint32_t)g_env << "\n";
+    init_printk("eax 0x%lx", (unsigned long)cpuid0.eax);
+    init_printk("ebx 0x%lx", (unsigned long)cpuid0.ebx);
+    init_printk("ecx 0x%lx", (unsigned long)cpuid0.ecx);
+    init_printk("edx 0x%lx", (unsigned long)cpuid0.edx);
+    init_printk("  g_env:              %lx", (unsigned long)g_env);
     // ── TCG: TSC 不靠谱，直接退出 ──
     if (g_env == ENV_TCG) {
         is_tsc_reliable       = false;
@@ -160,13 +159,12 @@ void tsc_regist()
     }
 
     // ── 打印 ──
-    bsp_kout << "[INFO] TSC registration completed:\n";
-    bsp_kout.shift_hex();
-    bsp_kout << "  g_env:              " << (uint32_t)g_env << "\n";
-    bsp_kout << "  is_tsc_reliable:    " << is_tsc_reliable << "\n";
-    bsp_kout << "  is_tsc_deadline:    " << is_tsc_ddline_avaliabe << "\n";
-    bsp_kout << "  tsc_fs_per_cycle:   " << tsc_fs_per_cycle << "\n";
-    bsp_kout << "  lapic_fs_per_cycle: " << (uint64_t)complex->lapic_fs_per_cycle << "\n";
+    init_printk("[INFO] TSC registration completed:");
+    init_printk("  g_env:              %lx", (unsigned long)g_env);
+    init_printk("  is_tsc_reliable:    %lx", (unsigned long)is_tsc_reliable);
+    init_printk("  is_tsc_deadline:    %lx", (unsigned long)is_tsc_ddline_avaliabe);
+    init_printk("  tsc_fs_per_cycle:   %lx", (unsigned long)tsc_fs_per_cycle);
+    init_printk("  lapic_fs_per_cycle: %lx", (unsigned long)complex->lapic_fs_per_cycle);
     bsp_kout.shift_dec();
 
     // ── 计算 IA32_UMWAIT_CONTROL（50μs TSC 上限） ────────────────
@@ -179,8 +177,8 @@ void tsc_regist()
         // [31:2] = cycles_50us >> 2, [0] = 1 (allow C0.2)
         g_umwait_control_value = ((uint32_t)(cycles_50us >> 2) << 2) | 1;
         apply_umwait_control();
-        bsp_kout << "[tsc] UMWAIT: " << (uint32_t)g_umwait_control_value
-                 << " (50us=" << (uint64_t)cycles_50us << " cycles)" << kendl;
+        init_printk("[tsc] UMWAIT: %lu (50us=%lu cycles)",
+                    (unsigned long)g_umwait_control_value, (unsigned long)cycles_50us);
     }
 }
 

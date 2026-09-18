@@ -68,8 +68,10 @@ constexpr uint8_t FIRST_HEAP_BITMAP_ALIGN_LOG2 = 12;          // 4KB 对齐
             // 2MB 对齐
 
 // 日志缓冲区：2MB, 对齐 2MB(2^21)
+// 注：v1 VM_ID 体系遗留（v2 走资产树 "ring_log blob"，不再用本常量）；保留仅为
+//     兼容引用旧 ID 的旁路代码。尺寸真源 = init.ld 的 INIT_RING_SIZE。
 constexpr uint32_t VM_ID_LOGBUFFER = 0x1004;
-constexpr uint64_t LOGBUFFER_SIZE = 2 * 1024 * 1024;          // 4MB
+constexpr uint64_t LOGBUFFER_SIZE = 2 * 1024 * 1024;          // 2MB（旧注释误写 4MB）
 constexpr uint8_t LOGBUFFER_ALIGN_LOG2 = 21;                  // 2MB 对齐
 
 constexpr uint32_t VM_ID_KSYMBOLS = 0x1006;

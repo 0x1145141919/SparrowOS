@@ -1,4 +1,5 @@
 #include "abi/boot.h"
+#include "abi/asset_names.h"
 #include "init/load_kernel.h"
 #include "init/init_asset_registry.h"
 #include "init/page_allocator_v2.h"
@@ -268,17 +269,27 @@ static void phase_45_finalize(kernel_mmu* kmmu, phyaddr_t info_pbase,
     //   归还为可用页。归还 = pages_set(_, free) 翻状态，不改映射——init 仍在其上
     //   执行直至跳转完成（替代旧 init_bcb_juvenile::free）。
     {
-        auto erase_pages = [](phyaddr_t base, uint64_t byte_size) {
+        // 圈出区：ring_log 对象在 .bss（落在 [text_start,heap_end) 自裁区间内），
+        // 但它的活体 soul（odometer / record_count）必须穿越给 kernel.elf
+        // （见 build_ring_log 与 abi/kring_soul.h DmesgRing_handoff）——故自裁
+        // 归还时把它所在页「圈出」，保持 phase_3b 里置好的 kernel_persisit。
+        const phyaddr_t keep_lo = align_down((uint64_t)&ring_log, 0x1000);
+        const phyaddr_t keep_hi = align_up((uint64_t)&ring_log + sizeof(ring_log), 0x1000);
+
+        auto erase_pages = [keep_lo, keep_hi](phyaddr_t base, uint64_t byte_size) {
             if (base == 0 || byte_size == 0) return;
             const phyaddr_t lo = base & ~0xFFFull;
             const phyaddr_t hi = (base + byte_size + 0xFFFull) & ~0xFFFull;
-            for (phyaddr_t p = lo; p < hi; p += 0x1000)
+            for (phyaddr_t p = lo; p < hi; p += 0x1000) {
+                if (p >= keep_lo && p < keep_hi) continue;   // 圈出：ring_log 对象页保活
                 page_allocator_v2::pages_set({p, 0x1000}, page_state_t::free);
+            }
         };
         const uint64_t init_img_sz = (uint64_t)&__init_heap_end - (uint64_t)&__init_text_start;
         erase_pages((uint64_t)&__init_text_start, align_up(init_img_sz, 4096));
         erase_pages((uint64_t)header, (uint64_t)header->total_pages_count * 4096);
-        init_printk("Phase 4.5: self-eliminated: init image + BootInfoHeader erased from BCB");
+        init_printk("Phase 4.5: self-eliminated: init image + BootInfoHeader erased from BCB"
+                    " (ring_log object page fenced)");
     }
 
     // 4.5-1: CR3
@@ -379,14 +390,15 @@ extern "C" void init_main(BootInfoHeader* header) {
     // 资产树（handoff 清单）显式构造——全局裸指针零动态初始化
     g_asset_registry = new init_asset_registry_t();
 
-    // BootInfoHeader 的 GOP 元信息 → 资产表（gop_info 结构体，arg1="gop" 走 arch 路由表
-    // 固定 desc_size）。纯 boot 信息提取，不依赖 kmmu/iv，注册表就绪即可登记。
+    // BootInfoHeader 的 GOP 元信息 → 资产表（gop_info 结构体，通用 blob：尺寸随名字
+    // 携带 0x20 = sizeof(GlobalBasicGraphicInfoType)）。纯 boot 信息提取，不依赖
+    // kmmu/iv，注册表就绪即可登记。
     for (uint64_t i = 0; i < header->pass_through_device_info_count; i++) {
         if (header->pass_through_devices[i].device_info != PASS_THROUGH_DEVICE_GRAPHICS_INFO) continue;
         auto* gfx = (GlobalBasicGraphicInfoType*)header->pass_through_devices[i].specify_data;
         if (!gfx) break;
         GlobalBasicGraphicInfoType* gop_copy = new GlobalBasicGraphicInfoType(*gfx);
-        if (!asset_reg_add("gop_info gop", gop_copy)) {
+        if (!asset_reg_add(asset_names::gop_info, gop_copy)) {
             init_printk("asset dup: gop_info");
             init_fatal::halt(SRC_LOC());
         }

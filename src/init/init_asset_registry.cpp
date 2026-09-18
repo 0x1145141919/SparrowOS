@@ -1,5 +1,5 @@
 #include "init/init_asset_registry.h"
-#include "arch/x86_64/abi/asset_route.h"
+#include "abi/asset_route.h"   // resolve_asset_route / asset_arg1（单一通用路由表）
 // strncmp_in_kernel 经 boot.h → memory_base.h → util/lock.h → util/OS_utils.h 传递声明
 // （与 kernel_mmu.cpp / init_init.cpp 同法，不直接 include 任何 OS_utils.h）
 

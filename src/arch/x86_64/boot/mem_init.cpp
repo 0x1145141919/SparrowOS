@@ -12,6 +12,7 @@
 #include "arch/x86_64/mem_init.h"
 #include "arch/x86_64/abi/GS_complex.h"
 #include "util/kout.h"
+#include "util/init_printk.h"   // 启动期日志（bsp_kout 接替者）
 #include "elf.h"
 #include "panic.h"
 uint64_t VM_intervals_count;
@@ -103,8 +104,8 @@ static loc_code_t bfs_delete_old_pagetable(phyaddr_t old_root)
 
         // ---- 回收本级页表页本身：翻回 free 归还 page_frame_state_mgr ----
         if (page_frame_state_mgr::state_set(pa, 1, page_state_t::free) != 0) {
-            bsp_kout << "[bfs_delete_old_pagetable] state_set free fail pa=0x"
-                     << HEX << pa << DEC << kendl;
+            init_printk("[bfs_delete_old_pagetable] state_set free fail pa=0x%lx",
+                        (unsigned long)pa);
             failed = true;
             break;
         }
@@ -113,8 +114,8 @@ static loc_code_t bfs_delete_old_pagetable(phyaddr_t old_root)
 
     delete[] queue;
     if (failed) return SRC_LOC();
-    bsp_kout << "[bfs_delete_old_pagetable] freed " << freed_count
-             << " page-table pages (old root 0x" << HEX << old_root << ")" << DEC << kendl;
+    init_printk("[bfs_delete_old_pagetable] freed %lu page-table pages (old root 0x%lx)",
+                (unsigned long)freed_count, (unsigned long)old_root);
     return 0;
 }
 // ================================================================
@@ -221,11 +222,11 @@ static KURD_t load_low_half_segments()
     Elf64_Ehdr* eh = (Elf64_Ehdr*)elf_b;
     if (eh->e_ident[EI_MAG0] != ELFMAG0 || eh->e_ident[EI_MAG1] != ELFMAG1 ||
         eh->e_ident[EI_MAG2] != ELFMAG2 || eh->e_ident[EI_MAG3] != ELFMAG3) {
-        bsp_kout << "[mem_init] kimg bad ELF magic" << kendl;
+        init_printk("[mem_init] kimg bad ELF magic");
         return placeholder_fail();
     }
     uint8_t* ptbl = elf_b + eh->e_phoff;
-    bsp_kout << "[mem_init] loading non-kernel (low-half) segments..." << kendl;
+    init_printk("[mem_init] loading non-kernel (low-half) segments...");
 
     for (Elf64_Half i = 0; i < eh->e_phnum; i++) {
         Elf64_Phdr* ph = (Elf64_Phdr*)(ptbl + i * eh->e_phentsize);
@@ -243,7 +244,7 @@ static KURD_t load_low_half_segments()
 
         // 越界防护：文件内容必须落在 kimg 文件缓冲内
         if (ph->p_offset + ph->p_filesz > kimg_file->size) {
-            bsp_kout << "[mem_init] non-kernel seg[" << i << "] beyond kimg file" << kendl;
+            init_printk("[mem_init] non-kernel seg[%u] beyond kimg file", (unsigned)i);
             return placeholder_fail();
         }
 
@@ -262,12 +263,12 @@ static KURD_t load_low_half_segments()
                                .npages = sz >> 12, .access = acc};
         KURD_t mk = gKernelSpace->enable_low_half_vm_interval(seg_map);
         if (error_kurd(mk)) {
-            bsp_kout << "[mem_init] non-kernel seg[" << i << "] map fail" << kendl;
+            init_printk("[mem_init] non-kernel seg[%u] map fail", (unsigned)i);
             return mk;
         }
-        bsp_kout << "[mem_init] low-half seg[" << i << "] v=0x" << HEX << va
-                 << " p=0x" << pa << " filesz=0x" << ph->p_filesz
-                 << " sz=0x" << sz << DEC << kendl;
+        init_printk("[mem_init] low-half seg[%u] v=0x%lx p=0x%lx filesz=0x%lx sz=0x%lx",
+                    (unsigned)i, (unsigned long)va, (unsigned long)pa,
+                    (unsigned long)ph->p_filesz, (unsigned long)sz);
     }
     return KURD_t();
 }
@@ -284,8 +285,7 @@ KURD_t assets_remap(){
         if (e->kind == ASSET_KIND_SCALAR) {
             if (strcmp_in_kernel(e->name, asset_names::xsdt_pbase) == 0) {
                 g_xsdt_base = *(const phyaddr_t*)e->data;
-                bsp_kout << "[assets_remap] xsdt_pbase: phys 0x" << HEX
-                         << g_xsdt_base << DEC << kendl;
+                init_printk("[assets_remap] xsdt_pbase: phys 0x%lx", (unsigned long)g_xsdt_base);
             }
             continue;
         }
@@ -298,13 +298,13 @@ KURD_t assets_remap(){
         if (strcmp_in_kernel(e->name, asset_names::hdstacks) == 0) {
             KURD_t k = remap_hdstacks(iv);
             if (error_kurd(k)) {
-                bsp_kout << "[assets_remap] hdstacks fine remap fail" << kendl;
+                init_printk("[assets_remap] hdstacks fine remap fail");
                 return k;
             }
-            bsp_kout << "[assets_remap] hdstacks: territory v=0x" << HEX << iv.vbase()
-                     << " p=0x" << iv.pbase() << " npg=" << iv.npages
-                     << ", " << DEC << logical_processor_count
-                     << " procs fine-mapped (guards skipped)" << kendl;
+            init_printk("[assets_remap] hdstacks: territory v=0x%lx p=0x%lx npg=%lu, "
+                        "%lu procs fine-mapped (guards skipped)",
+                        (unsigned long)iv.vbase(), (unsigned long)iv.pbase(),
+                        (unsigned long)iv.npages, (unsigned long)logical_processor_count);
             continue;
         }
         if(strcmp_in_kernel(e->name, asset_names::gs_complexes)==0){
@@ -314,13 +314,14 @@ KURD_t assets_remap(){
         // 普通 mem 型：Kspace_phyaddr_direct_map 一站式（登记 VM_DESC + 建页表）
         KURD_t k = Kspace_phyaddr_direct_map(iv);
         if (error_kurd(k)) {
-            bsp_kout << "[assets_remap] direct map fail: " << name << kendl;
+            init_printk("[assets_remap] direct map fail: %s", name);
             return k;
         }
-        bsp_kout << "[assets_remap] " << name << ": v=0x" << HEX << iv.vbase()
-                 << " p=0x" << iv.pbase() << " npg=" << iv.npages << DEC << kendl;
+        init_printk("[assets_remap] %s: v=0x%lx p=0x%lx npg=%lu",
+                    name, (unsigned long)iv.vbase(), (unsigned long)iv.pbase(),
+                    (unsigned long)iv.npages);
     }
-    bsp_kout << "all mem_properties mapped"<<kendl;
+    init_printk("all mem_properties mapped");
     return KURD_t();
 }
 extern "C" uint32_t assigned_cr3;
@@ -328,14 +329,14 @@ KURD_t mem_init(){
     KURD_t bsp_init_kurd;
     bsp_init_kurd=KspacePageTable::Init();
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"KspaceMapMgr Init Failed"<<kendl;
+        init_printk("KspaceMapMgr Init Failed");
         return bsp_init_kurd;
     }
     bsp_init_kurd=assets_remap();
     gKernelSpace=new AddressSpace();
     bsp_init_kurd=gKernelSpace->second_stage_init();
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"identity map fail"<<kendl;
+        init_printk("identity map fail");
         return bsp_init_kurd;
     }
     // 把老的 cr3 读出来在先（init.elf kmmu 根表，含 identity + 资产粗映射；
@@ -347,8 +348,8 @@ KURD_t mem_init(){
     gKernelSpace->unsafe_load_pml4_to_cr3(KERNEL_SPACE_PCID);
     // BFS 释放老的页表（新页表已含主窗口映射，老表页可经窗口走读；叶数据页归 FPA 管）
     if (bfs_delete_old_pagetable(old_cr3) != 0) {
-        bsp_kout << "[mem_init] bfs_delete_old_pagetable fail, old_cr3=0x"
-                 << HEX << old_cr3 << DEC << kendl;
+        init_printk("[mem_init] bfs_delete_old_pagetable fail, old_cr3=0x%lx",
+                    (unsigned long)old_cr3);
         KURD_t fail;
         fail.result      = result_code::FAIL;
         fail.level       = level_code::ERROR;
@@ -365,18 +366,18 @@ KURD_t mem_init(){
     };
     bsp_init_kurd=FreePagesAllocator::Init(FreePagesAllocator::BEST_FIT,&fpa_vinterval);
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"FreePagesAllocator Init Failed"<<kendl;
+        init_printk("FreePagesAllocator Init Failed");
         return bsp_init_kurd;
     }
     }
     bsp_init_kurd=kpoolmemmgr_t::multi_heap_enable();
     if(error_kurd(bsp_init_kurd)){
-        bsp_kout<<"Kpoolmemmgr_t::multi_heap_enable Failed"<<kendl;
+        init_printk("Kpoolmemmgr_t::multi_heap_enable Failed");
     }
     // 加载非内核地址空间的段（ap_bootstrap 等）到物理内存并映射进新 PML4
     bsp_init_kurd = load_low_half_segments();
     if (error_kurd(bsp_init_kurd)) {
-        bsp_kout << "load_low_half_segments Failed" << kendl;
+        init_printk("load_low_half_segments Failed");
         return bsp_init_kurd;
     }
     assigned_cr3=gKernelSpace->get_root_table_phybase();

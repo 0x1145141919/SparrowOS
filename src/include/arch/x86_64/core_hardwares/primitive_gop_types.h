@@ -18,6 +18,11 @@ typedef struct{
     UINT32 FrameBufferSize;
 }GlobalBasicGraphicInfoType;
 
+// gop_info 资产名（asset_names::gop_info = "gop_info blob 0x20"）把 desc 尺寸写死为
+// 0x20；结构变更会在此处被拦下（改了结构就同步改 asset_names.h 的十六进制串）。
+static_assert(sizeof(GlobalBasicGraphicInfoType) == 0x20,
+              "gop_info 资产名写死 0x20，改结构请同步 asset_names::gop_info");
+
 typedef struct {
     uint32_t width;
     uint32_t height;

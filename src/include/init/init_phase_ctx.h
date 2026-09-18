@@ -28,14 +28,11 @@ struct ctx_early_mem {
 
 // Phase 3b 产物 → 供 Phase 4 / Phase 4.5 消费
 // kernel_entry_stack 已移除——Phase 4.5 跳转时用 BSP GS 复合体的 rsp0 栈
+//
+// 死字段已扬（资产容器 = 唯一真源，这些 iv 成员无人读）：
+//   FPA_bitmaps / log_buffer / symtable_file / initramfs_file /
+//   Kspace_phyaddr_access_window / pages_arr_vbase / extra_vm_arr / extra_vm_count。
+// 现在 iv 只剩 Phase 4.5 跳转真正要读的 arch_info。
 struct ctx_intervals {
-    vm_interval           FPA_bitmaps;
-    vm_interval           log_buffer;
-    movable_file_entry_t  symtable_file;
-    movable_file_entry_t  initramfs_file;
-    vm_interval           Kspace_phyaddr_access_window;
-    vaddr_t               pages_arr_vbase;
-    loaded_VM_interval*   extra_vm_arr;
-    uint64_t              extra_vm_count;
     x86_specify_init_to_kernel_info arch_info;
 };

@@ -7,6 +7,9 @@
 #include "init/init_fatal.h"
 #include "init/initramfs_lookup.h"
 #include "init/util/printk.h"
+#include "init/util/ring_log.h"          // ring_log 对象（转生凭证对象区真相源）
+#include "abi/kring_soul.h"              // DmesgRing_handoff
+#include "init/init_linker_symbols.h"    // __init_ringlog_start / _end
 
 // ============================================================================
 // va_alloc_up — 从 g_va_alloc_base 向上分配 VA（Phase 3b 专用）
@@ -74,16 +77,38 @@ static loc_code_t build_pages_arr(p3b_ctx& ctx, const char* name) {
     return 0;
 }
 
-// ---- log_buffer（mem）：日志输出连续性，保留提前映射 ----
-static loc_code_t build_log_buffer(p3b_ctx& ctx, const char* name) {
-    uint64_t sz  = LOGBUFFER_SIZE;
-    uint64_t npg = sz >> 12;
-    phyaddr_t p  = page_allocator_v2::free_ram_explore(npg, 21);
-    if (!p) { init_printk("Phase 3b: log OOM"); return SRC_LOC(); }
-    if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_persisit) != 0) return SRC_LOC();
-    ksetmem_8((void*)(uint64_t)p, 0, sz);
-    asset_reg_add(name, new movable_file_entry_t{.base_ppn=p>>12,.size=sz });
-    init_printk("Phase 3b: log_buffer: p=0x%lx", (unsigned long)p);
+// ---- ring_log（blob）：日志环转生凭证——活体对象 + 缓冲双区 claim + 物理描述 ----
+//   转生语义（abi/kring_soul.h DmesgRing_handoff）：环不拷贝内容，kernel 经
+//   phyaddr 窗口重链后直接读【活体】对象（odometer 随内存存活）。init 侧两件事：
+//     ① claim：缓冲段（.ringlog，在自裁区间之外）+ 对象页（.bss，在自裁区间之内）
+//        均置 kernel_persisit，作为 kernel 财产穿越；
+//     ② 描述：登记对象/缓冲物理基址（init 恒等映射 ⇒ &symbol 即物理地址）。
+//   对象页的存活由 phase_4.5 自裁「圈出」保证（见 phase_45_finalize）。
+static loc_code_t build_ring_log(p3b_ctx& ctx, const char* name) {
+    (void)ctx;
+    const phyaddr_t buff_p  = (phyaddr_t)&__init_ringlog_start;
+    const uint64_t  buff_sz = (uint64_t)&__init_ringlog_end - (uint64_t)&__init_ringlog_start;
+    const phyaddr_t obj_p   = (phyaddr_t)&ring_log;
+    const uint64_t  obj_sz  = (uint64_t)sizeof(ring_log);
+    if (buff_sz == 0) { init_printk("Phase 3b: ring_log slot empty"); return SRC_LOC(); }
+
+    // ① claim 缓冲段（.ringlog，页对齐；本身在自裁区间之外，claim 后不会被回收）
+    if (page_allocator_v2::pages_set({align_down(buff_p, 0x1000), align_up(buff_sz, 0x1000)},
+                                     page_state_t::kernel_persisit) != 0) return SRC_LOC();
+    // ① claim 对象页（.bss；phase_4.5 自裁会圈出它，见 phase_45_finalize）
+    if (page_allocator_v2::pages_set({align_down(obj_p, 0x1000), align_up(obj_sz, 0x1000)},
+                                     page_state_t::kernel_persisit) != 0) return SRC_LOC();
+
+    // ② 转生凭证：物理地址描述（不做内容拷贝）
+    asset_reg_add(name, new DmesgRing_handoff{
+        .obj_pbase  = (uint64_t)obj_p,
+        .obj_bytes  = obj_sz,
+        .buff_pbase = (uint64_t)buff_p,
+        .buff_bytes = buff_sz,
+    });
+    init_printk("Phase 3b: ring_log: obj=0x%lx(%lu) buff=0x%lx(%lu)",
+                (unsigned long)obj_p, (unsigned long)obj_sz,
+                (unsigned long)buff_p, (unsigned long)buff_sz);
     return 0;
 }
 
@@ -105,7 +130,6 @@ static loc_code_t build_ksymbols(p3b_ctx& ctx, const char* name) {
     // ksymbols = 从 initramfs 解包出的文件 → kernel_file_property
     if (page_allocator_v2::pages_set({p, sz}, page_state_t::kernel_file_property) != 0) return SRC_LOC();
     ksystemramcpy((void*)(uint64_t)sym_in_ramfs, (void*)(uint64_t)p, sym_sz);
-    ctx.iv->symtable_file = { .base_ppn = p >> 12, .size = sym_sz };
     asset_reg_add(name, new movable_file_entry_t{ .base_ppn = p >> 12, .size = sym_sz });
     init_printk("Phase 3b: symtable: p=0x%lx size=%lu", (unsigned long)p, (unsigned long)sym_sz);
     return 0;
@@ -114,8 +138,6 @@ static loc_code_t build_ksymbols(p3b_ctx& ctx, const char* name) {
 // ---- initramfs_file（movable）：原位引用 UEFI 加载位置，不做 KMMU 映射 ----
 static loc_code_t build_initramfs(p3b_ctx& ctx, const char* name) {
     if (ctx.em->ramfs_base && ctx.em->ramfs_size) {
-        ctx.iv->initramfs_file = { .base_ppn = ctx.em->ramfs_base >> 12,
-                                   .size     = ctx.em->ramfs_size };
         asset_reg_add(name, new movable_file_entry_t{ .base_ppn = ctx.em->ramfs_base >> 12,
                                                       .size     = ctx.em->ramfs_size });
         init_printk("Phase 3b: initramfs: p=%p size=%lu", (void*)ctx.em->ramfs_base, (unsigned long)ctx.em->ramfs_size);
@@ -235,12 +257,6 @@ static loc_code_t build_phyaddr_window(p3b_ctx& ctx, const char* name) {
     ctx.kmmu->map(kernel_mmu::make_entry(0, v, sz, KSPACE_RW_ACCESS,
                                          "phyaddr_window", KMMU_ENTRY_FLAG_PERSISTENT));
     init_printk("Phase 3b: high_window: [0,%p) at%p", (void*)top, (void*)v);
-    ctx.iv->Kspace_phyaddr_access_window = {
-        .vpn    = v >> 12,
-        .ppn    = 0,
-        .npages = sz >> 12,
-        .access = KSPACE_RW_ACCESS
-    };
     asset_reg_add(name, new vm_interval{ .vpn = v >> 12, .ppn = 0,
                                          .npages = sz >> 12, .access = KSPACE_RW_ACCESS });
     return 0;
@@ -268,7 +284,7 @@ static const struct {
 } k_p3b_assets[] = {
     { asset_names::fpa_bitmaps,     build_fpa_bitmaps },
     { asset_names::pages_arr,       build_pages_arr },
-    { asset_names::log_buffer,      build_log_buffer },
+    { asset_names::ring_log,        build_ring_log },
     { asset_names::ksymbols,        build_ksymbols },
     { asset_names::initramfs,       build_initramfs },
     { asset_names::gop_framebuffer, build_gop },
@@ -289,10 +305,6 @@ static constexpr uint64_t k_p3b_asset_count =
 loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
                     const ctx_early_mem* em, ctx_intervals* iv_out) {
     ctx_intervals iv = {};
-
-    // --- 清空 extra VM 数组 ---
-    iv.extra_vm_arr   = new loaded_VM_interval[8];
-    iv.extra_vm_count = 0;
 
     init_printk("Phase 3b: start...");
 
@@ -319,7 +331,7 @@ loc_code_t phase_3b(kernel_mmu* kmmu, BootInfoHeader* header,
         if (rc != 0) return rc;
     }
 
-    init_printk("Phase 3b: done: %lu extra VM entries", (unsigned long)iv.extra_vm_count);
+    init_printk("Phase 3b: done");
     *iv_out = iv;
     return 0;
 }

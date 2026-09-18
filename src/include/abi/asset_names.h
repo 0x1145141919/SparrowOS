@@ -26,7 +26,10 @@ namespace asset_names {
     // ── phase_3b：十资产 ──
     inline constexpr const char* fpa_bitmaps     = "fpa_bitmaps movable";
     inline constexpr const char* pages_arr       = "pages_arr movable";
-    inline constexpr const char* log_buffer      = "log_buffer movable";
+    // ring_log（blob）：日志环转生凭证 = DmesgRing_handoff（见 abi/kring_soul.h）。
+    //   size 0x20 = sizeof(DmesgRing_handoff)（对象区物理基址 + 缓冲区物理基址）。
+    //   ⚠ 名字里写死的尺寸必须与 kring_soul.h 的 static_assert 一致。
+    inline constexpr const char* ring_log        = "ring_log blob 0x20";
     inline constexpr const char* ksymbols        = "ksymbols movable";
     inline constexpr const char* initramfs       = "initramfs movable";
     inline constexpr const char* gop_framebuffer = "gop_framebuffer mem";
@@ -36,13 +39,16 @@ namespace asset_names {
     inline constexpr const char* phyaddr_window  = "phyaddr_window mem";
     
     // ── init_init ──
-    inline constexpr const char* gop_info        = "gop_info gop";
+    // gop_info（blob）：GOP 图形元信息 = GlobalBasicGraphicInfoType。
+    //   size 0x20 = sizeof(GlobalBasicGraphicInfoType)（见 primitive_gop_types.h static_assert）。
+    //   ⚠ 名字里写死的尺寸必须与该 static_assert 一致。
+    inline constexpr const char* gop_info        = "gop_info blob 0x20";
     inline constexpr const char* xsdt_pbase        = "xsdt_pbase scalar";
 
     // ── 全名总表（mem_init 全局遍历用；注册序 = 数组序）──
     inline constexpr const char* all[] = {
         kernel_code, kernel_data, kernel_rodata, kernel_bss, kimg,
-        fpa_bitmaps, pages_arr, log_buffer, ksymbols, initramfs,
+        fpa_bitmaps, pages_arr, ring_log, ksymbols, initramfs,
         gop_framebuffer, hpet_mmio, gs_complexes, hdstacks, phyaddr_window,
         gop_info,
         xsdt_pbase,
