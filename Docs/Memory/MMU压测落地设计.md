@@ -1,5 +1,9 @@
 # MMU（Kspace）压测落地设计 —— 三接口 + invalidate_tlb
 
+> ⚠️ **2026-09-18 收尾**：`kthread_ymir.cpp` 的 MMU 压测分支（鸠占鹊巢）已**摘除**，该文件恢复
+> 「仅业务初始化」；测试代码由 git 历史兜底（`f031441`/`a21f31a`/`2aeadac`）。本文档保留为
+> **设计/实测记录**（§11.x 结果仍然有效）。
+
 > **定位**：**鸠占鹊巢**——`kthread_ymir.cpp` 的 `if_real_init==false` 分支**整段替换**为 MMU 压测逻辑
 > （旧调度器/WRAITH 测试场景由 git 兜底，HEAD 即当前版本）。
 > **核心是 `invalidate_tlb`**（陈旧 TLB = 直接通往三重错误的生死线）。
