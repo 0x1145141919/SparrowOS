@@ -22,6 +22,8 @@
 #     --cap-gb N     trace 体积帽（默认 3 GB，超帽判 SIZECAP 并停）
 #     --stop-on RE  串口命中即停的正则（默认 'PANIC|kshell>|#WF#'）
 #     --fwcfg STR   追加 -fw_cfg（可重复）；如 'name=opt/sparrow/test,string=fonly'
+#     --accel A     加速器 tcg|kvm（默认 tcg）
+#     --cpu SPEC    CPU 模型（默认：tcg→'max,+x2apic'；kvm→'host'）
 #     --repeat N     连跑 N 次，抓到任一异常样本即停（默认 1）
 #     --base DIR     仓库布局根（默认 /home/PS/PS_git/OS_pj_uefi）
 #     --dump-always  连正常样本也转储（默认只对 PANIC/HANG/SIZECAP 转储）
@@ -61,6 +63,7 @@ QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
 OUTDIR=""; TAG="trace"; TIMEOUT=90; CAP_GB=3; STOP_ON='PANIC|kshell>|#WF#'; REPEAT=1
 DUMP_ALWAYS=0; DUMP_VMCORE=0; DO_MKCORE=0; DO_SELFCHECK=0; DUMP_ONLY_FAULT=0; SKIP_NOISE_RE=""
 FWCFG_ARG=()
+ACCEL="tcg"; CPU=""
 
 usage() { awk 'NR==1{next} /^set /{exit} {print}' "$0"; exit "${1:-0}"; }
 
@@ -72,6 +75,8 @@ while [ $# -gt 0 ]; do
     --cap-gb)  CAP_GB="${2:?}";  shift;;
     --stop-on) STOP_ON="${2:?}"; shift;;
     --fwcfg)   FWCFG_ARG+=(-fw_cfg "${2:?}"); shift;;
+    --accel)   ACCEL="${2:?}"; shift;;
+    --cpu)     CPU="${2:?}";        shift;;
     --repeat)  REPEAT="${2:?}";  shift;;
     --base)    BASE="${2:?}";    shift;;
     --dump-always) DUMP_ALWAYS=1;;
@@ -150,9 +155,15 @@ run_one() {
   local tag="$1" tr="$OUTDIR/$1.trace" ser="$OUTDIR/$1.serial"
   local cap=$(( CAP_GB * 1024 * 1024 * 1024 ))
   local qsock="$OUTDIR/$1.qmp"
-  # 仅转储时才挂 QMP（避免非转储轮被多一个 chardev 扰动 TCG 交织）
+  # 挂 QMP：转储需要；KVM 下另需以 QMP STOP 事件判冻结（抳制串口不可靠）
   local qmp_arg=()
-  if [ "$DUMP_VMCORE" -gt 0 ]; then rm -f "$qsock"; qmp_arg=(-qmp "unix:$qsock,server=on,wait=off"); fi
+  if [ "$DUMP_VMCORE" -gt 0 ] || [ "$ACCEL" = kvm ]; then rm -f "$qsock"; qmp_arg=(-qmp "unix:$qsock,server=on,wait=off"); fi
+  # accel/cpu：未显式指定 CPU 时按 accel 给默认；KVM 不支持 -d in_asm（TCG 专有）
+  local cpu_spec="$CPU"
+  # kvm 需 +invtsc（内核 TSC 门要求 CPUID.80000007H EDX[8]）；host 满足 TSC-deadline(CPUID.1 ECX[24])
+  if [ -z "$cpu_spec" ]; then case "$ACCEL" in kvm) cpu_spec="host,+invtsc";; *) cpu_spec="max,+x2apic";; esac; fi
+  local d_args=(-D "$tr")
+  if [ "$ACCEL" != kvm ]; then d_args=(-D "$tr" -d "$D_CATS"); fi
   stage_esp
   "$QEMU_BIN" \
     -no-reboot -bios "$VM/OVMF.fd" -smp "$SMP" \
@@ -165,10 +176,10 @@ run_one() {
     -drive file="$VM/arch-root.qcow2",format=qcow2,if=none,id=nvme_disk \
     -device nvme,serial=deadbeef,drive=nvme_disk \
     -netdev user,id=net0 -m 8192 \
-    -cpu "max,+x2apic" -serial stdio -display none -monitor none \
+    -accel "$ACCEL" -cpu "$cpu_spec" -serial stdio -display none -monitor none \
     "${FWCFG_ARG[@]}" \
     "${qmp_arg[@]}" \
-    -D "$tr" -d "$D_CATS" >"$ser" 2>&1 </dev/null &
+    "${d_args[@]}" >"$ser" 2>&1 </dev/null &
   local pid=$! s=$SECONDS reason="" sz flag="" wpid=""
   # QMP「STOP 事件」常驻等待器：guest 冻结（魔法断点）时零轮询开销地通知本脚本
   if [ "${#qmp_arg[@]}" -gt 0 ]; then
