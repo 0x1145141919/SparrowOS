@@ -55,7 +55,7 @@ extern bool if_bq_sweeper;
 #include <stdint.h>
 
 constexpr uint64_t WRAITH_CANARY_MAGIC = 0x57425241495448ull;  // "WBRAITH"
-constexpr uint32_t WRAITH_TEST_MAX     = 128;
+constexpr uint32_t WRAITH_TEST_MAX     = 256;
 
 // 每个测试线程登记一条（tool 直接按符号读它）。
 struct wraith_test_slot {

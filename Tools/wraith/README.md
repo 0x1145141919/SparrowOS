@@ -46,7 +46,10 @@ cmake -DKTHREAD_TEST_SCENARIO=OFF . && make kernel.elf initramfs
 - **模式开关** `if_real_init`（bool）：`true`=业务初始化 / `false`=WRAITH 测试初始化
   （测试构建默认 `false`）。业务线程（BQ/i8042/NVMe/kshell）对测试是噪声，默认跳过；
   `if_bq_sweeper`（bool）可单独保留 BQ 兜底计时器线程。
-- 角色：纯 CPU 竞争(yield) / sleep（被 kicker **跨核唤醒**，打 F4 唤醒窗口）/ 自派生 / 退出；
+- 角色：纯 CPU 竞争(yield) / sleep（被 kicker **跨核唤醒**，打 F4 唤醒窗口）/ 自派生 / 退出 /
+  **bq 路径**（`block_if_equal` 等待者 + `pop_all`+`bq_flush_pending` 唤醒者）；
+- **bq 超时路径**：专用队列灌入 >64 个 orphan（无人唤醒）⇒ 5s 后 `pop_timeouts` 分批弹走，
+  打 F1 的 batch_count 复位 + `arr[64]` 写前边界判；该路径需 guest 时间 >5s，带负载连跑请用 `--timeout 150`。
 - **跑完不原子销毁**：`kthread_exit` 后不 `release` ⇒ 僵尸停车区保留其内核栈，供截停后取证；
 - 每线程在**浅层帧**持一枚栈金丝雀（`MAGIC^tid`），热循环内每轮自校验，被异核浅写踩坏即 `wraith_freeze`；
 - **测试专用日志环** `wraith_test_ring`（与 `interrupt_log_ring` 分离：一放线程上下文、一放 IRQ 上下文）——

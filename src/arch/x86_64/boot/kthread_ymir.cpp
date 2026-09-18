@@ -19,6 +19,7 @@
 #ifdef KTHREAD_TEST_SCENARIO
 #include "util/wraith_probe.h"                              // wraith::now_running_task / rsp_now
 #include "Scheduler/task.h"                                 // task::get_tid
+#include "Scheduler/bq_system.h"                            // block_queue / blocked_tasks_clamps_t
 #include "util/debug_tmp_ring_buff.h"                       // debug_tmp_ring_buff（测试专用环）
 #include "kcirclebufflogMgr.h"                              // DmesgRingBuffer_soul
 #include "memory/FreePagesAllocator.h"                      // FreePagesAllocator::alloc
@@ -142,6 +143,18 @@ static void wraith_test_ring_init() {
     wraith_test_ring = new (g_wraith_ring_obj) debug_tmp_ring_buff(&g_wraith_ring_soul);
 }
 
+// ── 测试用 block_queue（bq 路径：block_if_equal / pop_all / bq_flush_pending / pop_timeouts）──
+static block_queue*      g_test_bq    = nullptr;
+static bq_id_t           g_test_bq_id = BQ_ID_INVALID;
+alignas(block_queue) static uint8_t g_test_bq_obj[sizeof(block_queue)];
+static block_queue*      g_test_bq_to    = nullptr;   // 专用超时队列（无唤醒者）
+static bq_id_t           g_test_bq_to_id = BQ_ID_INVALID;
+alignas(block_queue) static uint8_t g_test_bq_to_obj[sizeof(block_queue)];
+static volatile uint64_t g_bq_token        = 0;   // waiter 的 *checker（waker 递增以唤醒）
+static volatile uint64_t g_bq_orphan_token = 1;   // orphan 的 *checker（永不改 ⇒ 靠超时唤醒）
+static volatile uint64_t g_bq_wakes        = 0;   // waiter 被唤醒次数
+static volatile uint64_t g_bq_timeouts     = 0;   // orphan 超时唤醒次数
+
 #define WT_LOG(...)                                                        \
     do {                                                                   \
         if (wraith_test_ring) {                                            \
@@ -175,6 +188,9 @@ enum wraith_role : uint64_t {
     WROLE_SLEEPER = 2,   // sleep，由 kicker 跨核唤醒（打 F4 唤醒/偷取窗口）
     WROLE_SPAWNER = 3,   // 自派生（线程树）
     WROLE_EXITER  = 4,   // 跑一段后 exit（set_zombie，不 release ⇒ 栈停车）
+    WROLE_BQ_WAITER = 5, // block_if_equal 阻塞→ pop_all/bq_flush_pending 唤醒（bq 路径）
+    WROLE_BQ_WAKER  = 6, // 递增 token + pop_all + bq_flush_pending（唤醒 waiter）
+    WROLE_BQ_ORPHAN = 7, // 阻塞且永不唤醒 ⇒ 靠 5s 超时 pop_timeouts 弹走
 };
 
 int slot_claim(uint64_t tid, uint64_t role, uint64_t canary_addr, uint64_t canary_expected) {
@@ -228,6 +244,30 @@ void wraith_hotloop(uint64_t role, int slot) {
             for (volatile uint64_t k = 0; k < 500000; ++k) {}
             kthread_exit(0);                         // zombie；调用方不 release ⇒ 栈停车
             break;
+        case WROLE_BQ_WAITER: {                      // bq 阻塞 → pop_all/flush 唤醒
+            if (!g_test_bq) { kthread_yield(); break; }
+            block_if_equal(g_test_bq_id, (uint64_t*)&g_bq_token, g_bq_token);
+            g_bq_wakes++;
+            break;
+        }
+        case WROLE_BQ_WAKER: {                       // 递增 token + pop_all + bq_flush_pending
+            if (!g_test_bq) { kthread_yield(); break; }
+            __atomic_add_fetch((uint64_t*)&g_bq_token, 1, __ATOMIC_ACQ_REL);
+            blocked_tasks_clamps_t clamps;
+            {
+                spinlock_interrupt_about_guard gq(g_test_bq->qlock);
+                g_test_bq->pop_all(&clamps);
+            }
+            bq_flush_pending(&clamps, false);
+            kthread_yield();
+            break;
+        }
+        case WROLE_BQ_ORPHAN: {                      // 阻塞且无人唤醒 ⇒ 靠 5s pop_timeouts
+            if (!g_test_bq_to) { kthread_yield(); break; }
+            block_if_equal(g_test_bq_to_id, (uint64_t*)&g_bq_orphan_token, g_bq_orphan_token);
+            g_bq_timeouts++;
+            break;
+        }
         default:
             kthread_yield();
             break;
@@ -257,10 +297,24 @@ static void* wraith_worker_entry(void* arg) {
 namespace {
 void* wraith_root(void* arg) {
     (void)arg;
+    // 建一个测试 block_queue（bq 路径载体）。
+    if (!g_test_bq) {
+        g_test_bq = new (g_test_bq_obj) block_queue();
+        g_test_bq_id = bq_alloc(g_test_bq);
+        WT_LOG("WT bq: qid=%llu\n", (unsigned long long)g_test_bq_id);
+    }
+    // 专用超时队列（无唤醒者）：靠 5s 超时 pop_timeouts 弹走。
+    if (!g_test_bq_to) {
+        g_test_bq_to = new (g_test_bq_to_obj) block_queue();
+        g_test_bq_to_id = bq_alloc(g_test_bq_to);
+        WT_LOG("WT bq_to: qid=%llu\n", (unsigned long long)g_test_bq_to_id);
+    }
     const uint64_t roles[] = { WROLE_BURNER, WROLE_BURNER, WROLE_SLEEPER,
-                               WROLE_SPAWNER, WROLE_EXITER };
+                               WROLE_SPAWNER, WROLE_EXITER,
+                               WROLE_BQ_WAITER, WROLE_BQ_WAITER, WROLE_BQ_WAKER,
+                               WROLE_BQ_ORPHAN };
     // 派生阶段：多轮混合线程（自相似线程树的根）。
-    for (int rep = 0; rep < 6; ++rep) {
+    for (int rep = 0; rep < 4; ++rep) {
         for (uint64_t r : roles) {
             kthread_creating_package pkg = {};
             pkg.func_raw   = (uint64_t)wraith_worker_entry;
@@ -271,8 +325,20 @@ void* wraith_root(void* arg) {
         }
         kthread_sleep(20000);
     }
+    // 专用超时队列灌入 >64 个 orphan（无人唤醒）⇒ 5s 后 pop_timeouts 必须分批（max 64/批），
+    // 打 F1「入口复位 batch_count + 写前边界判」的批量边界。
+    if (g_test_bq_to && g_test_bq_to_id != BQ_ID_INVALID) {
+        for (int i = 0; i < 80; ++i) {
+            kthread_creating_package pkg = {};
+            pkg.func_raw   = (uint64_t)wraith_worker_entry;
+            pkg.args[0]    = (uint64_t)WROLE_BQ_ORPHAN;
+            pkg.launch_pid = fast_get_processor_id();
+            KURD_t k = KURD_t();
+            creat_kthread(&pkg, &k);
+        }
+    }
     // kicker 阶段：反复跨核唤醒 sleeper（打 F4「仍未切离窗口」）。
-    constexpr uint64_t KICK_ROUNDS = 1500;           // ~1.5s（guest 时间）
+    constexpr uint64_t KICK_ROUNDS = 6000;           // ~6s（跨过 5s 超时扫一轮）
     for (uint64_t round = 0; round < KICK_ROUNDS; ++round) {
         const uint64_t n = g_wraith_slot_count;
         for (uint64_t i = 0; i < n; ++i) {
@@ -282,6 +348,8 @@ void* wraith_root(void* arg) {
         }
         kthread_sleep(1000);
     }
+    WT_LOG("WT bq stats: wakes=%llu timeouts=%llu\n",
+           (unsigned long long)g_bq_wakes, (unsigned long long)g_bq_timeouts);
     // 计划截停：冻结整机，交给外部栈检查工具（Tools/wraith/）。
     wraith_freeze("planned");
     for (;;) kthread_sleep(1000000);
