@@ -85,11 +85,13 @@
 `QEMU_BIN`（默认 PATH 里的 `qemu-system-x86_64`；⚠️ 跑取证请显式指向打过
 `patches/qemu-ioport80-magic-bp.patch` 的构建，并用 `--selfcheck` 自检）· `VMCORE_TIMEOUT`（默认 900s）。
 
-**停止判据（任一命中即停）**：串口命中 `--stop-on` / 串口 `#WF#`（独立于 `--stop-on`）/
+**停止判据（任一命中即停）**：串口命中 `--stop-on` / 串口 `#WF#` 或 `#TB#`（guest 冻结记号，
+独立于 `--stop-on`；`#WF#` = 异常首爆冻结，`#TB#` = 测试分支计划截停，见 `Tools/wraith/`）/
 QMP 观测到 `STOP`（guest 冻结，经 `qmp-wait-stop.py`）/ 超时 / trace 超帽。
 对应 `REASON` = `MATCH` / `MAGICBP` / `MAGICBP` / `TIMEOUT` / `SIZECAP`。
 
-**`RESULT` 分类**：`KSHELL`（正常到提示符）· `PANIC` · `FAULT`（guest 首爆即冻结，见 §3.4）·
+**`RESULT` 分类**：`KSHELL`（正常到提示符）· `PANIC` · `FAULT`（guest 冻结：`#WF#`/`#TB#` 经魔法断点，
+见 §3.4）·
 `HANG`（无 panic 无 kshell）· `SIZECAP`（风暴到帽）· `NOISE`（命中 `--skip-noise-re`，非目标）· `OTHER`。
 
 **转储门控**（决定哪种结局才转储）：`--dump-always` ⇒ 一律；
@@ -196,6 +198,15 @@ trace-sym.py <trace> [--init init.elf] [--kernel kernel.elf]
 | `<tag>.vmcore.regs` | 同上 | 同上 | HMP `info registers -a`（全 CPU 段基址）|
 | `<tag>.core` | `vmcore-mkcore.py`（`--mkcore`）| 有 `.vmcore` 时 | 虚拟视角 GDB core（稀疏，物理窗口）|
 | `<tag>.map-report.txt` | 同上（`--report`）| 有 `.vmcore` 时 | 可疑页表项清单（WRAITH 探针）|
+
+---
+
+### 3.6 `Tools/wraith/` —— 截停后栈检查（WRAITH 验收专用）
+
+`wraith-stackcheck.py`（GDB 内嵌 Python）+ `stackcheck.sh`：在冻结快照（`.core`）或实时 gdbstub 上校验
+**INV-A 双调度金丝雀**（同一 task 不得同时登记在两个核的 `g_cpu_running[]`）与测试线程栈/金丝雀自洽。
+配套的 guest 侧测试分支（`-DKTHREAD_TEST_SCENARIO`，见 `src/include/boot/kthread_ymir.h`）以 `#TB#` 截停。
+详见 `Tools/wraith/README.md` 与 `Docs/Debug/WRAITH/`。
 
 ---
 

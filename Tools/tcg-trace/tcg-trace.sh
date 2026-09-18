@@ -38,8 +38,9 @@
 #         QEMU_BIN(默认 PATH 里的 qemu-system-x86_64)。⚠️ 跑取证请显式指向打过
 #                 patches/qemu-ioport80-magic-bp.patch 的构建产物，并用 --selfcheck 自检。
 #
-#   停止判据（任一）: 串口命中 --stop-on / QMP 观测到 STOP 事件（guest 冻结）/
-#                     超时 / trace 超帽。guest 冻结的样本 RESULT=FAULT、REASON=MAGICBP。
+#   停止判据（任一）: 串口命中 --stop-on / 串口 #WF#（fault 冻结）或 #TB#（测试截停）/
+#                     QMP 观测到 STOP 事件（guest 冻结）/ 超时 / trace 超帽。
+#                     guest 冻结的样本 RESULT=FAULT、REASON=MAGICBP（#TB# 见 Tools/wraith/）。
 #   噪声：命中 --skip-noise-re 的样本 RESULT=NOISE（不转储、连跑继续）。
 #
 # 输出: <outdir>/<tag>.trace  (QEMU -D 日志)
@@ -172,7 +173,7 @@ run_one() {
     wpid=$!
   fi
   while kill -0 "$pid" 2>/dev/null; do
-    if grep -q '#WF#' "$ser" 2>/dev/null; then reason=MAGICBP; break; fi   # guest 冻结记号（独立于 --stop-on）
+    if grep -qE '#WF#|#TB#' "$ser" 2>/dev/null; then reason=MAGICBP; break; fi   # guest 冻结记号（#WF#=fault / #TB#=测试截停；独立于 --stop-on）
     grep -qE "$STOP_ON" "$ser" 2>/dev/null && { reason=MATCH; break; }
     if [ -n "$flag" ] && [ -e "$flag" ]; then reason=MAGICBP; break; fi
     [ $((SECONDS - s)) -ge "$TIMEOUT" ] && { reason=TIMEOUT; break; }
@@ -186,9 +187,9 @@ run_one() {
 
   # 先分类（在杀 QEMU 之前），再决定是否需要内存转储
   local res=OTHER
-  if   grep -q 'kshell>' "$ser" 2>/dev/null; then res=KSHELL
+  if   [ "$reason" = MAGICBP ]; then res=FAULT
+  elif grep -q 'kshell>' "$ser" 2>/dev/null; then res=KSHELL
   elif grep -q 'PANIC'   "$ser" 2>/dev/null; then res=PANIC
-  elif [ "$reason" = MAGICBP ]; then res=FAULT
   elif [ "$reason" = TIMEOUT ]; then res=HANG
   elif [ "$reason" = SIZECAP ]; then res=SIZECAP
   fi

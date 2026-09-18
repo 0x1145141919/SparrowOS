@@ -160,6 +160,8 @@ add_executable(kernel.elf
     src/utils/kshell_commands_regist.cpp
     src/arch/x86_64/panic.cpp
     src/arch/x86_64/boot/kinit.cpp
+    src/arch/x86_64/boot/kthread_ymir.cpp
+    src/arch/x86_64/boot/shutdown.cpp
     src/arch/x86_64/boot/basic_init.cpp
     src/arch/x86_64/boot/exec_env_prepare.cpp
     src/arch/x86_64/boot/info_pkg_link.cpp
@@ -232,6 +234,16 @@ target_link_libraries(kernel.elf PRIVATE
     kspace_base_flags x86_kflags cpp_macro nasm_flags
 )
 target_link_options(kernel.elf PRIVATE ${KERNEL_LINK_OPTS})
+
+# ─────────────────────────────────────────────────────
+# WRAITH 验收 · 测试分支（默认关）
+#   打开 ⇒ kthread_ymir.cpp 编译进测试线程树 + 截停闸门；
+#   见 src/include/boot/kthread_ymir.h 与 Tools/wraith/。
+# ─────────────────────────────────────────────────────
+option(KTHREAD_TEST_SCENARIO "Build SparrowOS with the WRAITH kthread test scenario" OFF)
+if(KTHREAD_TEST_SCENARIO)
+    target_compile_definitions(kernel.elf PRIVATE KTHREAD_TEST_SCENARIO)
+endif()
 
 # =====================================================
 # init.elf
