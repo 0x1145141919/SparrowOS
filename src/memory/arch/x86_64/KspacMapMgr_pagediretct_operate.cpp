@@ -589,7 +589,9 @@ KURD_t KspacePageTable::_4lv_pdpte_1GB_entries_clear(vaddr_t vaddr_base, uint16_
             return fatal;
         }
         entry.raw = 0;
-        invalidate_tlb_by_vaddr(vaddr_base + ((pdpt_index + i) << 30)); // 1GB 步长
+        // 修复：原为 vaddr_base + ((pdpt_index + i) << 30)（pdpt_index 已是绝对合并索引，
+        // 再乘 1GB 即 double-count → invlpg 打在野地址，本核 1GB TLB 项未按此刷新）。
+        invalidate_tlb_by_vaddr(vaddr_base + ((uint64_t)i << 30)); // 1GB 步长
     }
 
     // 注意：1GB 页清除后不需要回收下级页表（因为 PS=1 时没有下级）

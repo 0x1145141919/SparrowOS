@@ -353,7 +353,7 @@ seg_to_pages_info_pakage_t KspacePageTable::disable_VMentry(const vm_interval& i
                         rc = _4lv_pde_2MB_entries_clear(e.vbase, count);
                         break;
                     }
-                    case_4KB_SIZE: {
+                    case _4KB_SIZE: {   // 修复：原为 `case_4KB_SIZE:`（漏空格→被当作 goto 标签）
                        uint16_t count = static_cast<uint16_t>(e.num_of_pages);
                         rc = _4lv_pte_4KB_entries_clear(e.vbase, count);
                         break;
