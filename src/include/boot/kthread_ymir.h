@@ -11,10 +11,9 @@
 //   由 kthread_ymir 派生或管理的「线程初始化」全部集中在本文件——它是
 //   运行时线程世界的入口，也是后续调度器/线程压测语料（硬编码场景）的落点。
 //
-// 后续测试约定（规划 · 硬编码法）：
-//   同一 kernel.elf，按场景名在此派生测试线程（Collatz_kthread 等），
-//   压测调度器状态机与跨核并发；release 不引入测试场景分支。
-//   （WRAITH 收尾的调度器大压测即落点于此，见 Docs/Debug/WRAITH/RESOLUTION_2026-09-17.md §4）
+// 后续测试约定（硬编码法）：
+//   同一 kernel.elf，测试分支按场景派生测试线程；release 不引入测试场景分支。
+//   当前该分支（if_real_init==false）由 MMU 压测占用（见下 KTHREAD_TEST_SCENARIO 段）。
 // ════════════════════════════════════════════════════════════════
 
 // 始祖线程入口：由 create_first_kthread()（kinit.cpp）作为首个 kthread 派生。
@@ -40,41 +39,24 @@ extern bool if_real_init;
 extern bool if_bq_sweeper;
 
 // ════════════════════════════════════════════════════════════════
-// WRAITH 验收 · 测试分支（仅 -DKTHREAD_TEST_SCENARIO 时编译）
+// 测试分支（仅 -DKTHREAD_TEST_SCENARIO 时编译）——【鸠占鹊巢：MMU 压测】
 //
-// 目的：验证 F1–F5 修复的牢固性。ymir 派生一棵【测试线程树】：
-//   · 线程可自派生（自相似）；
-//   · 跑完【不原子销毁】（set_zombie 后不 release）→ 僵尸停车区保留其内核栈，
-//     供截停后栈检查工具（Tools/wraith/）取证；
-//   · 在“合适时机”主动触发魔法断点冻结（wraith_freeze）；
-//   · 每个测试线程在【浅层帧】持一枚栈金丝雀，并在每轮热路径自校验。
-// 观测低开销：金丝雀/登记只在热循环内做原子读写与比较，不打印、不上锁。
-// 详见 Docs/Debug/WRAITH/（战报）与 Tools/wraith/（工具）。
+// 本分支现由【MMU（Kspace 三接口 + invalidate_tlb）压测】占用（见
+// Docs/Memory/MMU压测落地设计.md）。旧调度器/WRAITH 测试场景已移除，
+// 由 git 历史兜底（HEAD 一带；调度器压测将来按 Docs/Sched/ 两份文档现场重建）。
+//
+// 保留的通用地基：
+//   · wraith_freeze() 截停闸门（串口 #TB#/reason + outb(0x80,0xDB) 魔法断点）；
+//   · wraith_test_ring（线程上下文日志环，ring-dump.py 可捞）。
+// 新增：g_mmu_* 探针 + wraith 断言账本（g_mmu_ledger），tool 直接按符号读。
 // ════════════════════════════════════════════════════════════════
 #ifdef KTHREAD_TEST_SCENARIO
 #include <stdint.h>
 
-constexpr uint64_t WRAITH_CANARY_MAGIC = 0x57425241495448ull;  // "WBRAITH"
-constexpr uint32_t WRAITH_TEST_MAX     = 256;
+// MMU 测试入口：由 kthread_ymir 在 FLAG 打开时调用。
+// 模式经 fw_cfg（opt/sparrow/test）选择：full(默认) / fonly / pf。
+void mmu_test_main();
 
-// 每个测试线程登记一条（tool 直接按符号读它）。
-struct wraith_test_slot {
-    volatile uint64_t in_use;
-    volatile uint64_t tid;
-    volatile uint64_t task_ptr;         // task 对象地址（tool 用它读 task 字段）
-    volatile uint64_t role;
-    volatile uint64_t seq;              // 热循环轮数
-    volatile uint64_t last_cpu;
-    volatile uint64_t canary_addr;      // 该线程【栈上】金丝雀的地址
-    volatile uint64_t canary_expected;  // 期望值 = MAGIC ^ tid
-};
-
-extern wraith_test_slot g_wraith_slots[WRAITH_TEST_MAX];
-extern volatile uint64_t g_wraith_slot_count;
-
-// 测试入口：由 kthread_ymir 在 FLAG 打开时调用（派生 root）。
-void kthread_test_main();
-
-// 截停闸门：串口打 #TB# → 环留证 → outb(0x80,0xDB)（QEMU 补丁 vm_stop）→ cli;hlt。
+// 截停闸门：串口打 #TB#/reason → 环留证 → outb(0x80,0xDB)（QEMU 补丁 vm_stop）→ cli;hlt。
 void wraith_freeze(const char* reason);
 #endif

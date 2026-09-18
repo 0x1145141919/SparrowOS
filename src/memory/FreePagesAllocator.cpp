@@ -681,6 +681,12 @@ fpa_stats FreePagesAllocator::get_fpa_stats()
     return get_fpa_stats(fast_get_processor_id());
 }
 
+// 总 FPA 预算（匿名 namespace 里 g_all_avaliable_mem_accumulate 的对外窗口）。
+uint64_t FreePagesAllocator::get_total_budget_bytes()
+{
+    return g_all_avaliable_mem_accumulate;
+}
+
 fpa_stats FreePagesAllocator::get_fpa_stats(uint64_t pid)
 {
     return statistics_arr[pid];

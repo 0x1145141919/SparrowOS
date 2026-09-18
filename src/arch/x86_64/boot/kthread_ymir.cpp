@@ -3,8 +3,11 @@
 //
 // 从 kinit.cpp 拆出（2026-09-18）：kinit 只留「内存成熟 → 跳入线程运行时」的
 // 引导胶水；凡由 kthread_ymir 派生/管理的线程初始化集中于此。
-// 后续调度器/线程压测（硬编码场景）落点亦在此文件。
 // 接口与符号声明见 src/include/boot/kthread_ymir.h。
+//
+// 【测试分支（if_real_init==false）】：
+//   2026-09-18 起由 MMU（Kspace 三接口 + invalidate_tlb）压测占用（鸠占鹊巢）。
+//   旧调度器/WRAITH 测试逻辑已移除，git 兜底；设计见 Docs/Memory/MMU压测落地设计.md。
 // ════════════════════════════════════════════════════════════════
 #include "boot/kthread_ymir.h"
 
@@ -17,24 +20,25 @@
 #include "Scheduler/kthread_abi.h"                          // creat_kthread / kthread_creating_package / kthread_sleep
 
 #ifdef KTHREAD_TEST_SCENARIO
-#include "util/wraith_probe.h"                              // wraith::now_running_task / rsp_now
-#include "Scheduler/task.h"                                 // task::get_tid
-#include "Scheduler/bq_system.h"                            // block_queue / blocked_tasks_clamps_t
+#include "util/wraith_probe.h"                              // wraith::rsp_now / gs_now / now_running_task
 #include "util/debug_tmp_ring_buff.h"                       // debug_tmp_ring_buff（测试专用环）
 #include "kcirclebufflogMgr.h"                              // DmesgRingBuffer_soul
-#include "memory/FreePagesAllocator.h"                      // FreePagesAllocator::alloc
-#include "memory/main_phyaddr_access_window.h"              // PHYACC_VA
+#include "memory/AddresSpace.h"                             // Kspace_pinterval_alloc_and_map / KspacePageTable / kspace_vm_table
+#include "memory/memory_base.h"                             // vm_interval / VM_DESC / pgaccess / page_state_t / buddy_alloc_params
+#include "memory/FreePagesAllocator.h"                      // FreePagesAllocator::alloc/free/get_total_budget_bytes
+#include "memory/main_phyaddr_access_window.h"              // PHYACC_VA（物理主窗口）
+#include "arch/x86_64/mem_init.h"                            // logical_processor_count
 #include "util/lock.h"                                      // spinlock_interrupt_about_guard
 #endif
 
-// ── 运行模式：true = 业务初始化 / false = WRAITH 测试初始化 ──
+// ── 运行模式：true = 业务初始化 / false = 测试初始化（当前为 MMU 压测） ──
 // 声明在 kthread_ymir.h（供外部置位）；此处给初值。
 #ifdef KTHREAD_TEST_SCENARIO
 bool if_real_init = false;      // 测试构建默认走测试初始化
 #else
 bool if_real_init = true;       // 正常构建恒业务初始化
 #endif
-// 是否派生 BQ 超时扫描线程（“兜底计时器”）；两档都可开关，测试可按需保留该噪声源。
+// 是否派生 BQ 超时扫描线程（“兜底计时器”）；两档都可开关。
 bool if_bq_sweeper = true;
 // ────────────────────────────────────────────────────────────────
 // 测试 / 压测线程
@@ -102,10 +106,9 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
     }
 #ifdef KTHREAD_TEST_SCENARIO
     else {
-        // ── WRAITH 测试初始化 ──
-        // 业务线程对本测试是噪声：默认不起；BQ 兜底计时器按需保留（if_bq_sweeper）。
-        if (if_bq_sweeper) spawn_bq_sweeper();
-        kthread_test_main();
+        // ── 测试初始化：MMU 压测（鸠占鹊巢）──
+        // 业务/调度噪声对本测试无关，默认不起（如需可自行加）。
+        mmu_test_main();
     }
 #endif
 
@@ -118,17 +121,17 @@ void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"�
 }
 
 // ════════════════════════════════════════════════════════════════
-// WRAITH 验收 · 测试分支实现（仅 -DKTHREAD_TEST_SCENARIO）
-// 见 kthread_ymir.h 顶部说明；战报 Docs/Debug/WRAITH/；工具 Tools/wraith/。
+// 测试分支实现 · MMU 压测（仅 -DKTHREAD_TEST_SCENARIO）
+// 设计：Docs/Memory/MMU压测落地设计.md
+//   · 三接口：Kspace_pinterval_alloc_and_map / Kspace_phyaddr_direct_map / Kspace_phyaddr_direct_unmap
+//   · 物理页一律走 FPA 圈地（kernel_pinned），测试水位线 = 总 FPA 预算 × 75%
+//   · 双窗口验证：PHYACC_VA(phys) ↔ 新鲜映射窗
+//   · invalidate_tlb：同 VA 改投不同物理页再读（陈旧 TLB → 可观测错值）
+// 观测：g_mmu_* 探针 + g_mmu_ledger 断言账本（tool 直接按符号读）。
 // ════════════════════════════════════════════════════════════════
 #ifdef KTHREAD_TEST_SCENARIO
 
-wraith_test_slot g_wraith_slots[WRAITH_TEST_MAX];
-volatile uint64_t g_wraith_slot_count = 0;
-
-// ── 测试专用日志环（与 interrupt_log_ring 分离）────────────────
-// interrupt_log_ring 放 IRQ 上下文日志；本环放 WRAITH 测试的线程上下文日志。
-// 经主窗口（PHYACC_VA）映射；tool 侧: ring-dump.py --symbol wraith_test_ring。
+// ── 测试专用日志环（ring-dump.py --symbol wraith_test_ring）────
 debug_tmp_ring_buff* wraith_test_ring = nullptr;
 alignas(debug_tmp_ring_buff) static uint8_t g_wraith_ring_obj[sizeof(debug_tmp_ring_buff)];
 static DmesgRingBuffer_soul g_wraith_ring_soul;
@@ -143,18 +146,6 @@ static void wraith_test_ring_init() {
     wraith_test_ring = new (g_wraith_ring_obj) debug_tmp_ring_buff(&g_wraith_ring_soul);
 }
 
-// ── 测试用 block_queue（bq 路径：block_if_equal / pop_all / bq_flush_pending / pop_timeouts）──
-static block_queue*      g_test_bq    = nullptr;
-static bq_id_t           g_test_bq_id = BQ_ID_INVALID;
-alignas(block_queue) static uint8_t g_test_bq_obj[sizeof(block_queue)];
-static block_queue*      g_test_bq_to    = nullptr;   // 专用超时队列（无唤醒者）
-static bq_id_t           g_test_bq_to_id = BQ_ID_INVALID;
-alignas(block_queue) static uint8_t g_test_bq_to_obj[sizeof(block_queue)];
-static volatile uint64_t g_bq_token        = 0;   // waiter 的 *checker（waker 递增以唤醒）
-static volatile uint64_t g_bq_orphan_token = 1;   // orphan 的 *checker（永不改 ⇒ 靠超时唤醒）
-static volatile uint64_t g_bq_wakes        = 0;   // waiter 被唤醒次数
-static volatile uint64_t g_bq_timeouts     = 0;   // orphan 超时唤醒次数
-
 #define WT_LOG(...)                                                        \
     do {                                                                   \
         if (wraith_test_ring) {                                            \
@@ -163,208 +154,555 @@ static volatile uint64_t g_bq_timeouts     = 0;   // orphan 超时唤醒次数
         }                                                                  \
     } while (0)
 
-// 测试线程入口（内部链接；func_raw 取的就是它的地址）。前向声明供 spawner 使用。
-static void* wraith_worker_entry(void* arg);
+// ── 断言账本（tool 按符号读；失败即截停）──────────────────────
+struct mmu_ledger_t {
+    volatile uint64_t n_total;
+    volatile uint64_t n_pass;
+    volatile uint64_t n_fail;
+    volatile uint64_t first_fail;   // 失败用例编码（见 case code）
+};
+mmu_ledger_t g_mmu_ledger = {};
+
+// ── 探针（tool 按符号读）──────────────────────────────────────
+volatile uint64_t g_mmu_mode            = 0;   // 0=full 1=fonly 2=pf
+volatile uint64_t g_mmu_iters           = 0;   // 热循环轮数
+volatile uint64_t g_mmu_mismatch        = 0;   // 陈旧 TLB/错值命中数
+volatile uint64_t g_mmu_presence_fail   = 0;   // unmap 后仍 present 计数
+volatile uint64_t g_mmu_pf_expected     = 0;   // 期望 #PF 命中标志（I-PF）
+volatile uint64_t g_mmu_fpa_alloc       = 0;   // 本测试 FPA 圈地次数
+volatile uint64_t g_mmu_fpa_free        = 0;   // 本测试 FPA 归还次数
+volatile uint64_t g_mmu_outstanding_bytes = 0;
+volatile uint64_t g_mmu_budget_bytes    = 0;   // 水位线
+volatile uint64_t g_mmu_huge1g_hits     = 0;   // 1GB 分支命中（PDPTE_HUGE 增量）
+volatile uint64_t g_mmu_huge1g_fallback = 0;   // 1GB 拿不到（降级）
+volatile uint64_t g_mmu_shootdown_count = 0;   // 触发 shootdown 次数（S 段用）
+volatile uint64_t g_mmu_last_1g_va = 0;        // I-4c 最近一次 1GB 映射 VA
+volatile uint64_t g_mmu_last_1g_pa = 0;        // I-4c 最近一次 1GB 物理基
 
 namespace {
 
-// 与 asm FAULT_FREEZE 同款：裸端口 I/O，不依赖任何内核服务/锁/分配。
+// ── 裸端口 I/O（不依赖内核服务/锁/分配）──
 inline void io_outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" :: "a"(val), "Nd"(port));
 }
 inline uint8_t io_inb(uint16_t port) {
     uint8_t v; asm volatile("inb %1, %0" : "=a"(v) : "Nd"(port)); return v;
 }
+inline void io_outw(uint16_t port, uint16_t val) {
+    asm volatile("outw %0, %1" :: "a"(val), "Nd"(port));
+}
+void uart_putc(char c) {
+    uint32_t spins = 200000;
+    while (!(io_inb(0x3FD) & 0x20) && --spins) {}
+    io_outb(0x3F8, (uint8_t)c);
+}
 void uart_marker(const char* s) {              // 有界 THRE 轮询后写标记
-    for (const char* p = s; *p; ++p) {
-        uint32_t spins = 200000;
-        while (!(io_inb(0x3FD) & 0x20) && --spins) {}
-        io_outb(0x3F8, (uint8_t)*p);
+    for (const char* p = s; *p; ++p) uart_putc(*p);
+}
+void uart_hex(uint64_t v) {                    // "#F=<16hex>"
+    uart_marker("#F=");
+    for (int i = 15; i >= 0; --i) {
+        int d = (int)((v >> (i * 4)) & 0xF);
+        uart_putc(d < 10 ? (char)('0' + d) : (char)('a' + d - 10));
     }
 }
 
-enum wraith_role : uint64_t {
-    WROLE_BURNER  = 1,   // 纯 CPU 竞争 + yield
-    WROLE_SLEEPER = 2,   // sleep，由 kicker 跨核唤醒（打 F4 唤醒/偷取窗口）
-    WROLE_SPAWNER = 3,   // 自派生（线程树）
-    WROLE_EXITER  = 4,   // 跑一段后 exit（set_zombie，不 release ⇒ 栈停车）
-    WROLE_BQ_WAITER = 5, // block_if_equal 阻塞→ pop_all/bq_flush_pending 唤醒（bq 路径）
-    WROLE_BQ_WAKER  = 6, // 递增 token + pop_all + bq_flush_pending（唤醒 waiter）
-    WROLE_BQ_ORPHAN = 7, // 阻塞且永不唤醒 ⇒ 靠 5s 超时 pop_timeouts 弹走
+// ── fw_cfg 选模式（QEMU opt/sparrow/test；缺失则默认）──
+// 接口：selector=0x510(16bit)，data=0x511(8bit)；多字节字段大端。
+static uint32_t be32() {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) v = (v << 8) | io_inb(0x511);
+    return v;
+}
+static bool name_eq56(const char* nm, const char* want) {
+    for (int i = 0; i < 56; ++i) {
+        char a = nm[i], b = want[i];
+        if (a != b) return false;
+        if (b == '\0') return true;
+    }
+    return true;
+}
+static bool fwcfg_find(const char* want, uint16_t* out_sel, uint32_t* out_size) {
+    io_outw(0x510, 0x0000);                        // signature
+    char sig[4];
+    for (int i = 0; i < 4; ++i) sig[i] = (char)io_inb(0x511);
+    if (!(sig[0] == 'Q' && sig[1] == 'E' && sig[2] == 'M' && sig[3] == 'U')) return false;
+    io_outw(0x510, 0x0019);                        // file directory
+    uint32_t count = be32();
+    for (uint32_t i = 0; i < count && i < 512; ++i) {
+        uint32_t size = be32();
+        uint8_t sel_hi = io_inb(0x511);            // 顺序读，避免 | 操作数求值顺序未定义
+        uint8_t sel_lo = io_inb(0x511);
+        uint16_t sel  = (uint16_t)((sel_hi << 8) | sel_lo);
+        (void)io_inb(0x511); (void)io_inb(0x511);  // reserved
+        char nm[56];
+        for (int j = 0; j < 56; ++j) nm[j] = (char)io_inb(0x511);
+        if (name_eq56(nm, want)) { *out_sel = sel; *out_size = size; return true; }
+    }
+    return false;
+}
+static void fwcfg_read_first(uint16_t sel, char* buf, uint32_t cap) {
+    io_outw(0x510, sel);
+    for (uint32_t i = 0; i < cap; ++i) buf[i] = (char)io_inb(0x511);
+    buf[cap - 1] = '\0';
+}
+static bool str_contains(const char* hay, const char* needle) {
+    for (const char* h = hay; *h; ++h) {
+        const char* a = h; const char* b = needle;
+        while (*a && *b && *a == *b) { ++a; ++b; }
+        if (!*b) return true;
+    }
+    return false;
+}
+static void fwcfg_select_mode() {
+    char buf[128];
+    uint16_t sel = 0; uint32_t size = 0;
+    if (!fwcfg_find("opt/sparrow/test", &sel, &size)) { g_mmu_mode = 0; return; }
+    uint32_t cap = (size < sizeof(buf) - 1) ? size + 1 : (uint32_t)sizeof(buf);
+    fwcfg_read_first(sel, buf, cap);
+    if (str_contains(buf, "mode=pf"))            g_mmu_mode = 2;
+    else if (str_contains(buf, "mode=repro"))    g_mmu_mode = 4;
+    else if (str_contains(buf, "fonly"))         g_mmu_mode = 1;
+    else                                         g_mmu_mode = 0;
+}
+
+// ── 断言原语 ──────────────────────────────────────────────
+// 失败即截停：串口 #TB#mmu-assert-fail → 雷环留证（含 code）→ 魔法断点。
+static void mmu_assert_fail(uint64_t code) {
+    g_mmu_ledger.n_fail++;
+    if (!g_mmu_ledger.first_fail) g_mmu_ledger.first_fail = code;
+    uart_hex(code);
+    WT_LOG("MMU FAIL code=%llx total=%llu\n",
+           (unsigned long long)code, (unsigned long long)g_mmu_ledger.n_total);
+    wraith_freeze("mmu-assert-fail");
+}
+#define MMU_ASSERT(cond, code)                    \
+    do {                                          \
+        g_mmu_ledger.n_total++;                   \
+        if (cond) g_mmu_ledger.n_pass++;          \
+        else mmu_assert_fail(code);               \
+    } while (0)
+
+// ── FPA 圈地（水位线保护）─────────────────────────────────
+static phyaddr_t mmu_fpa_alloc(uint64_t bytes, uint8_t align_log2) {
+    if (g_mmu_outstanding_bytes + bytes > g_mmu_budget_bytes) {
+        WT_LOG("MMU watermark hit need=%llu outstanding=%llu budget=%llu\n",
+               (unsigned long long)bytes,
+               (unsigned long long)g_mmu_outstanding_bytes,
+               (unsigned long long)g_mmu_budget_bytes);
+        wraith_freeze("fpa-watermark");
+    }
+    buddy_alloc_params p = BUDDY_ALLOC_DEFAULT_FLAG;
+    p.align_log2 = align_log2;
+    KURD_t k;
+    phyaddr_t pa = FreePagesAllocator::alloc(bytes, p, page_state_t::kernel_pinned, k);
+    if (pa == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(k)) {
+        WT_LOG("MMU FPA alloc FAIL bytes=%llu align=%u\n",
+               (unsigned long long)bytes, (unsigned)align_log2);
+        wraith_freeze("fpa-watermark");
+    }
+    g_mmu_outstanding_bytes += bytes;
+    g_mmu_fpa_alloc++;
+    return pa;
+}
+static void mmu_fpa_free(phyaddr_t pa, uint64_t bytes) {
+    (void)FreePagesAllocator::free(pa, bytes);
+    g_mmu_outstanding_bytes -= bytes;
+    g_mmu_fpa_free++;
+}
+
+// ── 采样点（大页只抽样，避免 1GB 逐字遍历）────────────────
+static constexpr int MMU_SAMPLE_N = 12;
+static uint64_t mmu_sample_idx(uint64_t words, int i) {
+    if (i <= 0) return 0;
+    if (i >= MMU_SAMPLE_N - 1) return words - 1;
+    return (words - 1) * (uint64_t)i / (MMU_SAMPLE_N - 1);
+}
+static uint64_t mmu_pat(uint64_t seed, int i) {
+    return 0x9E3779B97F4A7C15ull * (seed + 1) ^ ((seed + (uint64_t)i) << 17);
+}
+// 经物理主窗口写采样点
+static void mmu_fill_phys(phyaddr_t pa, uint64_t npages, uint64_t seed) {
+    volatile uint64_t* p = (volatile uint64_t*)PHYACC_VA(pa);
+    uint64_t words = npages * 512;
+    for (int i = 0; i < MMU_SAMPLE_N; ++i) p[mmu_sample_idx(words, i)] = mmu_pat(seed, i);
+}
+// 经映射窗验证采样点（== 物理窗写入值）
+static bool mmu_verify_va(vaddr_t va, uint64_t npages, uint64_t seed) {
+    volatile uint64_t* p = (volatile uint64_t*)va;
+    uint64_t words = npages * 512;
+    for (int i = 0; i < MMU_SAMPLE_N; ++i)
+        if (p[mmu_sample_idx(words, i)] != mmu_pat(seed, i)) return false;
+    return true;
+}
+// 经映射窗写采样点（另一 seed）→ 物理窗读回
+static void mmu_fill_va(vaddr_t va, uint64_t npages, uint64_t seed) {
+    volatile uint64_t* p = (volatile uint64_t*)va;
+    uint64_t words = npages * 512;
+    for (int i = 0; i < MMU_SAMPLE_N; ++i) p[mmu_sample_idx(words, i)] = mmu_pat(seed, i);
+}
+static bool mmu_verify_phys(phyaddr_t pa, uint64_t npages, uint64_t seed) {
+    volatile uint64_t* p = (volatile uint64_t*)PHYACC_VA(pa);
+    uint64_t words = npages * 512;
+    for (int i = 0; i < MMU_SAMPLE_N; ++i)
+        if (p[mmu_sample_idx(words, i)] != mmu_pat(seed, i)) return false;
+    return true;
+}
+
+// 翻译是否命中“指定物理”（非故障判据）。
+// 注意：v_to_phyaddrtraslation 对“已清 PTE”也返回 SUCCESS（叶 present 位未校验）
+// ⇒ 不能用其成功与否判 present，必须比对译出的物理地址。
+static bool mmu_mapped_to(vaddr_t va, phyaddr_t expect) {
+    phyaddr_t out = 0;
+    KURD_t k = KspacePageTable::v_to_phyaddrtraslation(va, out);
+    return !error_kurd(k) && out == expect;
+}
+static bool mmu_vt_free(vaddr_t va) {
+    return kspace_vm_table->search(va) == nullptr;
+}
+
+// 映射一个物理区间（自动 VA）
+static vaddr_t mmu_map_auto(phyaddr_t pa, uint64_t npages, KURD_t* kout) {
+    vm_interval iv = { .vpn = 0, .ppn = pa >> 12, .npages = npages, .access = KspacePageTable::PG_RW };
+    return Kspace_pinterval_alloc_and_map(iv, kout);
+}
+// 在指定 VA 映射（固定）
+static KURD_t mmu_map_at(vaddr_t va, phyaddr_t pa, uint64_t npages) {
+    vm_interval iv = { .vpn = va >> 12, .ppn = pa >> 12, .npages = npages, .access = KspacePageTable::PG_RW };
+    return Kspace_phyaddr_direct_map(iv);
+}
+static KURD_t mmu_unmap(vaddr_t va, phyaddr_t pa, uint64_t npages) {
+    vm_interval iv = { .vpn = va >> 12, .ppn = pa >> 12, .npages = npages, .access = KspacePageTable::PG_RW };
+    return Kspace_phyaddr_direct_unmap(iv);
+}
+static vaddr_t mmu_scratch_va(uint64_t bytes) {
+    return kspace_vm_table->alloc_available_space(bytes, 0);
+}
+
+// 案例编码（落账本，供 tool 识别）
+enum : uint64_t {
+    C_I1_VA0      = 0x101, C_I1_DUAL = 0x102, C_I1_UNMAP = 0x103, C_I1_PRES = 0x104,
+    C_I2_MAP      = 0x201, C_I2_DUAL = 0x202, C_I2_UNMAP = 0x203,
+    C_I3_STALE    = 0x301,
+    C_I4_2M       = 0x401, C_I4_2M_MAP = 0x402, C_I4_2M_DUAL = 0x403,
+    C_I4_1G_MAP   = 0x411, C_I4_1G_DUAL = 0x412,
+    C_I5_BADIV    = 0x501, C_I5_NONK    = 0x502, C_I5_DBL   = 0x503,
+    C_I6_LEAK     = 0x601,
+    C_IPF_HIT     = 0x701,
 };
 
-int slot_claim(uint64_t tid, uint64_t role, uint64_t canary_addr, uint64_t canary_expected) {
-    for (uint32_t i = 0; i < WRAITH_TEST_MAX; ++i) {
-        // 原子占位：多核并发 spawn 时防止两线程抢同一 slot。
-        if (__atomic_exchange_n((uint64_t*)&g_wraith_slots[i].in_use, 1,
-                                __ATOMIC_ACQ_REL) != 0)
-            continue;                        // 已被占
-        g_wraith_slots[i].tid             = tid;
-        g_wraith_slots[i].task_ptr        = wraith::now_running_task();
-        g_wraith_slots[i].role            = role;
-        g_wraith_slots[i].seq             = 0;
-        g_wraith_slots[i].last_cpu        = fast_get_processor_id();
-        g_wraith_slots[i].canary_addr     = canary_addr;
-        g_wraith_slots[i].canary_expected = canary_expected;
-        if (i + 1 > g_wraith_slot_count) g_wraith_slot_count = i + 1;
-        return (int)i;
+// ── I-1：三接口基本往返 ────────────────────────────────────
+static void mmu_case_i1() {
+    uart_marker("|I1|");
+    constexpr uint64_t PG = 1;
+    phyaddr_t pa = mmu_fpa_alloc(PG << 12, 12);
+    mmu_fill_phys(pa, PG, 0xA1);
+    KURD_t k;
+    vaddr_t va = mmu_map_auto(pa, PG, &k);
+    MMU_ASSERT(va != 0 && !error_kurd(k), C_I1_VA0);
+    if (va) {
+        MMU_ASSERT(mmu_verify_va(va, PG, 0xA1), C_I1_DUAL);   // 物理窗写→映射窗读
+        mmu_fill_va(va, PG, 0xB1);
+        MMU_ASSERT(mmu_verify_phys(pa, PG, 0xB1), C_I1_DUAL); // 映射窗写→物理窗读
+        KURD_t u = mmu_unmap(va, pa, PG);
+        MMU_ASSERT(!error_kurd(u), C_I1_UNMAP);
+        bool pres = mmu_mapped_to(va, pa);   // 仍指向原物理 ⇒ 未真正撤销
+        bool vf   = mmu_vt_free(va);
+        if (pres) { uart_marker("|P!|"); uart_hex((uint64_t)va); }
+        if (!vf)  { uart_marker("|V!|"); }
+        if (pres) g_mmu_presence_fail++;
+        MMU_ASSERT(!pres && vf, C_I1_PRES);
     }
-    return -1;
+    mmu_fpa_free(pa, PG << 12);
+    WT_LOG("MMU I-1 done va=%llx\n", (unsigned long long)va);
 }
 
-// 【热循环】：每轮先自校验浅层金丝雀（被异核写过⇒立即冻结留证），再按角色行为。
-void wraith_hotloop(uint64_t role, int slot) {
-    volatile uint64_t* canary = (volatile uint64_t*)g_wraith_slots[slot].canary_addr;
-    const uint64_t expect = g_wraith_slots[slot].canary_expected;
-    while (true) {
-        if (*canary != expect) wraith_freeze("stack-canary-corrupt");
-        g_wraith_slots[slot].seq++;
-        g_wraith_slots[slot].last_cpu = fast_get_processor_id();
+// ── I-2：direct_map / direct_unmap 固定 VA 往返 ─────────────
+static void mmu_case_i2() {
+    uart_marker("|I2|");
+    constexpr uint64_t PG = 1;
+    phyaddr_t pa = mmu_fpa_alloc(PG << 12, 12);
+    mmu_fill_phys(pa, PG, 0xA2);
+    vaddr_t va = mmu_scratch_va(PG << 12);
+    MMU_ASSERT(va != 0, C_I2_MAP);
+    if (va) {
+        KURD_t m = mmu_map_at(va, pa, PG);
+        MMU_ASSERT(!error_kurd(m), C_I2_MAP);
+        MMU_ASSERT(mmu_verify_va(va, PG, 0xA2), C_I2_DUAL);
+        mmu_fill_va(va, PG, 0xB2);
+        MMU_ASSERT(mmu_verify_phys(pa, PG, 0xB2), C_I2_DUAL);
+        KURD_t u = mmu_unmap(va, pa, PG);
+        MMU_ASSERT(!error_kurd(u), C_I2_UNMAP);
+        MMU_ASSERT(!mmu_mapped_to(va, pa) && mmu_vt_free(va), C_I2_UNMAP);
+    }
+    mmu_fpa_free(pa, PG << 12);
+    WT_LOG("MMU I-2 done va=%llx\n", (unsigned long long)va);
+}
 
-        switch (role) {
-        case WROLE_BURNER:
-            for (volatile uint64_t k = 0; k < 200000; ++k) {}
-            kthread_yield();
-            break;
-        case WROLE_SLEEPER:
-            kthread_sleep(50000);                    // kicker 会提前唤醒
-            break;
-        case WROLE_SPAWNER:
-            if (g_wraith_slot_count < 48 && ((g_wraith_slots[slot].seq & 15) == 1)) {
-                kthread_creating_package pkg = {};
-                pkg.func_raw   = (uint64_t)wraith_worker_entry;
-                pkg.args[0]    = (uint64_t)WROLE_BURNER;
-                pkg.launch_pid = fast_get_processor_id();
-                KURD_t k = KURD_t();
-                creat_kthread(&pkg, &k);
-            }
-            kthread_yield();
-            break;
-        case WROLE_EXITER:
-            for (volatile uint64_t k = 0; k < 500000; ++k) {}
-            kthread_exit(0);                         // zombie；调用方不 release ⇒ 栈停车
-            break;
-        case WROLE_BQ_WAITER: {                      // bq 阻塞 → pop_all/flush 唤醒
-            if (!g_test_bq) { kthread_yield(); break; }
-            block_if_equal(g_test_bq_id, (uint64_t*)&g_bq_token, g_bq_token);
-            g_bq_wakes++;
-            break;
-        }
-        case WROLE_BQ_WAKER: {                       // 递增 token + pop_all + bq_flush_pending
-            if (!g_test_bq) { kthread_yield(); break; }
-            __atomic_add_fetch((uint64_t*)&g_bq_token, 1, __ATOMIC_ACQ_REL);
-            blocked_tasks_clamps_t clamps;
-            {
-                spinlock_interrupt_about_guard gq(g_test_bq->qlock);
-                g_test_bq->pop_all(&clamps);
-            }
-            bq_flush_pending(&clamps, false);
-            kthread_yield();
-            break;
-        }
-        case WROLE_BQ_ORPHAN: {                      // 阻塞且无人唤醒 ⇒ 靠 5s pop_timeouts
-            if (!g_test_bq_to) { kthread_yield(); break; }
-            block_if_equal(g_test_bq_to_id, (uint64_t*)&g_bq_orphan_token, g_bq_orphan_token);
-            g_bq_timeouts++;
-            break;
-        }
-        default:
-            kthread_yield();
-            break;
+// ── I-3：T-stale（同 VA 改投不同物理页，本核 invlpg 效力）────
+static void mmu_case_i3() {
+    uart_marker("|I3|");
+    constexpr uint64_t PG = 1;
+    phyaddr_t paA = mmu_fpa_alloc(PG << 12, 12);
+    phyaddr_t paB = mmu_fpa_alloc(PG << 12, 12);
+    mmu_fill_phys(paA, PG, 0xAA);
+    mmu_fill_phys(paB, PG, 0xBB);
+    KURD_t k;
+    vaddr_t va = mmu_map_auto(paA, PG, &k);
+    MMU_ASSERT(va != 0 && !error_kurd(k), C_I3_STALE);
+    if (va) {
+        MMU_ASSERT(mmu_verify_va(va, PG, 0xAA), C_I3_STALE);  // 暖 TLB
+        KURD_t u = mmu_unmap(va, paA, PG);                    // shootdown(self)
+        MMU_ASSERT(!error_kurd(u), C_I3_STALE);
+        KURD_t m = mmu_map_at(va, paB, PG);                   // 同 VA → B
+        MMU_ASSERT(!error_kurd(m), C_I3_STALE);
+        bool ok = mmu_verify_va(va, PG, 0xBB);                // 陈旧则读到 0xAA
+        if (!ok) g_mmu_mismatch++;
+        MMU_ASSERT(ok, C_I3_STALE);
+        (void)mmu_unmap(va, paB, PG);
+    }
+    mmu_fpa_free(paA, PG << 12);
+    mmu_fpa_free(paB, PG << 12);
+    WT_LOG("MMU I-3 done va=%llx mismatch=%llu\n",
+           (unsigned long long)va, (unsigned long long)g_mmu_mismatch);
+}
+
+// ── I-4：页尺寸阶梯（2MB；1GB 尝试，拿不到记 fallback）────────
+static void mmu_case_i4(const char* title, uint64_t npages, uint8_t align_log2,
+                        uint64_t seed, uint64_t* huge_hits_base) {
+    uart_marker("|"); uart_marker(title); uart_marker("|");
+    uint64_t bytes = npages << 12;
+    phyaddr_t pa = mmu_fpa_alloc(bytes, align_log2);
+    mmu_fill_phys(pa, npages, seed);
+    KURD_t k;
+    vaddr_t va = mmu_map_auto(pa, npages, &k);
+    MMU_ASSERT(va != 0 && !error_kurd(k), C_I4_2M_MAP);
+    if (va) {
+        MMU_ASSERT(mmu_verify_va(va, npages, seed), C_I4_2M_DUAL);
+        KURD_t u = mmu_unmap(va, pa, npages);
+        MMU_ASSERT(!error_kurd(u), C_I4_2M_MAP);
+        if (huge_hits_base) {
+            uint64_t now = *huge_hits_base;
+            WT_LOG("MMU %s huge_hits=%llu\n", title, (unsigned long long)now);
         }
     }
+    mmu_fpa_free(pa, bytes);
+    WT_LOG("MMU %s done va=%llx npages=%llu\n",
+           title, (unsigned long long)va, (unsigned long long)npages);
+}
+
+// ── I-4c：1GB 大页（先当有；拿不到记 fallback，不冻结）────────
+static uint64_t mmu_huge_hits() {
+    if (!kspace_pagetable_statistics) return 0;
+    uint32_t pid = fast_get_processor_id();
+    if (logical_processor_count && pid >= logical_processor_count)
+        pid = pid % logical_processor_count;
+    return kspace_pagetable_statistics[pid].pages_set.specific.x86_64.PDPTE_HUGE_set_count;
+}
+static void mmu_case_i4c_1gb() {
+    uart_marker("|I-4c/1GB|");
+    constexpr uint64_t NPG   = 1ull << 18;      // 262144 页 = 1GB
+    constexpr uint64_t BYTES = 1ull << 30;
+    buddy_alloc_params p = BUDDY_ALLOC_DEFAULT_FLAG;
+    p.align_log2 = 30;                          // 1GB 对齐
+    KURD_t k;
+    phyaddr_t pa = FreePagesAllocator::alloc(BYTES, p, page_state_t::kernel_pinned, k);
+    if (pa == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(k)) {
+        g_mmu_huge1g_fallback = 1;
+        uart_marker("|1G-NO|");                 // FPA 拿不到 1GB：现场记账，实跑定论
+        WT_LOG("MMU I-4c: FPA 1GB unavailable\n");
+        return;
+    }
+    g_mmu_outstanding_bytes += BYTES; g_mmu_fpa_alloc++;
+    g_mmu_last_1g_pa = (uint64_t)pa;
+    mmu_fill_phys(pa, NPG, 0x47);
+    uint64_t base_huge = mmu_huge_hits();
+    vaddr_t va = mmu_map_auto(pa, NPG, &k);
+    g_mmu_last_1g_va = (uint64_t)va;
+    MMU_ASSERT(va != 0 && !error_kurd(k), C_I4_1G_MAP);
+    if (va) {
+        uint64_t now_huge = mmu_huge_hits();
+        if (now_huge > base_huge) g_mmu_huge1g_hits = now_huge - base_huge;
+        else { g_mmu_huge1g_fallback = 1; uart_marker("|1G-SPLIT|"); }
+        MMU_ASSERT(mmu_verify_va(va, NPG, 0x47), C_I4_1G_DUAL);
+        KURD_t u = mmu_unmap(va, pa, NPG);
+        MMU_ASSERT(!error_kurd(u), C_I4_1G_MAP);
+    }
+    mmu_fpa_free(pa, BYTES);
+    WT_LOG("MMU I-4c done va=%llx huge_hits=%llu\n",
+           (unsigned long long)va, (unsigned long long)g_mmu_huge1g_hits);
+}
+
+// ── 专项复现：1GB→4KB 交互 / 1GB 陈旧 TLB ───────────────────
+// 不 freeze；只打点，由 mmu_test_main 收尾。
+static void mmu_case_repro1gb() {
+    // --- 复现 A：1GB 后紧接 4KB map/unmap（原失败序）---
+    mmu_case_i4c_1gb();
+    vaddr_t v1g = (vaddr_t)g_mmu_last_1g_va;
+    uart_marker("|R1gva|"); uart_hex((uint64_t)v1g);
+    {
+        phyaddr_t out = 0;
+        KURD_t t = KspacePageTable::v_to_phyaddrtraslation(v1g, out);
+        uart_marker("|R1gt|"); uart_hex((uint64_t)t.result); uart_hex((uint64_t)out);
+    }
+    {
+        constexpr uint64_t PG = 1;
+        phyaddr_t pa = mmu_fpa_alloc(PG << 12, 12);
+        mmu_fill_phys(pa, PG, 0x99);
+        KURD_t k;
+        vaddr_t va = mmu_map_auto(pa, PG, &k);
+        uart_marker("|R4kva|"); uart_hex((uint64_t)va);
+        if (!va || error_kurd(k)) {
+            uart_marker("|R4kmap!|"); uart_hex(kurd_get_raw(k));
+        } else {
+            uart_marker("|R4kpres|"); uart_hex(mmu_mapped_to(va, pa) ? 1 : 0);
+            KURD_t u1 = mmu_unmap(va, pa, PG);
+            uart_marker("|R4ku1|");
+            uart_hex((uint64_t)u1.result); uart_hex((uint64_t)u1.event_code); uart_hex((uint64_t)u1.reason);
+            uart_marker("|R4kvf|"); uart_hex(mmu_vt_free(va) ? 1 : 0);
+        }
+        mmu_fpa_free(pa, PG << 12);
+    }
+    // --- 复现 B：1GB 陈旧 TLB（同 VA 改投 1 页）---
+    {
+        constexpr uint64_t NPG = 1ull << 18, BYTES = 1ull << 30;
+        buddy_alloc_params p = BUDDY_ALLOC_DEFAULT_FLAG; p.align_log2 = 30;
+        KURD_t kk;
+        phyaddr_t pA = FreePagesAllocator::alloc(BYTES, p, page_state_t::kernel_pinned, kk);
+        if (!(pA == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(kk))) {
+            mmu_fill_phys(pA, NPG, 0xA0);
+            KURD_t mk; vaddr_t vA = mmu_map_auto(pA, NPG, &mk);
+            if (vA && !error_kurd(mk)) {
+                bool warm = mmu_verify_va(vA, NPG, 0xA0);      // 暖 1GB TLB
+                uart_marker("|RBwarm|"); uart_hex(warm ? 1 : 0);
+                KURD_t uu = mmu_unmap(vA, pA, NPG);
+                uart_marker("|RBunmap|"); uart_hex((uint64_t)uu.result);
+                phyaddr_t pB = mmu_fpa_alloc(4096, 12); mmu_fill_phys(pB, 1, 0xB0);
+                KURD_t m2 = mmu_map_at(vA, pB, 1);             // 同 VA 改投 4KB
+                uart_marker("|RBmap2|"); uart_hex((uint64_t)m2.result);
+                bool ok = mmu_verify_va(vA, 1, 0xB0);          // 陈旧 1GB TLB ⇒ 读到 0xA0
+                uart_marker("|RBsame|"); uart_hex(ok ? 1 : 0);
+                if (!ok) g_mmu_mismatch++;
+                (void)mmu_unmap(vA, pB, 1);
+                mmu_fpa_free(pB, 4096);
+            }
+            mmu_fpa_free(pA, BYTES);
+        }
+    }
+    uart_marker("|Rdone|");
+}
+
+// ── I-5：负例/边界（期望特定 KURD fail，不 panic）────────────
+static void mmu_case_i5() {
+    uart_marker("|I5|");
+    // npages=0
+    {
+        KURD_t k = KURD_t();
+        vm_interval iv = { .vpn = 0, .ppn = 0x100, .npages = 0, .access = KspacePageTable::PG_RW };
+        vaddr_t va = Kspace_pinterval_alloc_and_map(iv, &k);
+        MMU_ASSERT(va == 0 && error_kurd(k), C_I5_BADIV);
+    }
+    // 非内核 VA：direct_map 必须拒绝
+    {
+        vm_interval iv = { .vpn = (0x1000) >> 12, .ppn = 0x100, .npages = 1, .access = KspacePageTable::PG_RW };
+        KURD_t k = Kspace_phyaddr_direct_map(iv);
+        MMU_ASSERT(error_kurd(k), C_I5_NONK);
+    }
+    // 双重 unmap：第二次必失败
+    {
+        constexpr uint64_t PG = 1;
+        phyaddr_t pa = mmu_fpa_alloc(PG << 12, 12);
+        mmu_fill_phys(pa, PG, 0xC5);
+        KURD_t k;
+        vaddr_t va = mmu_map_auto(pa, PG, &k);
+        if (va && !error_kurd(k)) {
+            if (mmu_vt_free(va)) uart_marker("|VT0!|");
+            KURD_t u1 = mmu_unmap(va, pa, PG);
+            KURD_t u2 = mmu_unmap(va, pa, PG);
+            if (error_kurd(u1)) { uart_marker("|D1!|"); uart_hex((uint64_t)u1.result); uart_hex((uint64_t)u1.event_code); uart_hex((uint64_t)u1.reason); uart_hex((uint64_t)va); uart_hex((uint64_t)pa); }
+            if (!error_kurd(u2)) uart_marker("|D2!|");
+            MMU_ASSERT(!error_kurd(u1), C_I5_DBL);
+            MMU_ASSERT(error_kurd(u2), C_I5_DBL);
+        } else {
+            uart_marker("|D0!|");
+            MMU_ASSERT(false, C_I5_DBL);
+        }
+        mmu_fpa_free(pa, PG << 12);
+    }
+    WT_LOG("MMU I-5 done\n");
+}
+
+// ── I-6：泄漏对账（FPA/VM 表）────────────────────────────────
+static void mmu_case_i6() {
+    uart_marker("|I6|");
+    MMU_ASSERT(g_mmu_fpa_alloc == g_mmu_fpa_free, C_I6_LEAK);
+    WT_LOG("MMU I-6 alloc=%llu free=%llu outstanding=%llu\n",
+           (unsigned long long)g_mmu_fpa_alloc, (unsigned long long)g_mmu_fpa_free,
+           (unsigned long long)g_mmu_outstanding_bytes);
+}
+
+// ── I-PF：故意 #PF（终局；期望命中 FAULT_FREEZE #WF#）────────
+static void mmu_case_ipf() {
+    uart_marker("|PF|");
+    constexpr uint64_t PG = 1;
+    phyaddr_t pa = mmu_fpa_alloc(PG << 12, 12);
+    mmu_fill_phys(pa, PG, 0xDD);
+    KURD_t k;
+    vaddr_t va = mmu_map_auto(pa, PG, &k);
+    MMU_ASSERT(va != 0 && !error_kurd(k), C_IPF_HIT);
+    // 先撤映射
+    KURD_t u = mmu_unmap(va, pa, PG);
+    MMU_ASSERT(!error_kurd(u), C_IPF_HIT);
+    MMU_ASSERT(!mmu_mapped_to(va, pa) && mmu_vt_free(va), C_IPF_HIT);
+    // 故意踩空 → 期望 #PF 入口 FAULT_FREEZE（#WF# + 魔法断点）
+    g_mmu_pf_expected = 1;
+    uart_marker("#EXPECT-PF#");
+    WT_LOG("MMU I-PF: deliberate fault va=%llx\n", (unsigned long long)va);
+    volatile uint64_t sink = *(volatile uint64_t*)va;
+    (void)sink;
+    // 若返回：说明页表没撤干净（真异常）
+    MMU_ASSERT(false, C_IPF_HIT);
 }
 
 }  // namespace
 
-// 线程入口：外层帧持金丝雀（浅），热循环在内层（深）——WRAITH 的浅写更易命中金丝雀。
-static void* wraith_worker_entry(void* arg) {
-    const uint64_t role = (uint64_t)arg;
-    task* self = (task*)wraith::now_running_task();
-    const uint64_t tid = self ? self->get_tid() : 0;
-    volatile uint64_t canary = WRAITH_CANARY_MAGIC ^ tid;
-    const int slot = slot_claim(tid, role, (uint64_t)&canary, (uint64_t)canary);
-    if (slot < 0) {
-        WT_LOG("WT! slot-full tid=%llu\n", (unsigned long long)tid);
-        for (;;) kthread_sleep(1000000);
-    }
-    WT_LOG("WT+ tid=%llu role=%llu slot=%d\n",
-               (unsigned long long)tid, (unsigned long long)role, slot);
-    wraith_hotloop(role, slot);
-    return nullptr;
-}
+// ── 测试入口 ──────────────────────────────────────────────────
+void mmu_test_main() {
+    wraith_test_ring_init();
+    fwcfg_select_mode();
+    // 水位线 = 总 FPA 预算 × 75%
+    uint64_t total = FreePagesAllocator::get_total_budget_bytes();
+    g_mmu_budget_bytes = total / 4 * 3;
+    WT_LOG("MMU main: mode=%llu total_budget=%llu watermark=%llu\n",
+           (unsigned long long)g_mmu_mode,
+           (unsigned long long)total,
+           (unsigned long long)g_mmu_budget_bytes);
 
-namespace {
-void* wraith_root(void* arg) {
-    (void)arg;
-    // 建一个测试 block_queue（bq 路径载体）。
-    if (!g_test_bq) {
-        g_test_bq = new (g_test_bq_obj) block_queue();
-        g_test_bq_id = bq_alloc(g_test_bq);
-        WT_LOG("WT bq: qid=%llu\n", (unsigned long long)g_test_bq_id);
+    if (g_mmu_mode == 1) {          // fonly：功能轮
+        mmu_case_i1(); mmu_case_i2(); mmu_case_i3();
+        mmu_case_i4("I-4a/4KB", 1, 12, 0x44, nullptr);
+        mmu_case_i4("I-4b/2MB", 512, 21, 0x45, nullptr);
+        mmu_case_i5(); mmu_case_i6();
+    } else if (g_mmu_mode == 2) {   // pf：故意 #PF（终局）
+        mmu_case_ipf();
+    } else if (g_mmu_mode == 4) {   // repro：1GB→4KB 交互 / 陈旧 TLB
+        mmu_case_repro1gb();
+    } else {                        // full：功能轮 + 1GB 尝试（+ S 段后续接入）
+        mmu_case_i1(); mmu_case_i2(); mmu_case_i3();
+        mmu_case_i4("I-4a/4KB", 1, 12, 0x44, nullptr);
+        mmu_case_i4("I-4b/2MB", 512, 21, 0x45, nullptr);
+        mmu_case_i4c_1gb();     // I-4c/1GB（先当有；拿不到记 fallback 继续）
+        mmu_case_i5();          // 原失败序：1GB 紧接 4KB（修复后应绿）
+        mmu_case_i6();
     }
-    // 专用超时队列（无唤醒者）：靠 5s 超时 pop_timeouts 弹走。
-    if (!g_test_bq_to) {
-        g_test_bq_to = new (g_test_bq_to_obj) block_queue();
-        g_test_bq_to_id = bq_alloc(g_test_bq_to);
-        WT_LOG("WT bq_to: qid=%llu\n", (unsigned long long)g_test_bq_to_id);
-    }
-    const uint64_t roles[] = { WROLE_BURNER, WROLE_BURNER, WROLE_SLEEPER,
-                               WROLE_SPAWNER, WROLE_EXITER,
-                               WROLE_BQ_WAITER, WROLE_BQ_WAITER, WROLE_BQ_WAKER,
-                               WROLE_BQ_ORPHAN };
-    // 派生阶段：多轮混合线程（自相似线程树的根）。
-    for (int rep = 0; rep < 4; ++rep) {
-        for (uint64_t r : roles) {
-            kthread_creating_package pkg = {};
-            pkg.func_raw   = (uint64_t)wraith_worker_entry;
-            pkg.args[0]    = r;
-            pkg.launch_pid = fast_get_processor_id();
-            KURD_t k = KURD_t();
-            creat_kthread(&pkg, &k);
-        }
-        kthread_sleep(20000);
-    }
-    // 专用超时队列灌入 >64 个 orphan（无人唤醒）⇒ 5s 后 pop_timeouts 必须分批（max 64/批），
-    // 打 F1「入口复位 batch_count + 写前边界判」的批量边界。
-    if (g_test_bq_to && g_test_bq_to_id != BQ_ID_INVALID) {
-        for (int i = 0; i < 80; ++i) {
-            kthread_creating_package pkg = {};
-            pkg.func_raw   = (uint64_t)wraith_worker_entry;
-            pkg.args[0]    = (uint64_t)WROLE_BQ_ORPHAN;
-            pkg.launch_pid = fast_get_processor_id();
-            KURD_t k = KURD_t();
-            creat_kthread(&pkg, &k);
-        }
-    }
-    // kicker 阶段：反复跨核唤醒 sleeper（打 F4「仍未切离窗口」）。
-    constexpr uint64_t KICK_ROUNDS = 6000;           // ~6s（跨过 5s 超时扫一轮）
-    for (uint64_t round = 0; round < KICK_ROUNDS; ++round) {
-        const uint64_t n = g_wraith_slot_count;
-        for (uint64_t i = 0; i < n; ++i) {
-            if (g_wraith_slots[i].in_use && g_wraith_slots[i].role == WROLE_SLEEPER) {
-                wakeup_thread(g_wraith_slots[i].tid, false);
-            }
-        }
-        kthread_sleep(1000);
-    }
-    WT_LOG("WT bq stats: wakes=%llu timeouts=%llu\n",
-           (unsigned long long)g_bq_wakes, (unsigned long long)g_bq_timeouts);
-    // 计划截停：冻结整机，交给外部栈检查工具（Tools/wraith/）。
+
+    WT_LOG("MMU done: total=%llu pass=%llu fail=%llu fail_code=%llx\n",
+           (unsigned long long)g_mmu_ledger.n_total,
+           (unsigned long long)g_mmu_ledger.n_pass,
+           (unsigned long long)g_mmu_ledger.n_fail,
+           (unsigned long long)g_mmu_ledger.first_fail);
     wraith_freeze("planned");
     for (;;) kthread_sleep(1000000);
-}
-}  // namespace
-
-void kthread_test_main() {
-    wraith_test_ring_init();
-    kthread_creating_package pkg = {};
-    pkg.func_raw   = (uint64_t)wraith_root;
-    pkg.launch_pid = fast_get_processor_id();
-    KURD_t k = KURD_t();
-    uint64_t tid = creat_kthread(&pkg, &k);
-    WT_LOG("WT main: root tid=%llu kurd=%llx\n",
-               (unsigned long long)tid, (unsigned long long)kurd_get_raw(k));
 }
 
 // 截停闸门：串口 #TB# → 环留证 → outb(0x80,0xDB) → cli;hlt。无 QEMU 补丁时也停在原地。

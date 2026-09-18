@@ -240,6 +240,9 @@ public:
     static fpa_stats get_fpa_stats();//当前本地 CPU 的统计数据，必须在 second_stage 初始化完成后才可以调用，否则行为未定义
     static fpa_stats get_fpa_stats(uint64_t pid);//pid 为处理器 id，必须在 second_stage 初始化完成后才可以调用，否则行为未定义，不提供锁保护
     static fpa_stats get_fpa_stats_all();//所有统计信息的总计，除 bcb_scan_max 是取最大，其他字段是求和，不在锁保护下
+    // 总 FPA 预算：Init 时累计的全部可用内存字节数（g_all_avaliable_mem_accumulate）。
+    // 供测试水位线（如 MMU 压测取 75%）使用；必须在 Init 完成后调用。
+    static uint64_t get_total_budget_bytes();
     static constexpr uint64_t INVALID_ALLOC_BASE = ~0ULL;
     // 打印所有 BCB 的完整统计信息
     static void print_all_bcb_statistics();

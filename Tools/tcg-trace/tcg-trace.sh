@@ -21,6 +21,7 @@
 #     --timeout SEC  单次墙钟上限（默认 90，超时判 HANG 并停）
 #     --cap-gb N     trace 体积帽（默认 3 GB，超帽判 SIZECAP 并停）
 #     --stop-on RE  串口命中即停的正则（默认 'PANIC|kshell>|#WF#'）
+#     --fwcfg STR   追加 -fw_cfg（可重复）；如 'name=opt/sparrow/test,string=fonly'
 #     --repeat N     连跑 N 次，抓到任一异常样本即停（默认 1）
 #     --base DIR     仓库布局根（默认 /home/PS/PS_git/OS_pj_uefi）
 #     --dump-always  连正常样本也转储（默认只对 PANIC/HANG/SIZECAP 转储）
@@ -59,6 +60,7 @@ QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
 
 OUTDIR=""; TAG="trace"; TIMEOUT=90; CAP_GB=3; STOP_ON='PANIC|kshell>|#WF#'; REPEAT=1
 DUMP_ALWAYS=0; DUMP_VMCORE=0; DO_MKCORE=0; DO_SELFCHECK=0; DUMP_ONLY_FAULT=0; SKIP_NOISE_RE=""
+FWCFG_ARG=()
 
 usage() { awk 'NR==1{next} /^set /{exit} {print}' "$0"; exit "${1:-0}"; }
 
@@ -69,6 +71,7 @@ while [ $# -gt 0 ]; do
     --timeout) TIMEOUT="${2:?}"; shift;;
     --cap-gb)  CAP_GB="${2:?}";  shift;;
     --stop-on) STOP_ON="${2:?}"; shift;;
+    --fwcfg)   FWCFG_ARG+=(-fw_cfg "${2:?}"); shift;;
     --repeat)  REPEAT="${2:?}";  shift;;
     --base)    BASE="${2:?}";    shift;;
     --dump-always) DUMP_ALWAYS=1;;
@@ -163,6 +166,7 @@ run_one() {
     -device nvme,serial=deadbeef,drive=nvme_disk \
     -netdev user,id=net0 -m 8192 \
     -cpu "max,+x2apic" -serial stdio -display none -monitor none \
+    "${FWCFG_ARG[@]}" \
     "${qmp_arg[@]}" \
     -D "$tr" -d "$D_CATS" >"$ser" 2>&1 </dev/null &
   local pid=$! s=$SECONDS reason="" sz flag="" wpid=""
