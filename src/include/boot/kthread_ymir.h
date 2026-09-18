@@ -30,6 +30,15 @@ void* burnin_thread(void* arg);
 void* i8042_char_listener_thread(void* arg);
 void* bq_timeout_sweeper(void*);      // 定义于 src/scheduler/bq_system.cpp
 
+// ── 运行模式开关（业务 vs 测试）───────────────────────────
+// true : 业务初始化（派生 BQ / i8042 / NVMe / kshell 等内核服务线程）；
+// false: WRAITH 测试初始化（派生测试线程树；业务线程视为噪声，默认跳过）。
+// 定义在 kthread_ymir.cpp；测试构建默认 false，正常构建恒 true。
+extern bool if_real_init;
+
+// 是否派生 BQ 超时扫描线程（“兜底计时器”）；两档都可开关，测试时按需保留该噪声源。
+extern bool if_bq_sweeper;
+
 // ════════════════════════════════════════════════════════════════
 // WRAITH 验收 · 测试分支（仅 -DKTHREAD_TEST_SCENARIO 时编译）
 //

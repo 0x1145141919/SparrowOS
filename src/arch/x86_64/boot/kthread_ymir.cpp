@@ -17,10 +17,24 @@
 #include "Scheduler/kthread_abi.h"                          // creat_kthread / kthread_creating_package / kthread_sleep
 
 #ifdef KTHREAD_TEST_SCENARIO
-#include "util/wraith_probe.h"                              // WRAITH_LOG / wraith::now_running_task / rsp_now
+#include "util/wraith_probe.h"                              // wraith::now_running_task / rsp_now
 #include "Scheduler/task.h"                                 // task::get_tid
+#include "util/debug_tmp_ring_buff.h"                       // debug_tmp_ring_buff（测试专用环）
+#include "kcirclebufflogMgr.h"                              // DmesgRingBuffer_soul
+#include "memory/FreePagesAllocator.h"                      // FreePagesAllocator::alloc
+#include "memory/main_phyaddr_access_window.h"              // PHYACC_VA
+#include "util/lock.h"                                      // spinlock_interrupt_about_guard
 #endif
-bool if_real_init=false;
+
+// ── 运行模式：true = 业务初始化 / false = WRAITH 测试初始化 ──
+// 声明在 kthread_ymir.h（供外部置位）；此处给初值。
+#ifdef KTHREAD_TEST_SCENARIO
+bool if_real_init = false;      // 测试构建默认走测试初始化
+#else
+bool if_real_init = true;       // 正常构建恒业务初始化
+#endif
+// 是否派生 BQ 超时扫描线程（“兜底计时器”）；两档都可开关，测试可按需保留该噪声源。
+bool if_bq_sweeper = true;
 // ────────────────────────────────────────────────────────────────
 // 测试 / 压测线程
 // ────────────────────────────────────────────────────────────────
@@ -49,45 +63,51 @@ uint64_t test_kthreads[test_kthread_count];
 // 始祖线程
 // ────────────────────────────────────────────────────────────────
 
+// 派生 BQ 超时扫描线程（两档共用）。
+static void spawn_bq_sweeper() {
+    kthread_creating_package pkg = {};
+    pkg.func_raw   = (uint64_t)bq_timeout_sweeper;
+    pkg.args[0]    = (uint64_t)nullptr;
+    pkg.launch_pid = 0;
+    KURD_t kurd2{};
+    uint64_t tid = creat_kthread(&pkg, &kurd2);
+    if (error_kurd(kurd2)) {
+        bsp_kout << "[BQ] sweeper thread spawn failed" << kendl;
+    } else {
+        bsp_kout << "[BQ] sweeper thread tid=" << tid << kendl;
+    }
+}
+
 void*kthread_ymir(void*null){//所有内核线程的始祖之"尤米尔线程"（出自进击的巨人）
     (void)null;
     KURD_t kurd = KURD_t();
-    {
-        // 启动 BQ 超时扫描线程
-        kthread_creating_package pkg = {};
-        pkg.func_raw = (uint64_t)bq_timeout_sweeper;
-        pkg.args[0]  = (uint64_t)nullptr;
-        pkg.launch_pid = 0;
-        KURD_t kurd2{};
-        uint64_t tid = creat_kthread(&pkg, &kurd2);
-        if (error_kurd(kurd2)) {
-            bsp_kout << "[BQ] sweeper thread spawn failed" << kendl;
+
+    if (if_real_init) {
+        // ── 业务初始化 ──
+        if (if_bq_sweeper) spawn_bq_sweeper();
+        i8042_char_subscriber_init();
+        //pcie_text_praser();
+        // 并行初始化所有 NVMe 控制器（每控制器一线程，共享 u64 汇报画板，≤5s 轮询提前退出）
+        nvme_parallel_init_all();
+        //text_input_subscriber_init();
+
+        // 初始化 kshell 框架
+        kurd = kshell_framework_t::Init();
+        if (error_kurd(kurd)) {
+            bsp_kout << "[KSHELL] Failed to initialize framework!" << kendl;
         } else {
-            bsp_kout << "[BQ] sweeper thread tid="<<tid  << kendl;
+            bsp_kout << "[KSHELL] Framework initialized, ready for commands" << kendl;
         }
     }
-    if(if_real_init){
-    i8042_char_subscriber_init();
-    //pcie_text_praser();
-    // 并行初始化所有 NVMe 控制器（每控制器一线程，共享 u64 汇报画板，≤5s 轮询提前退出）
-    nvme_parallel_init_all();
-    //text_input_subscriber_init();
-
-
-
-    // 初始化 kshell 框架
-    kurd=kshell_framework_t::Init();
-    if (error_kurd(kurd)) {
-        bsp_kout << "[KSHELL] Failed to initialize framework!" << kendl;
-    } else {
-        bsp_kout << "[KSHELL] Framework initialized, ready for commands" << kendl;
+#ifdef KTHREAD_TEST_SCENARIO
+    else {
+        // ── WRAITH 测试初始化 ──
+        // 业务线程对本测试是噪声：默认不起；BQ 兜底计时器按需保留（if_bq_sweeper）。
+        if (if_bq_sweeper) spawn_bq_sweeper();
+        kthread_test_main();
     }
-    }
-else
-{
-    kthread_test_main();
+#endif
 
-}
     while (true)
     {
         kthread_sleep(1000000);
@@ -104,6 +124,31 @@ else
 
 wraith_test_slot g_wraith_slots[WRAITH_TEST_MAX];
 volatile uint64_t g_wraith_slot_count = 0;
+
+// ── 测试专用日志环（与 interrupt_log_ring 分离）────────────────
+// interrupt_log_ring 放 IRQ 上下文日志；本环放 WRAITH 测试的线程上下文日志。
+// 经主窗口（PHYACC_VA）映射；tool 侧: ring-dump.py --symbol wraith_test_ring。
+debug_tmp_ring_buff* wraith_test_ring = nullptr;
+alignas(debug_tmp_ring_buff) static uint8_t g_wraith_ring_obj[sizeof(debug_tmp_ring_buff)];
+static DmesgRingBuffer_soul g_wraith_ring_soul;
+
+static void wraith_test_ring_init() {
+    constexpr uint64_t BYTES = 1ull << 20;   // 1 MiB
+    KURD_t k = KURD_t();
+    auto pb = FreePagesAllocator::alloc(BYTES, BUDDY_ALLOC_DEFAULT_FLAG,
+                                        page_state_t::kernel_pinned, k);
+    if (pb == FreePagesAllocator::INVALID_ALLOC_BASE || error_kurd(k)) return;
+    g_wraith_ring_soul = { (void*)PHYACC_VA(pb), BYTES, 0, 0 };
+    wraith_test_ring = new (g_wraith_ring_obj) debug_tmp_ring_buff(&g_wraith_ring_soul);
+}
+
+#define WT_LOG(...)                                                        \
+    do {                                                                   \
+        if (wraith_test_ring) {                                            \
+            spinlock_interrupt_about_guard __wt_g(wraith_test_ring->lock); \
+            wraith_test_ring->print(__VA_ARGS__);                          \
+        }                                                                  \
+    } while (0)
 
 // 测试线程入口（内部链接；func_raw 取的就是它的地址）。前向声明供 spawner 使用。
 static void* wraith_worker_entry(void* arg);
@@ -199,10 +244,10 @@ static void* wraith_worker_entry(void* arg) {
     volatile uint64_t canary = WRAITH_CANARY_MAGIC ^ tid;
     const int slot = slot_claim(tid, role, (uint64_t)&canary, (uint64_t)canary);
     if (slot < 0) {
-        WRAITH_LOG("WT! slot-full tid=%llu\n", (unsigned long long)tid);
+        WT_LOG("WT! slot-full tid=%llu\n", (unsigned long long)tid);
         for (;;) kthread_sleep(1000000);
     }
-    WRAITH_LOG("WT+ tid=%llu role=%llu slot=%d\n",
+    WT_LOG("WT+ tid=%llu role=%llu slot=%d\n",
                (unsigned long long)tid, (unsigned long long)role, slot);
     wraith_hotloop(role, slot);
     return nullptr;
@@ -243,19 +288,20 @@ void* wraith_root(void* arg) {
 }  // namespace
 
 void kthread_test_main() {
+    wraith_test_ring_init();
     kthread_creating_package pkg = {};
     pkg.func_raw   = (uint64_t)wraith_root;
     pkg.launch_pid = fast_get_processor_id();
     KURD_t k = KURD_t();
     uint64_t tid = creat_kthread(&pkg, &k);
-    WRAITH_LOG("WT main: root tid=%llu kurd=%llx\n",
+    WT_LOG("WT main: root tid=%llu kurd=%llx\n",
                (unsigned long long)tid, (unsigned long long)kurd_get_raw(k));
 }
 
 // 截停闸门：串口 #TB# → 环留证 → outb(0x80,0xDB) → cli;hlt。无 QEMU 补丁时也停在原地。
 void wraith_freeze(const char* reason) {
     uart_marker("#TB#");
-    WRAITH_LOG("TB reason=%s pid=%u rsp=%llx\n", reason,
+    WT_LOG("TB reason=%s pid=%u rsp=%llx\n", reason,
                (unsigned)fast_get_processor_id(),
                (unsigned long long)wraith::rsp_now());
     io_outb(0x80, 0xDB);

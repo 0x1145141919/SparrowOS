@@ -43,9 +43,14 @@ cmake -DKTHREAD_TEST_SCENARIO=OFF . && make kernel.elf initramfs
 ## 测试分支（在 guest 内）
 
 `kthread_ymir.cpp`（`-DKTHREAD_TEST_SCENARIO` 段）派生一棵**测试线程树**（自相似：线程可自派生）：
+- **模式开关** `if_real_init`（bool）：`true`=业务初始化 / `false`=WRAITH 测试初始化
+  （测试构建默认 `false`）。业务线程（BQ/i8042/NVMe/kshell）对测试是噪声，默认跳过；
+  `if_bq_sweeper`（bool）可单独保留 BQ 兜底计时器线程。
 - 角色：纯 CPU 竞争(yield) / sleep（被 kicker **跨核唤醒**，打 F4 唤醒窗口）/ 自派生 / 退出；
 - **跑完不原子销毁**：`kthread_exit` 后不 `release` ⇒ 僵尸停车区保留其内核栈，供截停后取证；
 - 每线程在**浅层帧**持一枚栈金丝雀（`MAGIC^tid`），热循环内每轮自校验，被异核浅写踩坏即 `wraith_freeze`；
+- **测试专用日志环** `wraith_test_ring`（与 `interrupt_log_ring` 分离：一放线程上下文、一放 IRQ 上下文）——
+  用 `ring-dump.py <core> --kernel kernel.elf --symbol wraith_test_ring` 打捞；
 - 计划截停：`wraith_freeze("planned")` → 串口 `#TB#` → `outb(0x80,0xDB)` → `cli;hlt`。
 
 > 敏感度验证（关键）：在 **pre-fix**（`git revert -n 67e4a76`）上应能看到 INV-A 违规 /
